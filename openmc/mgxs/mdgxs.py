@@ -9,6 +9,7 @@ import copy
 import abc
 
 import numpy as np
+import scipy.sparse as sps
 
 import openmc
 from openmc.mgxs import MGXS
@@ -187,6 +188,17 @@ class MDGXS(MGXS):
                                    equality=True)
 
             self._delayed_groups = delayed_groups
+
+    def get_mean_matrix(self):
+
+        # Get the values as an array
+        xs_array = self.get_xs(nuclides='sum')
+
+        # Convert the array to a matrix
+        n_rows = self.num_subdomains * self.num_delayed_groups * self.num_groups
+        xs_matrix = sps.diags(xs_array.flatten())
+
+        return xs_matrix
 
     @property
     def filters(self):
