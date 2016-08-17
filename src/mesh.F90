@@ -125,7 +125,7 @@ contains
     integer :: n_x ! number of mesh cells in x direction
     integer :: n_y ! number of mesh cells in y direction
 
-    n_x = m % dimension(2)
+    n_x = m % dimension(1)
     n_y = m % dimension(2)
 
     if (m % n_dimension == 2) then
