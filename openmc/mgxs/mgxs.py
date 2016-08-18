@@ -253,6 +253,7 @@ class MGXS(object):
 
     @property
     def estimator(self):
+        print(self)
         return self._estimator
 
     @property

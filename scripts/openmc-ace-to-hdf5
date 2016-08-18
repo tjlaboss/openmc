@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 
 import argparse
-import os
+import os, glob
 import xml.etree.ElementTree as ET
 import warnings
 
 import openmc.data
+from openmc.data.data import ATOMIC_SYMBOL
 
 description = """
 This script can be used to create HDF5 nuclear data libraries used by
@@ -117,17 +118,112 @@ else:
 
 library = openmc.data.DataLibrary()
 
+current_files = glob.glob("*.h5")
+
 for filename in ace_libraries:
     # Check that ACE library exists
     if not os.path.exists(filename):
         warnings.warn("ACE library '{}' does not exist.".format(filename))
         continue
 
+    if filename[-2:] == 'nc':
+        # Get the name of the corresponding hdf5 file
+        ace_filename = filename.split('/')[-1]
+
+        # If mass number hasn't been specified, make an educated guess
+        zaid, xs = ace_filename.split('.')
+        zaid = int(zaid)
+        Z = zaid // 1000
+        mass_number = zaid % 1000
+
+        if args.metastable == 'mcnp':
+            if zaid > 1000000:
+                # New SZA format
+                Z = Z % 1000
+                if zaid == 1095242:
+                    metastable = 0
+                else:
+                    metastable = zaid // 1000000
+            else:
+                if zaid == 95242:
+                    metastable = 1
+                elif zaid == 95642:
+                    metastable = 0
+                else:
+                    metastable = 1 if mass_number > 300 else 0
+        elif args.metastable == 'nndc':
+            metastable = 1 if mass_number > 300 else 0
+
+        while mass_number > 3*Z:
+            mass_number -= 100
+
+        # Determine name for group
+        element = ATOMIC_SYMBOL[Z]
+        if metastable > 0:
+            name = '{}{}_m{}.{}'.format(element, mass_number, metastable, xs)
+        else:
+            name = '{}{}.{}'.format(element, mass_number, xs)
+
+        name = os.path.join(name.replace('.', '_') + '.h5')
+
+        if name in current_files:
+            print('Skipping {} (ACE) to {} (HDF5)'.format(ace_filename, name))
+
+            # Register with library
+            outfile = os.path.join(args.destination, name)
+            library.register_file(outfile)
+            continue
+
     lib = openmc.data.ace.Library(filename)
     for table in lib.tables:
         if table.name.endswith('c'):
             # Continuous-energy neutron data
             try:
+
+                # If mass number hasn't been specified, make an educated guess
+                zaid, xs = table.name.split('.')
+                zaid = int(zaid)
+                Z = zaid // 1000
+                mass_number = zaid % 1000
+
+                if args.metastable == 'mcnp':
+                    if zaid > 1000000:
+                        # New SZA format
+                        Z = Z % 1000
+                        if zaid == 1095242:
+                            metastable = 0
+                        else:
+                            metastable = zaid // 1000000
+                    else:
+                        if zaid == 95242:
+                            metastable = 1
+                        elif zaid == 95642:
+                            metastable = 0
+                        else:
+                            metastable = 1 if mass_number > 300 else 0
+                elif args.metastable == 'nndc':
+                    metastable = 1 if mass_number > 300 else 0
+
+                while mass_number > 3*Z:
+                    mass_number -= 100
+
+                # Determine name for group
+                element = ATOMIC_SYMBOL[Z]
+                if metastable > 0:
+                    name = '{}{}_m{}.{}'.format(element, mass_number, metastable, xs)
+                else:
+                    name = '{}{}.{}'.format(element, mass_number, xs)
+
+                name = os.path.join(name.replace('.', '_') + '.h5')
+
+                if name in current_files:
+                    print('Skipping {} (ACE) to {} (HDF5)'.format(table.name, name))
+
+                    # Register with library
+                    outfile = os.path.join(args.destination, name)
+                    library.register_file(outfile)
+                    continue
+
                 neutron = openmc.data.IncidentNeutron.from_ace(
                     table, args.metastable)
             except Exception as e:
@@ -165,6 +261,8 @@ for filename in ace_libraries:
 
             # Register with library
             library.register_file(outfile, 'thermal')
+
+
 
 # Write cross_sections.xml
 libpath = os.path.join(args.destination, 'cross_sections.xml')
