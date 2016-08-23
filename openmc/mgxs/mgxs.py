@@ -2162,7 +2162,7 @@ class SurfaceMGXS(MGXS):
         xs_array = self.get_xs(nuclides='sum').flatten()
 
         # Convert the array to a matrix
-        xs_array.shape = (self.num_subdomains * self.num_groups, 6)
+        xs_array.shape = (self.num_subdomains * self.num_groups, 12)
         xs_matrix = sps.lil_matrix(xs_array)
 
         return xs_matrix
@@ -2236,7 +2236,7 @@ class SurfaceMGXS(MGXS):
         # Find, slice and store Tallies from StatePoint
         # The tally slicing is needed if tally merging was used
         for tally_type, tally in self.tallies.items():
-            surface_filter = openmc.Filter('surface', list(range(1,7)))
+            surface_filter = openmc.Filter('surface', list(range(1,13)))
             tally.filters.append(surface_filter)
             sp_tally = statepoint.get_tally(
                 tally.scores, tally.filters, tally.nuclides,
@@ -2360,8 +2360,8 @@ class SurfaceMGXS(MGXS):
             num_groups = len(groups)
 
         # Reshape tally data array with separate axes for domain and energy
-        num_subdomains = int(xs.shape[0] / (num_groups * 6))
-        new_shape = (num_subdomains, num_groups, 6) + xs.shape[1:]
+        num_subdomains = int(xs.shape[0] / (num_groups * 12))
+        new_shape = (num_subdomains, num_groups, 12) + xs.shape[1:]
         xs = np.reshape(xs, new_shape)
 
         # Reverse data if user requested increasing energy groups since
