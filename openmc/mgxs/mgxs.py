@@ -6165,44 +6165,6 @@ class Current(SurfaceMGXS):
                                       groups, by_nuclide, name)
         self._rxn_type = 'current'
 
-    def get_net_current(self):
-
-        ng = self.num_groups
-        nx, ny, nz = self.domain.dimension
-        nd = nx*ny*nz
-
-        # Create a tally for the net current
-        out_current = copy.deepcopy(self.tallies['current'].mean)
-        in_current = np.zeros((nz, ny, nx, ng, 6))
-        out_current.shape = (nz, ny, nx, ng, 6)
-
-        net_current = copy.deepcopy(out_current)
-
-        # Set the inward currents based on the neighboring cell outward currents
-        in_current[:  , :  , 1: , :, 0] = out_current[:  , :  , :-1, :, 1]
-        in_current[:  , :  , :-1, :, 1] = out_current[:  , :  , 1: , :, 0]
-        in_current[:  , 1: , :  , :, 2] = out_current[:  , :-1, :  , :, 3]
-        in_current[:  , :-1, :  , :, 3] = out_current[:  , 1: , :  , :, 2]
-        in_current[1: , :  , :  , :, 4] = out_current[:-1, :  , :  , :, 5]
-        in_current[:-1, :  , :  , :, 5] = out_current[1: , :  , :  , :, 4]
-
-        # Reset the inward currents on the boundaries to zero
-        in_current[: , : , 0 , :, 0] = 0.
-        in_current[: , : , -1, :, 1] = 0.
-        in_current[: , 0 , : , :, 2] = 0.
-        in_current[: , -1, : , :, 3] = 0.
-        in_current[0 , : , : , :, 4] = 0.
-        in_current[-1, : , : , :, 5] = 0.
-
-        out_current.shape = (nd*ng, 6)
-        net_current.shape = (nd*ng, 6)
-        in_current.shape = (nd*ng, 6)
-
-        # Compute the net current
-        net_current -= in_current
-        net_current[:, 1:6:2] *= -1
-
-        return net_current
 
 class DiffusionCoefficient(TransportXS):
     r"""A transport-corrected total multi-group cross section.
