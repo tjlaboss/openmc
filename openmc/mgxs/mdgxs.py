@@ -193,6 +193,7 @@ class MDGXS(MGXS):
 
         # Get the values as an array
         xs_array = self.get_xs(nuclides='sum')
+        xs_array.shape = (self.num_subdomains, self.num_delayed_groups, self.num_groups)
 
         # Convert the array to a matrix
         if self.delayed_groups != None:
