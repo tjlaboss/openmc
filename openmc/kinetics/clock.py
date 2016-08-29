@@ -5,7 +5,6 @@ import numpy as np
 TIME_POINTS = ['START',
                'PREVIOUS_OUT',
                'PREVIOUS_IN',
-               'CURRENT',
                'FORWARD_IN',
                'FORWARD_OUT',
                'END']
@@ -88,7 +87,6 @@ class Clock(object):
         self.times['PREVIOUS_OUT'] = self.times['FORWARD_OUT']
         self.times['PREVIOUS_IN']  = self.times['FORWARD_OUT']
         self.times['FORWARD_IN']   = self.times['FORWARD_OUT']
-        self.times['CURRENT']      = self.times['FORWARD_OUT']
 
         if (self.times['END'] > self.times['FORWARD_OUT'] + self.dt_outer):
             self.times['FORWARD_OUT'] = self.times['END']
@@ -100,7 +98,6 @@ class Clock(object):
 
         """
         self.times['PREVIOUS_IN']  = self.times['FORWARD_IN']
-        self.times['CURRENT']      = self.times['FORWARD_IN']
 
         if (self.times['FORWARD_OUT'] > self.times['FORWARD_IN'] + self.dt_inner):
             self.times['FORWARD_IN'] = self.times['FORWARD_OUT']
@@ -114,4 +111,3 @@ class Clock(object):
 
         self.times['PREVIOUS_IN']  = self.times['PREVIOUS_IN']
         self.times['FORWARD_IN']   = self.times['PREVIOUS_IN']
-        self.times['CURRENT']      = self.times['PREVIOUS_IN']

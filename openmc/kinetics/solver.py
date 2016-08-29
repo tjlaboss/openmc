@@ -66,17 +66,14 @@ class Solver(object):
     M : OrderedDict of sps.lil_matrix
         Numpy matrix used for storing the production terms.
 
-    AM : sps.lil_matrix
+    AM : OrderedDict of sps.lil_matrix
         Numpy matrix used for storing the combined production/destruction terms.
+
+    kappa_fission : OrderedDict of sps.lil_matrix
+        Numpy matrix of kappa fission.
 
     flux : OrderedDict of np.ndarray
         Numpy array used to store the flux.
-
-    amplitude : Ordered dict of np.ndarray
-        Numpy array used to store the amplitude.
-
-    shape : OrderedDict of np.ndarray
-        Numpy array used to store the shape.
 
     source : OrderedDict of np.ndarray
         Numpy array used to store the source.
@@ -91,38 +88,17 @@ class Solver(object):
         Dict of Dict of tallies. The first Dict is indexed by time point
         and the second Dict is indexed by rxn type.
 
-    k_eff_0 : float
+    initial_power : float
+        The initial core power (in MWth).
+
+    normalization_factor : float
+        The normalization_factor to translate the fission rate to power.
+
+    k_crit : float
         The initial eigenvalue.
 
     num_delayed_groups : int
         The number of delayed neutron precursor groups.
-
-    Methods
-    -------
-    - initialize_xs()
-    take_outer_step()
-    take_inner_step()
-    solve()
-    - extract_xs()
-    2 normalize_flux()
-    broadcast_to_all()
-    broadcast_to_one()
-    - compute_shape()
-    integrate_precursor_conc()
-    3 compute_initial_precursor_conc()
-    1 compute_power()
-    construct_A()
-    construct_M()
-    construct_AM()
-    interpolate_xs()
-
-    To Do
-    -----
-    1) Create getters and setters for all attributes
-    2) Create method to generate initialize xs
-    3) Create method to compute flux
-    4) Create method to compute initial precursor concentrations
-    5) Create method to compute the initial power
 
     """
 
@@ -142,15 +118,16 @@ class Solver(object):
         self._A = None
         self._M = None
         self._AM = None
+        self._kappa_fission = None
         self._flux = None
-        self._amplitude = None
-        self._shape = None
         self._source = None
         self._power = None
         self._precursor_conc = None
         self._mgxs_lib = None
-        self._k_eff_0 = None
+        self._k_crit = None
         self._num_delayed_groups = 6
+        self._initial_power = 1.e6
+        self._normalization_factor = 0.
 
     @property
     def mesh(self):
@@ -205,16 +182,12 @@ class Solver(object):
         return self._AM
 
     @property
+    def kappa_fission(self):
+        return self._kappa_fission
+
+    @property
     def flux(self):
         return self._flux
-
-    @property
-    def amplitude(self):
-        return self._amplitude
-
-    @property
-    def shape(self):
-        return self._shape
 
     @property
     def source(self):
@@ -233,8 +206,16 @@ class Solver(object):
         return self._mgxs_lib
 
     @property
-    def k_eff_0(self):
-        return self._k_eff_0
+    def initial_power(self):
+        return self._initial_power
+
+    @property
+    def normalization_factor(self):
+        return self._normalization_factor
+
+    @property
+    def k_crit(self):
+        return self._k_crit
 
     @property
     def num_delayed_groups(self):
@@ -292,17 +273,13 @@ class Solver(object):
     def AM(self, AM):
         self._AM = AM
 
+    @kappa_fission.setter
+    def kappa_fission(self, kappa_fission):
+        self._kappa_fission = kappa_fission
+
     @flux.setter
     def flux(self, flux):
         self._flux = flux
-
-    @amplitude.setter
-    def amplitude(self, amplitude):
-        self._amplitude = amplitude
-
-    @shape.setter
-    def shape(self, shape):
-        self._shape = shape
 
     @source.setter
     def source(self, source):
@@ -320,9 +297,17 @@ class Solver(object):
     def mgxs_lib(self, mgxs_lib):
         self._mgxs_lib = mgxs_lib
 
-    @k_eff_0.setter
-    def k_eff_0(self, k_eff_0):
-        self._k_eff_0 = k_eff_0
+    @initial_power.setter
+    def initial_power(self, initial_power):
+        self._initial_power = initial_power
+
+    @normalization_factor.setter
+    def normalization_factor(self, normalization_factor):
+        self._normalization_factor = normalization_factor
+
+    @k_crit.setter
+    def k_crit(self, k_crit):
+        self._k_crit = k_crit
 
     @num_delayed_groups.setter
     def num_delayed_groups(self, num_delayed_groups):
@@ -340,9 +325,8 @@ class Solver(object):
         self._A                = OrderedDict()
         self._M                = OrderedDict()
         self._AM               = OrderedDict()
+        self._kappa_fission    = OrderedDict()
         self._flux             = OrderedDict()
-        self._amplitude        = OrderedDict()
-        self._shape            = OrderedDict()
         self._source           = OrderedDict()
         self._power            = OrderedDict()
         self._precursor_conc   = OrderedDict()
@@ -355,9 +339,8 @@ class Solver(object):
             self._A[t]                = None
             self._M[t]                = None
             self._AM[t]               = None
+            self._kappa_fission[t]    = None
             self._flux[t]             = None
-            self._amplitude[t]        = None
-            self._shape[t]            = None
             self._source[t]           = None
             self._power[t]            = None
             self._statepoint_files[t] = None
@@ -365,11 +348,11 @@ class Solver(object):
             self._precursor_conc[t]   = None
             self._mgxs_lib[t]         = OrderedDict()
 
-        mgxs_types = ['total', 'transport', 'diffusion-coefficient', 'absorption',
-                      'kappa-fission', 'nu-scatter matrix', 'chi-prompt', 'chi',
+        mgxs_types = ['transport', 'diffusion-coefficient', 'absorption',
+                      'kappa-fission', 'nu-scatter matrix', 'chi-prompt',
                       'chi-delayed', 'inverse-velocity', 'prompt-nu-fission',
-                      'current', 'delayed-nu-fission', 'chi-delayed', 'beta',
-                      'nu-fission', 'nu-scatter', 'decay-rate']
+                      'current', 'delayed-nu-fission', 'chi-delayed',
+                      'decay-rate']
 
         # Populate the MGXS in the MGXS lib
         for t in TIME_POINTS:
@@ -411,6 +394,10 @@ class Solver(object):
 
     def run_openmc(self, time):
 
+        # Get the dimensions of the mesh
+        dx, dy, dz = self.mesh.width
+        dxyz = dx * dy * dz
+
         # Create the xml files
         self.geometry.export_to_xml()
         self._materials_file.export_to_xml()
@@ -421,45 +408,45 @@ class Solver(object):
         openmc.run(mpi_procs=8)
 
         # Load MGXS from statepoint
+        os.rename('statepoint.{}.h5'.format(self.settings_file.batches),
+                  'statepoint_{0}.{1}.h5'.format(time, self.settings_file.batches))
         self.statepoint_files[time] = openmc.StatePoint(
-            'statepoint.{}.h5'.format(self.settings_file.batches))
+            'statepoint_{0}.{1}.h5'.format(time, self.settings_file.batches))
 
         for mgxs in self.mgxs_lib[time].values():
             mgxs.load_from_statepoint(self.statepoint_files[time])
 
-    def compute_initial_shape(self):
+    def compute_initial_flux(self):
 
-        # Get the dimensions of the mesh
-        dx, dy, dz = self.mesh.width
-        dxyz = dx * dy * dz
+        # Get the initial flux
+        flux = self.mgxs_lib[time]['absorption'].tallies['flux'].get_values()
+        self.flux[time] = flux.flatten()
 
         # Get the matrices needed to reproduce the initial eigenvalue solve
-        inscatter = self.mgxs_lib['START']['nu-scatter matrix'].get_mean_matrix()
-        absorb = self.mgxs_lib['START']['absorption'].get_mean_matrix()
-        chi_p = self.mgxs_lib['START']['chi-prompt'].get_mean_matrix()
-        chi_d = self.mgxs_lib['START']['chi-delayed'].get_mean_matrix()
-        nu_fis_p = self.mgxs_lib['START']['prompt-nu-fission'].get_mean_matrix()
-        nu_fis_d = self.mgxs_lib['START']['delayed-nu-fission'].get_mean_matrix()
-        stream = self.compute_surface_dif_coefs('START')
-        stream_corr = self.compute_surface_dif_coefs_corr('START')
-        flux = self.mgxs_lib['START']['absorption'].tallies['flux'].get_values()
+        inscatter = self.mgxs_lib[time]['nu-scatter matrix'].get_mean_matrix()
+        absorb = self.mgxs_lib[time]['absorption'].get_mean_matrix()
+        chi_p = self.mgxs_lib[time]['chi-prompt'].get_mean_matrix()
+        chi_d = self.mgxs_lib[time]['chi-delayed'].get_mean_matrix()
+        nu_fis_p = self.mgxs_lib[time]['prompt-nu-fission'].get_mean_matrix()
+        nu_fis_d = self.mgxs_lib[time]['delayed-nu-fission'].get_mean_matrix()
+        kappa_fission = self.mgxs_lib[time]['kappa-fission'].get_mean_matrix()
+        stream, stream_corr = self.compute_surface_dif_coefs(time)
         outscatter = sps.diags(np.asarray(inscatter.sum(axis=0)).flatten(), 0)
 
         if isinstance(nu_fis_d, list):
             nu_fis_d = sum(nu_fis_d)
 
         # Form the A and M matrices
-        self.A['START'] = dxyz * (absorb + outscatter - inscatter) + stream + stream_corr
-        self.M['START'] = dxyz * (chi_p * nu_fis_p + chi_d * nu_fis_d)
-        self.flux['START'] = flux.flatten()
-
-        source = self.M['START'] * self.flux['START']
-        sink = self.A['START'] * self.flux['START']
-        k = source.sum() / sink.sum()
-        print('balance k-eff: {0:1.6f}',format(k))
+        self.A[time] = dxyz * (absorb + outscatter - inscatter) + stream + stream_corr
+        self.M[time] = dxyz * (chi_p * nu_fis_p + chi_d * nu_fis_d)
+        self.kappa_fission[time] = dxyz * kappa_fission
 
         # Compute the initial eigenvalue
         self.compute_eigenvalue('START')
+
+        # Compute the normalization factor
+        fiss_rate = self.kappa_fission['START'] * self.flux['START']
+        self.normalization_factor = self.initial_power / fiss_rate.sum()
 
     def compute_eigenvalue(self, time):
 
@@ -467,7 +454,6 @@ class Solver(object):
         A = self.A[time]
         M = self.M[time]
         flux = self.flux[time]
-        k_eff = self.k_eff_0
 
         # Compute the initial source
         old_source = M * flux
@@ -504,72 +490,9 @@ class Solver(object):
                 break
 
         print('k-eff MC {0:1.6f} -- DIFFUSION {1:1.6f}'.format(self.statepoint_files['START'].k_combined[0], k_eff))
-        self.k_eff_0 = k_eff
-
+        self.k_crit = k_eff
 
     def compute_surface_dif_coefs(self, time):
-
-        # Get the diffusion coefficients tally
-        dc_mgxs = self.mgxs_lib[time]['diffusion-coefficient']
-        dc_mgxs = dc_mgxs.get_condensed_xs(self.energy_groups)
-        dc = dc_mgxs.get_xs()
-
-        nx, ny, nz = self.mesh.dimension
-        dx, dy, dz = self.mesh.width
-        ng = self.energy_groups.num_groups
-        dc_array = np.zeros((nz, ny, nx, ng, 6))
-        dc.shape = (nz, ny, nx, ng)
-        dc_copy = copy.deepcopy(dc)
-
-        # Create a 2D array of the diffusion coefficients
-        dc_array[:  , :  , 1: , :, 0] = dc_copy[:  , :  , :-1, :]
-        dc_array[:  , :  , :-1, :, 1] = dc_copy[:  , :  , 1: , :]
-        dc_array[:  , 1: , :  , :, 2] = dc_copy[:  , :-1, :  , :]
-        dc_array[:  , :-1, :  , :, 3] = dc_copy[:  , 1: , :  , :]
-        dc_array[1: , :  , :  , :, 4] = dc_copy[:-1, :  , :  , :]
-        dc_array[:-1, :  , :  , :, 5] = dc_copy[1: , :  , :  , :]
-
-        # Compute the surface diffusion coefficients for interior surfaces
-        sdc = np.zeros((nz, ny, nx, ng, 6))
-        sdc[..., 0] = 2 * dc_array[..., 0] * dc / (dc_array[..., 0] * dx + dc * dx)
-        sdc[..., 1] = 2 * dc_array[..., 1] * dc / (dc_array[..., 1] * dx + dc * dx)
-        sdc[..., 2] = 2 * dc_array[..., 2] * dc / (dc_array[..., 2] * dy + dc * dy)
-        sdc[..., 3] = 2 * dc_array[..., 3] * dc / (dc_array[..., 3] * dy + dc * dy)
-        sdc[..., 4] = 2 * dc_array[..., 4] * dc / (dc_array[..., 4] * dz + dc * dz)
-        sdc[..., 5] = 2 * dc_array[..., 5] * dc / (dc_array[..., 5] * dz + dc * dz)
-
-        sdc[..., 0:2] *= dy * dz
-        sdc[..., 2:4] *= dx * dz
-        sdc[..., 4:6] *= dx * dy
-
-        # Reshape the diffusion coefficient array
-        sdc.shape = (nx*ny*nz*ng, 6)
-        sdc_diag = sdc.sum(axis=1)
-        data  = [sdc_diag]
-        diags = [0]
-
-        if nx > 1:
-            data.append(-sdc[ng:, 0])
-            data.append(-sdc[:-ng, 1])
-            diags.append(-ng)
-            diags.append(ng)
-        if ny > 1:
-            data.append(-sdc[nx*ng:, 2])
-            data.append(-sdc[:-nx*ng   , 3])
-            diags.append(-nx*ng)
-            diags.append(nx*ng)
-        if nz > 1:
-            data.append(-sdc[nx*ny*ng:, 4])
-            data.append(-sdc[:-nx*ny*ng, 5])
-            diags.append(-nx*ny*ng)
-            diags.append(nx*ny*ng)
-
-        # Form a matrix of the surface diffusion coefficients
-        sdc_matrix = sps.diags(data, diags)
-
-        return sdc_matrix
-
-    def compute_surface_dif_coefs_corr(self, time):
 
         # Get the dimensions of the mesh
         nx, ny, nz = self.mesh.dimension
@@ -581,37 +504,37 @@ class Solver(object):
         net_current = partial_current[:, range(6)] - partial_current[:, range(6,12)]
         net_current[:, 0:6:2] = -net_current[:, 0:6:2]
         net_current.shape = (nz, ny, nx, ng, 6)
+        net_current[..., 0:2] /= (dy * dz)
+        net_current[..., 2:4] /= (dx * dz)
+        net_current[..., 4:6] /= (dx * dy)
 
         # Get the flux
-        flux = self.mgxs_lib[time]['total'].tallies['flux'].get_values()
+        flux = self.flux[time]
         flux.shape = (nz, ny, nx, ng)
         flux_array = np.zeros((nz, ny, nx, ng, 6))
-        flux_copy = copy.deepcopy(flux)
 
         # Create a 2D array of the diffusion coefficients
-        flux_array[:  , :  , 1: , :, 0] = flux_copy[:  , :  , :-1, :]
-        flux_array[:  , :  , :-1, :, 1] = flux_copy[:  , :  , 1: , :]
-        flux_array[:  , 1: , :  , :, 2] = flux_copy[:  , :-1, :  , :]
-        flux_array[:  , :-1, :  , :, 3] = flux_copy[:  , 1: , :  , :]
-        flux_array[1: , :  , :  , :, 4] = flux_copy[:-1, :  , :  , :]
-        flux_array[:-1, :  , :  , :, 5] = flux_copy[1: , :  , :  , :]
+        flux_array[:  , :  , 1: , :, 0] = flux[:  , :  , :-1, :]
+        flux_array[:  , :  , :-1, :, 1] = flux[:  , :  , 1: , :]
+        flux_array[:  , 1: , :  , :, 2] = flux[:  , :-1, :  , :]
+        flux_array[:  , :-1, :  , :, 3] = flux[:  , 1: , :  , :]
+        flux_array[1: , :  , :  , :, 4] = flux[:-1, :  , :  , :]
+        flux_array[:-1, :  , :  , :, 5] = flux[1: , :  , :  , :]
 
         # Get the diffusion coefficients tally
         dc_mgxs = self.mgxs_lib[time]['diffusion-coefficient']
         dc_mgxs = dc_mgxs.get_condensed_xs(self.energy_groups)
         dc = dc_mgxs.get_xs()
         dc.shape = (nz, ny, nx, ng)
-
         dc_array = np.zeros((nz, ny, nx, ng, 6))
-        dc_copy = copy.deepcopy(dc)
 
         # Create a 2D array of the diffusion coefficients
-        dc_array[:  , :  , 1: , :, 0] = dc_copy[:  , :  , :-1, :]
-        dc_array[:  , :  , :-1, :, 1] = dc_copy[:  , :  , 1: , :]
-        dc_array[:  , 1: , :  , :, 2] = dc_copy[:  , :-1, :  , :]
-        dc_array[:  , :-1, :  , :, 3] = dc_copy[:  , 1: , :  , :]
-        dc_array[1: , :  , :  , :, 4] = dc_copy[:-1, :  , :  , :]
-        dc_array[:-1, :  , :  , :, 5] = dc_copy[1: , :  , :  , :]
+        dc_array[:  , :  , 1: , :, 0] = dc[:  , :  , :-1, :]
+        dc_array[:  , :  , :-1, :, 1] = dc[:  , :  , 1: , :]
+        dc_array[:  , 1: , :  , :, 2] = dc[:  , :-1, :  , :]
+        dc_array[:  , :-1, :  , :, 3] = dc[:  , 1: , :  , :]
+        dc_array[1: , :  , :  , :, 4] = dc[:-1, :  , :  , :]
+        dc_array[:-1, :  , :  , :, 5] = dc[1: , :  , :  , :]
 
         # Compute the surface diffusion coefficients for interior surfaces
         sdc = np.zeros((nz, ny, nx, ng, 6))
@@ -624,66 +547,88 @@ class Solver(object):
 
         # net_current, flux_array, surf_dif_coef
         sdc_corr = np.zeros((nz, ny, nx, ng, 6))
-        sdc_corr[..., 0] = (-sdc[..., 0] * (-flux_array[..., 0] + flux) - net_current[..., 0] / (dy * dz)) / (flux_array[..., 0] + flux)
-        sdc_corr[..., 1] = (-sdc[..., 1] * ( flux_array[..., 1] - flux) - net_current[..., 1] / (dy * dz)) / (flux_array[..., 1] + flux)
-        sdc_corr[..., 2] = (-sdc[..., 2] * (-flux_array[..., 2] + flux) - net_current[..., 2] / (dx * dz)) / (flux_array[..., 2] + flux)
-        sdc_corr[..., 3] = (-sdc[..., 3] * ( flux_array[..., 3] - flux) - net_current[..., 3] / (dx * dz)) / (flux_array[..., 3] + flux)
-        sdc_corr[..., 4] = (-sdc[..., 4] * (-flux_array[..., 4] + flux) - net_current[..., 4] / (dx * dy)) / (flux_array[..., 4] + flux)
-        sdc_corr[..., 5] = (-sdc[..., 5] * ( flux_array[..., 5] - flux) - net_current[..., 5] / (dx * dy)) / (flux_array[..., 5] + flux)
+        sdc_corr[..., 0] = (-sdc[..., 0] * (-flux_array[..., 0] + flux) - net_current[..., 0]) / (flux_array[..., 0] + flux)
+        sdc_corr[..., 1] = (-sdc[..., 1] * ( flux_array[..., 1] - flux) - net_current[..., 1]) / (flux_array[..., 1] + flux)
+        sdc_corr[..., 2] = (-sdc[..., 2] * (-flux_array[..., 2] + flux) - net_current[..., 2]) / (flux_array[..., 2] + flux)
+        sdc_corr[..., 3] = (-sdc[..., 3] * ( flux_array[..., 3] - flux) - net_current[..., 3]) / (flux_array[..., 3] + flux)
+        sdc_corr[..., 4] = (-sdc[..., 4] * (-flux_array[..., 4] + flux) - net_current[..., 4]) / (flux_array[..., 4] + flux)
+        sdc_corr[..., 5] = (-sdc[..., 5] * ( flux_array[..., 5] - flux) - net_current[..., 5]) / (flux_array[..., 5] + flux)
 
         # net_current, flux_array, surf_dif_coef
         sdc_corr_od = np.zeros((nz, ny, nx, ng, 6))
-        sdc_corr_od[:  ,:  ,1: ,:,0] = (-sdc[:  ,:  ,1: ,:,0] * (-flux_array[:  ,:  ,1: ,:,0] + flux[:  ,:  ,1: ,:]) - net_current[:  ,:  ,1: ,:,0] / (dy * dz)) / (flux_array[:  ,:  ,1: ,:,0] + flux[:  ,:  ,1: ,:])
-        sdc_corr_od[:  ,:  ,:-1,:,1] = (-sdc[:  ,:  ,:-1,:,1] * ( flux_array[:  ,:  ,:-1,:,1] - flux[:  ,:  ,:-1,:]) - net_current[:  ,:  ,:-1,:,1] / (dy * dz)) / (flux_array[:  ,:  ,:-1,:,1] + flux[:  ,:  ,:-1,:])
-        sdc_corr_od[:  ,1: ,:  ,:,2] = (-sdc[:  ,1: ,:  ,:,2] * (-flux_array[:  ,1: ,:  ,:,2] + flux[:  ,1: ,:  ,:]) - net_current[:  ,1: ,:  ,:,2] / (dx * dz)) / (flux_array[:  ,1: ,:  ,:,2] + flux[:  ,1: ,:  ,:])
-        sdc_corr_od[:  ,:-1,:  ,:,3] = (-sdc[:  ,:-1,:  ,:,3] * ( flux_array[:  ,:-1,:  ,:,3] - flux[:  ,:-1,:  ,:]) - net_current[:  ,:-1,:  ,:,3] / (dx * dz)) / (flux_array[:  ,:-1,:  ,:,3] + flux[:  ,:-1,:  ,:])
-        sdc_corr_od[1: ,:  ,:  ,:,4] = (-sdc[1: ,:  ,:  ,:,4] * (-flux_array[1: ,:  ,:  ,:,4] + flux[1: ,:  ,:  ,:]) - net_current[1: ,:  ,:  ,:,4] / (dx * dy)) / (flux_array[1: ,:  ,:  ,:,4] + flux[1: ,:  ,:  ,:])
-        sdc_corr_od[:-1,:  ,:  ,:,5] = (-sdc[:-1,:  ,:  ,:,5] * ( flux_array[:-1,:  ,:  ,:,5] - flux[:-1,:  ,:  ,:]) - net_current[:-1,:  ,:  ,:,5] / (dx * dy)) / (flux_array[:-1,:  ,:  ,:,5] + flux[:-1,:  ,:  ,:])
+        sdc_corr_od[:  ,:  ,1: ,:,0] = sdc_corr[:  ,:  ,1: ,:,0]
+        sdc_corr_od[:  ,:  ,:-1,:,1] = sdc_corr[:  ,:  ,:-1,:,1]
+        sdc_corr_od[:  ,1: ,:  ,:,2] = sdc_corr[:  ,1: ,:  ,:,2]
+        sdc_corr_od[:  ,:-1,:  ,:,3] = sdc_corr[:  ,:-1,:  ,:,3]
+        sdc_corr_od[1: ,:  ,:  ,:,4] = sdc_corr[1: ,:  ,:  ,:,4]
+        sdc_corr_od[:-1,:  ,:  ,:,5] = sdc_corr[:-1,:  ,:  ,:,5]
 
-        # Recompute the currents to check that we computed the coeffs correctly
-        compute_currents = np.zeros((nz, ny, nx, ng, 6))
-        compute_currents[..., 0] = - sdc[..., 0] * (-flux_array[..., 0] + flux) - sdc_corr[..., 0] * (flux_array[..., 0] + flux)
-        compute_currents[..., 1] = - sdc[..., 1] * ( flux_array[..., 1] - flux) - sdc_corr[..., 1] * (flux_array[..., 1] + flux)
-        compute_currents[..., 2] = - sdc[..., 2] * (-flux_array[..., 2] + flux) - sdc_corr[..., 2] * (flux_array[..., 2] + flux)
-        compute_currents[..., 3] = - sdc[..., 3] * ( flux_array[..., 3] - flux) - sdc_corr[..., 3] * (flux_array[..., 3] + flux)
-        compute_currents[..., 4] = - sdc[..., 4] * (-flux_array[..., 4] + flux) - sdc_corr[..., 4] * (flux_array[..., 4] + flux)
-        compute_currents[..., 5] = - sdc[..., 5] * ( flux_array[..., 5] - flux) - sdc_corr[..., 5] * (flux_array[..., 5] + flux)
+        # Check for diagonal dominance
+        dd_mask = (np.abs(sdc_corr_od) > sdc)
+        nd_mask = (dd_mask == False)
+        pos = (sdc_corr_od > 0.)
+        neg = (sdc_corr_od < 0.)
 
+        # Correct sdc for diagonal dominance
+        sdc[:  ,:  ,1: ,:,0] = nd_mask[:  ,:  ,1: ,:,0] * sdc[:  ,:  ,1: ,:,0] + dd_mask[:  ,:  ,1: ,:,0] * (neg[:  ,:  ,1: ,:,0] * np.abs(net_current[:  ,:  ,1: ,:,0] / (2 * flux_array[:  ,:  ,1: ,:,0])) + pos[:  ,:  ,1: ,:,0] * np.abs(net_current[:  ,:  ,1: ,:,0] / (2 * flux[:  ,:  ,1: ,:])))
+        sdc[:  ,:  ,:-1,:,1] = nd_mask[:  ,:  ,:-1,:,1] * sdc[:  ,:  ,:-1,:,1] + dd_mask[:  ,:  ,:-1,:,1] * (pos[:  ,:  ,:-1,:,1] * np.abs(net_current[:  ,:  ,:-1,:,1] / (2 * flux_array[:  ,:  ,:-1,:,1])) + neg[:  ,:  ,:-1,:,1] * np.abs(net_current[:  ,:  ,:-1,:,1] / (2 * flux[:  ,:  ,:-1,:])))
+        sdc[:  ,1: ,:  ,:,2] = nd_mask[:  ,1: ,:  ,:,2] * sdc[:  ,1: ,:  ,:,2] + dd_mask[:  ,1: ,:  ,:,2] * (neg[:  ,1: ,:  ,:,2] * np.abs(net_current[:  ,1: ,:  ,:,2] / (2 * flux_array[:  ,1: ,:  ,:,2])) + pos[:  ,1: ,:  ,:,2] * np.abs(net_current[:  ,1: ,:  ,:,2] / (2 * flux[:  ,1: ,:  ,:])))
+        sdc[:  ,:-1,:  ,:,3] = nd_mask[:  ,:-1,:  ,:,3] * sdc[:  ,:-1,:  ,:,3] + dd_mask[:  ,:-1,:  ,:,3] * (pos[:  ,:-1,:  ,:,3] * np.abs(net_current[:  ,:-1,:  ,:,3] / (2 * flux_array[:  ,:-1,:  ,:,3])) + neg[:  ,:-1,:  ,:,3] * np.abs(net_current[:  ,:-1,:  ,:,3] / (2 * flux[:  ,:-1,:  ,:])))
+        sdc[1: ,:  ,:  ,:,4] = nd_mask[1: ,:  ,:  ,:,4] * sdc[1: ,:  ,:  ,:,4] + dd_mask[1: ,:  ,:  ,:,4] * (neg[1: ,:  ,:  ,:,4] * np.abs(net_current[1: ,:  ,:  ,:,4] / (2 * flux_array[1: ,:  ,:  ,:,4])) + pos[1: ,:  ,:  ,:,4] * np.abs(net_current[1: ,:  ,:  ,:,4] / (2 * flux[1: ,:  ,:  ,:])))
+        sdc[:-1,:  ,:  ,:,5] = nd_mask[:-1,:  ,:  ,:,5] * sdc[:-1,:  ,:  ,:,5] + dd_mask[:-1,:  ,:  ,:,5] * (pos[:-1,:  ,:  ,:,5] * np.abs(net_current[:-1,:  ,:  ,:,5] / (2 * flux_array[:-1,:  ,:  ,:,5])) + neg[:-1,:  ,:  ,:,5] * np.abs(net_current[:-1,:  ,:  ,:,5] / (2 * flux[:-1,:  ,:  ,:])))
+
+        # Correct sdc correct for diagonal dominance
+        sdc_corr_od = nd_mask * sdc_corr_od + dd_mask * (pos * sdc - neg * sdc)
+
+        # Multiply by the surface area
+        sdc[..., 0:2] *= dy * dz
+        sdc[..., 2:4] *= dx * dz
+        sdc[..., 4:6] *= dx * dy
         sdc_corr[..., 0:2] *= dy * dz
         sdc_corr[..., 2:4] *= dx * dz
         sdc_corr[..., 4:6] *= dx * dy
-        sdc_corr_od[..., 0:2] *= dy * dz
-        sdc_corr_od[..., 2:4] *= dx * dz
-        sdc_corr_od[..., 4:6] *= dx * dy
 
         # Reshape the diffusion coefficient array
+        flux.shape = (nx*ny*nz*ng, 6)
+        sdc.shape = (nx*ny*nz*ng, 6)
         sdc_corr.shape = (nx*ny*nz*ng, 6)
         sdc_corr_od.shape = (nx*ny*nz*ng, 6)
 
+        # Set the diagonal
+        sdc_diag = sdc.sum(axis=1)
         sdc_corr_diag = sdc_corr[:, 0:6:2].sum(axis=1) - sdc_corr[:, 1:6:2].sum(axis=1)
-        data  = [sdc_corr_diag]
+        sdc_data  = [sdc_diag]
+        sdc_corr_data  = [sdc_corr_diag]
         diags = [0]
 
+        # Set the off-diagonals
         if nx > 1:
-            data.append( sdc_corr_od[ng:, 0])
-            data.append(-sdc_corr_od[:-ng, 1])
+            sdc_data.append(-sdc[ng:, 0])
+            sdc_data.append(-sdc[:-ng, 1])
+            sdc_corr_data.append( sdc_corr_od[ng:, 0])
+            sdc_corr_data.append(-sdc_corr_od[:-ng, 1])
             diags.append(-ng)
             diags.append(ng)
         if ny > 1:
-            data.append( sdc_corr_od[nx*ng:, 2])
-            data.append(-sdc_corr_od[:-nx*ng   , 3])
+            sdc_data.append(-sdc[nx*ng:, 2])
+            sdc_data.append(-sdc[:-nx*ng   , 3])
+            sdc_corr_data.append( sdc_corr_od[nx*ng:, 2])
+            sdc_corr_data.append(-sdc_corr_od[:-nx*ng   , 3])
             diags.append(-nx*ng)
             diags.append(nx*ng)
         if nz > 1:
-            data.append( sdc_corr_od[nx*ny*ng:, 4])
-            data.append(-sdc_corr_od[:-nx*ny*ng, 5])
+            sdc_data.append(-sdc[nx*ny*ng:, 4])
+            sdc_data.append(-sdc[:-nx*ny*ng, 5])
+            sdc_corr_data.append( sdc_corr_od[nx*ny*ng:, 4])
+            sdc_corr_data.append(-sdc_corr_od[:-nx*ny*ng, 5])
             diags.append(-nx*ny*ng)
             diags.append(nx*ny*ng)
 
-        # Form a matrix of the surface diffusion coefficients
-        sdc_corr_matrix = sps.diags(data, diags)
+        # Form a matrix of the surface diffusion coefficients corrections
+        sdc_matrix = sps.diags(sdc_data, diags)
+        sdc_corr_matrix = sps.diags(sdc_corr_data, diags)
 
-        return sdc_corr_matrix
+        return sdc_matrix, sdc_corr_matrix
 
     def generate_tallies_file(self, time):
 
