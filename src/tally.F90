@@ -677,70 +677,137 @@ contains
         ! Set the delayedgroup filter index
         dg_filter = t % find_filter(FILTER_DELAYEDGROUP)
 
-        ! Skip any non-fission events
-        if (.not. p % fission) cycle SCORE_LOOP
-        ! If there is no outgoing energy filter, than we only need to
-        ! score to one bin. For the score to be 'analog', we need to
-        ! score the number of particles that were banked in the fission
-        ! bank. Since this was weighted by 1/keff, we multiply by keff
-        ! to get the proper score. Loop over the neutrons produced from
-        ! fission and check which ones are delayed. If a delayed neutron is
-        ! encountered, add its contribution to the fission bank to the
-        ! score.
+        if (survival_biasing) then
+          ! No fission events occur if survival biasing is on -- need to
+          ! calculate fraction of absorptions that would have resulted in
+          ! delayed-nu-fission
+          if (micro_xs(p % event_nuclide) % absorption > ZERO .and. &
+               nuclides(p % event_nuclide) % fissionable) then
 
-        score = ZERO
-
-        ! loop over number of particles banked
-        do k = 1, p % n_bank
-
-          ! get the delayed group
-          g = fission_bank(n_bank - p % n_bank + k) % delayed_group
-
-          ! Case for tallying delayed emissions
-          if (g /= 0) then
-
-            ! Accumulate the decay rate times delayed nu fission score
-            associate (rxn => nuclides(p % event_nuclide) % &
-                 reactions(nuclides(p % event_nuclide) % index_fission(1)))
-
-              ! determine score based on bank site weight and keff. Note that
-              ! the units of the decay rate have been converted from inverse
-              ! shakes to inverse seconds (1 shake = 1.e-8 seconds)
-              score = score + keff * fission_bank(n_bank - p % n_bank + k) &
-                   % wgt * rxn % products(1 + g) % decay_rate * 1.e8
-            end associate
-
-            ! if the delayed group filter is present, tally to corresponding
-            ! delayed group bin if it exists
+            ! Check if the delayed group filter is present
             if (dg_filter > 0) then
-
-              ! declare the delayed group filter type
               select type(filt => t % filters(dg_filter) % obj)
               type is (DelayedGroupFilter)
 
-                ! loop over delayed group bins until the corresponding bin is
-                ! found
+                ! Loop over all delayed group bins and tally to them
+                ! individually
                 do d_bin = 1, filt % n_bins
+
+                  ! Get the delayed group for this bin
                   d = filt % groups(d_bin)
 
-                  ! check whether the delayed group of the particle is equal to
-                  ! the delayed group of this bin
-                  if (d == g) then
-                    call score_fission_delayed_dg(t, d_bin, score, score_index)
-                  end if
-                end do
-              end select
+                  ! Compute the yield for this delayed group
+                  yield = nuclides(p % event_nuclide) &
+                       % nu(E, EMISSION_DELAYED, d)
 
-              ! Reset the score to zero
+                  associate (rxn => nuclides(p % event_nuclide) % &
+                       reactions(nuclides(p % event_nuclide) % index_fission(1)))
+
+                    ! Compute the score
+                    score = p % absorb_wgt * yield * &
+                         micro_xs(p % event_nuclide) % fission &
+                         / micro_xs(p % event_nuclide) % absorption &
+                         * rxn % products(1 + d) % decay_rate * 1.e8
+                  end associate
+
+                  ! Tally to bin
+                  call score_fission_delayed_dg(t, d_bin, score, score_index)
+                end do
+                cycle SCORE_LOOP
+              end select
+            else
+
+              ! If the delayed group filter is not present, compute the score
+              ! by accumulating the absorbed weight times the decay rate times
+              ! the fraction of the delayed-nu-fission xs to the absorption xs
+              ! for all delayed groups.
               score = ZERO
+
+              associate (rxn => nuclides(p % event_nuclide) % &
+                   reactions(nuclides(p % event_nuclide) % index_fission(1)))
+
+                ! We need to be careful not to overshoot the number of delayed
+                ! groups since this could cause the range of the rxn % products
+                ! array to be exceeded. Hence, we use the size of this array
+                ! and not the MAX_DELAYED_GROUPS constant for this loop.
+                do d = 1, size(rxn % products) - 2
+
+                  score = score + rxn % products(1 + d) % decay_rate * 1.e8 * &
+                       p % absorb_wgt * micro_xs(p % event_nuclide) % fission *&
+                       nuclides(p % event_nuclide) % nu(E, EMISSION_DELAYED, d)&
+                       / micro_xs(p % event_nuclide) % absorption
+                end do
+              end associate
             end if
           end if
-        end do
+        else
 
-        if (dg_filter > 0) then
-          cycle SCORE_LOOP
+          ! Skip any non-fission events
+          if (.not. p % fission) cycle SCORE_LOOP
+          ! If there is no outgoing energy filter, than we only need to
+          ! score to one bin. For the score to be 'analog', we need to
+          ! score the number of particles that were banked in the fission
+          ! bank. Since this was weighted by 1/keff, we multiply by keff
+          ! to get the proper score. Loop over the neutrons produced from
+          ! fission and check which ones are delayed. If a delayed neutron is
+          ! encountered, add its contribution to the fission bank to the
+          ! score.
+
+          score = ZERO
+
+          ! loop over number of particles banked
+          do k = 1, p % n_bank
+
+            ! get the delayed group
+            g = fission_bank(n_bank - p % n_bank + k) % delayed_group
+
+            ! Case for tallying delayed emissions
+            if (g /= 0) then
+
+              ! Accumulate the decay rate times delayed nu fission score
+              associate (rxn => nuclides(p % event_nuclide) % &
+                   reactions(nuclides(p % event_nuclide) % index_fission(1)))
+
+                ! determine score based on bank site weight and keff. Note that
+                ! the units of the decay rate have been converted from inverse
+                ! shakes to inverse seconds (1 shake = 1.e-8 seconds)
+                score = score + keff * fission_bank(n_bank - p % n_bank + k) &
+                     % wgt * rxn % products(1 + g) % decay_rate * 1.e8
+              end associate
+
+              ! if the delayed group filter is present, tally to corresponding
+              ! delayed group bin if it exists
+              if (dg_filter > 0) then
+
+                ! declare the delayed group filter type
+                select type(filt => t % filters(dg_filter) % obj)
+                type is (DelayedGroupFilter)
+
+                  ! loop over delayed group bins until the corresponding bin is
+                  ! found
+                  do d_bin = 1, filt % n_bins
+                    d = filt % groups(d_bin)
+
+                    ! check whether the delayed group of the particle is equal to
+                    ! the delayed group of this bin
+                    if (d == g) then
+                      call score_fission_delayed_dg(t, d_bin, score, score_index)
+                    end if
+                  end do
+                end select
+
+                ! Reset the score to zero
+                score = ZERO
+              end if
+            end if
+          end do
+
+          ! If the delayed group filter is present, cycle because the
+          ! score_fission_delayed_dg(...) has already tallied the score
+          if (dg_filter > 0) then
+            cycle SCORE_LOOP
+          end if
         end if
-
 
       case (SCORE_KAPPA_FISSION)
         ! Determine kappa-fission cross section on the fly. The ENDF standard
@@ -2392,7 +2459,9 @@ contains
     integer :: i
     integer :: i_tally
     integer :: j                    ! loop indices
-    integer :: k                    ! loop indices
+    integer :: d1                   ! dimension index
+    integer :: d2                   ! dimension index
+    integer :: d3                   ! dimension index
     integer :: ijk0(3)              ! indices of starting coordinates
     integer :: ijk1(3)              ! indices of ending coordinates
     integer :: n_cross              ! number of surface crossings
@@ -2409,9 +2478,6 @@ contains
     real(8) :: filt_score           ! score applied by filters
     logical :: start_in_mesh        ! particle's starting xyz in mesh?
     logical :: end_in_mesh          ! particle's ending xyz in mesh?
-    logical :: x_same               ! same starting/ending x index (i)
-    logical :: y_same               ! same starting/ending y index (j)
-    logical :: z_same               ! same starting/ending z index (k)
     type(TallyObject), pointer :: t
     type(RegularMesh), pointer :: m
 
@@ -2467,466 +2533,115 @@ contains
         if (matching_bins(i_filter_energy) == NO_BIN_FOUND) cycle
       end if
 
-      ! =======================================================================
-      ! SPECIAL CASES WHERE TWO INDICES ARE THE SAME
-
-      x_same = (ijk0(1) == ijk1(1))
-      y_same = (ijk0(2) == ijk1(2))
-      z_same = (ijk0(3) == ijk1(3))
-
-      if (x_same .and. y_same) then
-        ! Only z crossings
-        if (uvw(3) > 0) then
-          do j = ijk0(3), ijk1(3) - 1
-            ijk0(3) = j
-
-            ! OUT_TOP
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_TOP
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
-
-            ! IN_BOTTOM
-            if (ijk0(1) >= 1 .and. ijk0(2) >= 1 .and. ijk0(3) >= 0 .and. &
-                 ijk0(1) <= m % dimension(1) .and. &
-                 ijk0(2) <= m % dimension(2) .and. &
-                 ijk0(3) <  m % dimension(3)) then
-              ijk0(3) = ijk0(3) + 1
-              matching_bins(i_filter_surf) = IN_BOTTOM
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(3) = ijk0(3) - 1
-            end if
-          end do
-        else
-          do j = ijk0(3), ijk1(3) + 1, -1
-            ijk0(3) = j
-
-            ! OUT_BOTTOM
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_BOTTOM
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
-
-            ! IN_TOP
-            if (ijk0(1) >= 1 .and. ijk0(2) >= 1 .and. ijk0(3) > 1 .and. &
-                 ijk0(1) <= m % dimension(1) .and. &
-                 ijk0(2) <= m % dimension(2) .and. &
-                 ijk0(3) <= m % dimension(3) + 1) then
-              ijk0(3) = ijk0(3) - 1
-              matching_bins(i_filter_surf) = IN_TOP
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(3) = ijk0(3) + 1
-            end if
-          end do
-        end if
-        cycle
-      elseif (x_same .and. z_same) then
-        ! Only y crossings
-        if (uvw(2) > 0) then
-          do j = ijk0(2), ijk1(2) - 1
-            ijk0(2) = j
-
-            ! OUT_FRONT
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_FRONT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
-
-            ! IN_BACK
-            if (ijk0(1) >= 1 .and. ijk0(2) >= 0 .and. ijk0(3) >= 1 .and. &
-                 ijk0(1) <= m % dimension(1) .and. &
-                 ijk0(2) <  m % dimension(2) .and. &
-                 ijk0(3) <= m % dimension(3)) then
-              ijk0(2) = ijk0(2) + 1
-              matching_bins(i_filter_surf) = IN_BACK
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(2) = ijk0(2) - 1
-            end if
-          end do
-        else
-          do j = ijk0(2), ijk1(2) + 1, -1
-            ijk0(2) = j
-
-            ! OUT_BACK
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_BACK
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
-
-            ! IN_FRONT
-            if (ijk0(1) >= 1 .and. ijk0(2) > 1 .and. ijk0(3) >= 1 .and. &
-                 ijk0(1) <= m % dimension(1) .and. &
-                 ijk0(2) <= m % dimension(2) + 1 .and. &
-                 ijk0(3) <= m % dimension(3)) then
-              ijk0(2) = ijk0(2) - 1
-              matching_bins(i_filter_surf) = IN_FRONT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(2) = ijk0(2) + 1
-            end if
-          end do
-        end if
-        cycle
-      elseif (y_same .and. z_same) then
-        ! Only x crossings
-        if (uvw(1) > 0) then
-          do j = ijk0(1), ijk1(1) - 1
-            ijk0(1) = j
-
-            ! OUT_RIGHT
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_RIGHT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
-
-            ! IN_LEFT
-            if (ijk0(1) >= 0 .and. ijk0(2) >= 1 .and. ijk0(3) >= 1 .and. &
-                 ijk0(1) <  m % dimension(1) .and. &
-                 ijk0(2) <= m % dimension(2) .and. &
-                 ijk0(3) <= m % dimension(3)) then
-              ijk0(1) = ijk0(1) + 1
-              matching_bins(i_filter_surf) = IN_LEFT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(1) = ijk0(1) - 1
-            end if
-          end do
-        else
-          do j = ijk0(1), ijk1(1) + 1, -1
-            ijk0(1) = j
-
-            ! OUT_LEFT
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_LEFT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
-
-            ! IN_RIGHT
-            if (ijk0(1) > 1 .and. ijk0(2) >= 1 .and. ijk0(3) >= 1 .and. &
-                 ijk0(1) <= m % dimension(1) + 1 .and. &
-                 ijk0(2) <= m % dimension(2) .and. &
-                 ijk0(3) <= m % dimension(3)) then
-              ijk0(1) = ijk0(1) - 1
-              matching_bins(i_filter_surf) = IN_RIGHT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(1) = ijk0(1) + 1
-            end if
-          end do
-        end if
-        cycle
-      end if
-
-      ! =======================================================================
-      ! GENERIC CASE
-
       ! Bounding coordinates
-      do j = 1, 3
-        if (uvw(j) > 0) then
-          xyz_cross(j) = m % lower_left(j) + ijk0(j) * m % width(j)
+      do d1 = 1, 3
+        if (uvw(d1) > 0) then
+          xyz_cross(d1) = m % lower_left(d1) + ijk0(d1) * m % width(d1)
         else
-          xyz_cross(j) = m % lower_left(j) + (ijk0(j) - 1) * m % width(j)
+          xyz_cross(d1) = m % lower_left(d1) + (ijk0(d1) - 1) * m % width(d1)
         end if
       end do
 
-      do k = 1, n_cross
+      do j = 1, n_cross
         ! Reset scoring bin index
         matching_bins(i_filter_surf) = 0
 
         ! Calculate distance to each bounding surface. We need to treat
         ! special case where the cosine of the angle is zero since this would
         ! result in a divide-by-zero.
-
-        do j = 1, 3
-          if (uvw(j) == 0) then
-            d(j) = INFINITY
+        do d1 = 1, 3
+          if (uvw(d1) == 0) then
+            d(d1) = INFINITY
           else
-            d(j) = (xyz_cross(j) - xyz0(j))/uvw(j)
+            d(d1) = (xyz_cross(d1) - xyz0(d1))/uvw(d1)
           end if
         end do
 
         ! Determine the closest bounding surface of the mesh cell by
-        ! calculating the minimum distance
-
+        ! calculating the minimum distance. Then use the minimum distance and
+        ! direction of the particle to determine which surface was crossed.
         distance = minval(d)
 
-        ! Now use the minimum distance and direction of the particle to
-        ! determine which surface was crossed
+        ! Loop over the dimensions
+        do d1 = 1, 3
 
-        if (distance == d(1)) then
-          if (uvw(1) > 0) then
+          ! Get the other dimensions
+          d2 = mod(d1, 3) + 1
+          d3 = mod(d1 + 1, 3) + 1
 
-            ! OUT_RIGHT
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_RIGHT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
+          ! Check whether distance is the shortest distance
+          if (distance == d(d1)) then
+
+            ! Check whether particle is moving in positive d1 direction
+            if (uvw(d1) > 0) then
+
+              ! Outward current on d1 max surface
+              if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
+                matching_bins(i_filter_surf) = d1 * 2
+                matching_bins(i_filter_mesh) = &
+                     mesh_indices_to_bin(m, ijk0)
+                filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
+                     * t % stride) + 1
 !$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
+                t % results(1, filter_index) % value = &
+                     t % results(1, filter_index) % value + p % wgt
+              end if
 
-            ! IN_LEFT
-            if (ijk0(1) >= 0 .and. ijk0(2) >= 1 .and. ijk0(3) >= 1 .and. &
-                 ijk0(1) <  m % dimension(1) .and. &
-                 ijk0(2) <= m % dimension(2) .and. &
-                 ijk0(3) <= m % dimension(3)) then
-              ijk0(1) = ijk0(1) + 1
-              matching_bins(i_filter_surf) = IN_LEFT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
+              ! Inward current on d1 min surface
+              if (ijk0(d1) >= 0 .and. ijk0(d1) < m % dimension(d1) .and. &
+                   ijk0(d2) >= 1 .and. ijk0(d2) <= m % dimension(d2) .and. &
+                   ijk0(d3) >= 1 .and. ijk0(d3) <= m % dimension(d3)) then
+                ijk0(d1) = ijk0(d1) + 1
+                matching_bins(i_filter_surf) = d1 * 2 + 5
+                matching_bins(i_filter_mesh) = &
+                     mesh_indices_to_bin(m, ijk0)
+                filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
+                     * t % stride) + 1
 !$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(1) = ijk0(1) - 1
-            end if
+                t % results(1, filter_index) % value = &
+                     t % results(1, filter_index) % value + p % wgt
+                ijk0(d1) = ijk0(d1) - 1
+              end if
 
-            ijk0(1) = ijk0(1) + 1
-            xyz_cross(1) = xyz_cross(1) + m % width(1)
-          else
+              ijk0(d1) = ijk0(d1) + 1
+              xyz_cross(d1) = xyz_cross(d1) + m % width(d1)
 
-            ! OUT_LEFT
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_LEFT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
+              ! The particle is moving in the negative d1 direction
+            else
+
+              ! Outward current on d1 min surface
+              if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
+                matching_bins(i_filter_surf) = d1 * 2 - 1
+                matching_bins(i_filter_mesh) = &
+                     mesh_indices_to_bin(m, ijk0)
+                filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
+                     * t % stride) + 1
 !$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
+                t % results(1, filter_index) % value = &
+                     t % results(1, filter_index) % value + p % wgt
+              end if
 
-            ! IN_RIGHT
-            if (ijk0(1) > 1 .and. ijk0(2) >= 1 .and. ijk0(3) >= 1 .and. &
-                 ijk0(1) <= m % dimension(1) + 1 .and. &
-                 ijk0(2) <= m % dimension(2) .and. &
-                 ijk0(3) <= m % dimension(3)) then
-              ijk0(1) = ijk0(1) - 1
-              matching_bins(i_filter_surf) = IN_RIGHT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
+              ! Inward current on d1 max surface
+              if (ijk0(d1) > 1 .and. ijk0(d1) <= m % dimension(d1) + 1 .and. &
+                   ijk0(d2) >= 1 .and. ijk0(d2) <= m % dimension(d2) .and. &
+                   ijk0(d3) >= 1 .and. ijk0(d3) <= m % dimension(d3))  then
+                ijk0(d1) = ijk0(d1) - 1
+                matching_bins(i_filter_surf) = d1 * 2 + 6
+                matching_bins(i_filter_mesh) = &
+                     mesh_indices_to_bin(m, ijk0)
+                filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
+                     * t % stride) + 1
 !$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(1) = ijk0(1) + 1
-            end if
+                t % results(1, filter_index) % value = &
+                     t % results(1, filter_index) % value + p % wgt
+                ijk0(d1) = ijk0(d1) + 1
+              end if
 
-            ijk0(1) = ijk0(1) - 1
-            xyz_cross(1) = xyz_cross(1) - m % width(1)
+              ijk0(d1) = ijk0(d1) - 1
+              xyz_cross(d1) = xyz_cross(d1) - m % width(d1)
+            end if
           end if
-        elseif (distance == d(2)) then
-          if (uvw(2) > 0) then
-
-            ! OUT_FRONT
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_FRONT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
-
-            ! IN_BACK
-            if (ijk0(1) >= 1 .and. ijk0(2) >= 0 .and. ijk0(3) >= 1 .and. &
-                 ijk0(1) <= m % dimension(1) .and. &
-                 ijk0(2) <  m % dimension(2) .and. &
-                 ijk0(3) <= m % dimension(3)) then
-              ijk0(2) = ijk0(2) + 1
-              matching_bins(i_filter_surf) = IN_BACK
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(2) = ijk0(2) - 1
-            end if
-
-            ijk0(2) = ijk0(2) + 1
-            xyz_cross(2) = xyz_cross(2) + m % width(2)
-          else
-
-            ! OUT_BACK
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_BACK
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
-
-            ! IN_FRONT
-            if (ijk0(1) >= 1 .and. ijk0(2) > 1 .and. ijk0(3) >= 1 .and. &
-                 ijk0(1) <= m % dimension(1) .and. &
-                 ijk0(2) <= m % dimension(2) + 1 .and. &
-                 ijk0(3) <= m % dimension(3)) then
-              ijk0(2) = ijk0(2) - 1
-              matching_bins(i_filter_surf) = IN_FRONT
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(2) = ijk0(2) + 1
-            end if
-
-            ijk0(2) = ijk0(2) - 1
-            xyz_cross(2) = xyz_cross(2) - m % width(2)
-          end if
-        else if (distance == d(3)) then
-          if (uvw(3) > 0) then
-
-            ! OUT_TOP
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_TOP
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
-
-            ! IN_BOTTOM
-            if (ijk0(1) >= 1 .and. ijk0(2) >= 1 .and. ijk0(3) >= 0 .and. &
-                 ijk0(1) <= m % dimension(1) .and. &
-                 ijk0(2) <= m % dimension(2) .and. &
-                 ijk0(3) <  m % dimension(3)) then
-              ijk0(3) = ijk0(3) + 1
-              matching_bins(i_filter_surf) = IN_BOTTOM
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(3) = ijk0(3) - 1
-            end if
-
-            ijk0(3) = ijk0(3) + 1
-            xyz_cross(3) = xyz_cross(3) + m % width(3)
-          else
-
-            ! OUT_BOTTOM
-            if (all(ijk0 >= 1) .and. all(ijk0 <= m % dimension)) then
-              matching_bins(i_filter_surf) = OUT_BOTTOM
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-            end if
-
-            ! IN_TOP
-            if (ijk0(1) >= 1 .and. ijk0(2) >= 1 .and. ijk0(3) > 1 .and. &
-                 ijk0(1) <= m % dimension(1) .and. &
-                 ijk0(2) <= m % dimension(2) .and. &
-                 ijk0(3) <= m % dimension(3) + 1) then
-              ijk0(3) = ijk0(3) - 1
-              matching_bins(i_filter_surf) = IN_TOP
-              matching_bins(i_filter_mesh) = &
-                   mesh_indices_to_bin(m, ijk0)
-              filter_index = sum((matching_bins(1:size(t % filters)) - 1) &
-                   * t % stride) + 1
-!$omp atomic
-              t % results(1, filter_index) % value = &
-                   t % results(1, filter_index) % value + p % wgt
-              ijk0(3) = ijk0(3) + 1
-            end if
-
-            ijk0(3) = ijk0(3) - 1
-            xyz_cross(3) = xyz_cross(3) - m % width(3)
-          end if
-        end if
+        end do
 
         ! Calculate new coordinates
         xyz0 = xyz0 + distance * uvw

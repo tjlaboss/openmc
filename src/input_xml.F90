@@ -3297,7 +3297,6 @@ contains
 
             ! Check if total material was specified
             if (trim(sarray(j)) == 'total') then
-
               t % nuclide_bins(j) = -1
               cycle
             end if
