@@ -1,0 +1,386 @@
+from collections import OrderedDict
+from numbers import Integral
+import warnings
+import copy
+import itertools
+
+import numpy as np
+import scipy.sparse as sps
+
+import openmc
+import openmc.checkvalue as cv
+import openmc.mgxs
+import openmc.kinetics
+from openmc.kinetics.clock import TIME_POINTS
+
+if sys.version_info[0] >= 3:
+    basestring = str
+
+
+class State(object):
+    """State to store all the variables that describe a specific state of the system.
+
+    Attributes
+    ----------
+    mesh : openmc.mesh.Mesh
+        Mesh which specifies the dimensions of coarse mesh.
+
+    one_groups : openmc.mgxs.groups.EnergyGroups
+        EnergyGroups which specifies the a one-energy-group structure.
+
+    energy_groups : openmc.mgxs.groups.EnergyGroups
+        EnergyGroups which specifies the energy groups structure.
+
+    fine_groups : openmc.mgxs.groups.EnergyGroups
+        EnergyGroups used to tally the transport cross section that will be
+        condensed to get the diffusion coefficients in the coarse group
+        structure.
+
+    flux : OrderedDict of np.ndarray
+        Numpy array used to store the flux.
+
+    precursor_conc : OrderedDict of np.ndarray
+        Numpy array used to store the precursor concentrations.
+
+    mgxs_lib : OrderedDict of OrderedDict of openmc.tallies
+        Dict of Dict of tallies. The first Dict is indexed by time point
+        and the second Dict is indexed by rxn type.
+
+    k_crit : float
+        The initial eigenvalue.
+
+    num_delayed_groups : int
+        The number of delayed neutron precursor groups.
+
+    """
+
+    def __init__(self):
+
+        # Initialize Solver class attributes
+        self._mesh = None
+        self._one_group = None
+        self._energy_groups = None
+        self._fine_groups = None
+        self._flux = None
+        self._precursor_conc = None
+        self._mgxs_lib = None
+        self._k_crit = None
+        self._num_delayed_groups = 6
+
+    @property
+    def mesh(self):
+        return self._mesh
+
+    @property
+    def one_group(self):
+        return self._one_group
+
+    @property
+    def energy_groups(self):
+        return self._energy_groups
+
+    @property
+    def fine_groups(self):
+        return self._fine_groups
+
+    @property
+    def flux(self):
+        return self._flux
+
+    @property
+    def precursor_conc(self):
+        return self._precursor_conc
+
+    @property
+    def mgxs_lib(self):
+        return self._mgxs_lib
+
+    @property
+    def k_crit(self):
+        return self._k_crit
+
+    @property
+    def num_delayed_groups(self):
+        return self._num_delayed_groups
+
+    @mesh.setter
+    def mesh(self, mesh):
+        self._mesh = mesh
+
+    @one_group.setter
+    def one_group(self, one_group):
+        self._one_group = one_group
+
+    @energy_groups.setter
+    def energy_groups(self, energy_groups):
+        self._energy_groups = energy_groups
+
+    @fine_groups.setter
+    def fine_groups(self, fine_groups):
+        self._fine_groups = fine_groups
+
+    @flux.setter
+    def flux(self, flux):
+        self._flux = flux
+
+    @precursor_conc.setter
+    def precursor_conc(self, precursor_conc):
+        self._precursor_conc = precursor_conc
+
+    @mgxs_lib.setter
+    def mgxs_lib(self, mgxs_lib):
+        self._mgxs_lib = mgxs_lib
+
+    @k_crit.setter
+    def k_crit(self, k_crit):
+        self._k_crit = k_crit
+
+    @num_delayed_groups.setter
+    def num_delayed_groups(self, num_delayed_groups):
+        self._num_delayed_groups = num_delayed_groups
+
+    def get_destruction_matrix(self):
+
+        # Get the volume of a mesh cell
+        dxyz = np.prod(self.mesh.width)
+
+        # Extract the necessary cross sections
+        inscatter = self.mgxs_lib['nu-scatter matrix'].get_mean_matrix()
+        absorb = self.mgxs_lib['absorption'].get_mean_matrix()
+        stream, stream_corr = self.compute_surface_dif_coefs()
+        outscatter = sps.diags(np.asarray(inscatter.sum(axis=0)).flatten(), 0)
+
+        # Return the destruction matrix
+        return dxyz * (absorb + outscatter - inscatter) + stream + stream_corr
+
+    def get_production_matrix(self):
+
+        # Get the volume of a mesh cell
+        dxyz = np.prod(self.mesh.width)
+
+        # Extract the necessary cross sections
+        chi_p = self.mgxs_lib['chi-prompt'].get_mean_matrix()
+        chi_d = self.mgxs_lib['chi-delayed'].get_mean_matrix()
+        nu_fis_p = self.mgxs_lib['prompt-nu-fission'].get_mean_matrix()
+        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_mean_matrix()
+
+        if isinstance(nu_fis_d, list):
+            nu_fis_d = sum(nu_fis_d)
+
+        # Return the production matrix
+        return dxyz * (chi_p * nu_fis_p + chi_d * nu_fis_d)
+
+    def get_kappa_fission_matrix(self):
+
+        # Get the volume of a mesh cell
+        dxyz = np.prod(self.mesh.width)
+
+        # Extract the necessary cross sections
+        kappa_fission = mgxs_lib['kappa-fission'].get_mean_matrix()
+
+        # Return the destruction matrix
+        return dxyz * kappa_fission
+
+    def get_powers(self):
+
+        return self.get_kappa_fission_matrix() * self.flux
+
+    def initialize_mgxs(self):
+        """Initialize all the tallies for the problem.
+
+        """
+
+        # Instantiate a list of the delayed groups
+        delayed_groups = list(range(1,self.num_delayed_groups + 1))
+
+        # Create elements and ordered dicts and initialize to None
+        self._A                = None
+        self._M                = None
+        self._AM               = None
+        self._kappa_fission    = None
+        self._flux             = None
+        self._source           = None
+        self._power            = None
+        self._precursor_conc   = None
+        self._mgxs_lib         = OrderedDict()
+
+        mgxs_types = ['transport', 'diffusion-coefficient', 'absorption',
+                      'kappa-fission', 'nu-scatter matrix', 'chi-prompt',
+                      'chi-delayed', 'inverse-velocity', 'prompt-nu-fission',
+                      'current', 'delayed-nu-fission', 'chi-delayed',
+                      'decay-rate']
+
+        # Populate the MGXS in the MGXS lib
+        for mgxs_type in mgxs_types:
+            if mgxs_type == 'diffusion-coefficient':
+                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
+                    mgxs_type, domain=self.mesh, domain_type='mesh',
+                    energy_groups=self.fine_groups, by_nuclide=False,
+                    name= t + ' - ' + mgxs_type)
+            elif mgxs_type == 'nu-scatter matrix':
+                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
+                    mgxs_type, domain=self.mesh, domain_type='mesh',
+                    energy_groups=self.energy_groups, by_nuclide=False,
+                    name= t + ' - ' + mgxs_type)
+                self._mgxs_lib[t][mgxs_type].correction = None
+            elif mgxs_type == 'chi-delayed':
+                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
+                    mgxs_type, domain=self.mesh, domain_type='mesh',
+                    energy_groups=self.energy_groups,
+                    by_nuclide=False,
+                    name= t + ' - ' + mgxs_type)
+            elif mgxs_type == 'decay-rate':
+                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
+                    mgxs_type, domain=self.mesh, domain_type='mesh',
+                    energy_groups=self.one_group,
+                    delayed_groups=delayed_groups, by_nuclide=False,
+                    name= t + ' - ' + mgxs_type)
+            elif mgxs_type in openmc.mgxs.MGXS_TYPES:
+                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
+                    mgxs_type, domain=self.mesh, domain_type='mesh',
+                    energy_groups=self.energy_groups, by_nuclide=False,
+                    name= t + ' - ' + mgxs_type)
+            elif mgxs_type in openmc.mgxs.MDGXS_TYPES:
+                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
+                    mgxs_type, domain=self.mesh, domain_type='mesh',
+                    energy_groups=self.energy_groups,
+                    delayed_groups=delayed_groups, by_nuclide=False,
+                    name= t + ' - ' + mgxs_type)
+
+    def compute_surface_dif_coefs(self):
+
+        # Get the dimensions of the mesh
+        nx, ny, nz = self.mesh.dimension
+        dx, dy, dz = self.mesh.width
+        ng = self.energy_groups.num_groups
+
+        # Compute the net current
+        partial_current = self.mgxs_lib['current'].get_mean_array()
+        net_current = partial_current[:, range(6)] - partial_current[:, range(6,12)]
+        net_current[:, 0:6:2] = -net_current[:, 0:6:2]
+        net_current.shape = (nz, ny, nx, ng, 6)
+        net_current[..., 0:2] /= (dy * dz)
+        net_current[..., 2:4] /= (dx * dz)
+        net_current[..., 4:6] /= (dx * dy)
+
+        # Get the flux
+        flux = self.flux
+        flux.shape = (nz, ny, nx, ng)
+        flux_array = np.zeros((nz, ny, nx, ng, 6))
+
+        # Create a 2D array of the diffusion coefficients
+        flux_array[:  , :  , 1: , :, 0] = flux[:  , :  , :-1, :]
+        flux_array[:  , :  , :-1, :, 1] = flux[:  , :  , 1: , :]
+        flux_array[:  , 1: , :  , :, 2] = flux[:  , :-1, :  , :]
+        flux_array[:  , :-1, :  , :, 3] = flux[:  , 1: , :  , :]
+        flux_array[1: , :  , :  , :, 4] = flux[:-1, :  , :  , :]
+        flux_array[:-1, :  , :  , :, 5] = flux[1: , :  , :  , :]
+
+        # Get the diffusion coefficients tally
+        dc_mgxs = self.mgxs_lib['diffusion-coefficient']
+        dc_mgxs = dc_mgxs.get_condensed_xs(self.energy_groups)
+        dc = dc_mgxs.get_xs()
+        dc.shape = (nz, ny, nx, ng)
+        dc_array = np.zeros((nz, ny, nx, ng, 6))
+
+        # Create a 2D array of the diffusion coefficients
+        dc_array[:  , :  , 1: , :, 0] = dc[:  , :  , :-1, :]
+        dc_array[:  , :  , :-1, :, 1] = dc[:  , :  , 1: , :]
+        dc_array[:  , 1: , :  , :, 2] = dc[:  , :-1, :  , :]
+        dc_array[:  , :-1, :  , :, 3] = dc[:  , 1: , :  , :]
+        dc_array[1: , :  , :  , :, 4] = dc[:-1, :  , :  , :]
+        dc_array[:-1, :  , :  , :, 5] = dc[1: , :  , :  , :]
+
+        # Compute the surface diffusion coefficients for interior surfaces
+        sdc = np.zeros((nz, ny, nx, ng, 6))
+        sdc[..., 0] = 2 * dc_array[..., 0] * dc / (dc_array[..., 0] * dx + dc * dx)
+        sdc[..., 1] = 2 * dc_array[..., 1] * dc / (dc_array[..., 1] * dx + dc * dx)
+        sdc[..., 2] = 2 * dc_array[..., 2] * dc / (dc_array[..., 2] * dy + dc * dy)
+        sdc[..., 3] = 2 * dc_array[..., 3] * dc / (dc_array[..., 3] * dy + dc * dy)
+        sdc[..., 4] = 2 * dc_array[..., 4] * dc / (dc_array[..., 4] * dz + dc * dz)
+        sdc[..., 5] = 2 * dc_array[..., 5] * dc / (dc_array[..., 5] * dz + dc * dz)
+
+        # net_current, flux_array, surf_dif_coef
+        sdc_corr = np.zeros((nz, ny, nx, ng, 6))
+        sdc_corr[..., 0] = (-sdc[..., 0] * (-flux_array[..., 0] + flux) - net_current[..., 0]) / (flux_array[..., 0] + flux)
+        sdc_corr[..., 1] = (-sdc[..., 1] * ( flux_array[..., 1] - flux) - net_current[..., 1]) / (flux_array[..., 1] + flux)
+        sdc_corr[..., 2] = (-sdc[..., 2] * (-flux_array[..., 2] + flux) - net_current[..., 2]) / (flux_array[..., 2] + flux)
+        sdc_corr[..., 3] = (-sdc[..., 3] * ( flux_array[..., 3] - flux) - net_current[..., 3]) / (flux_array[..., 3] + flux)
+        sdc_corr[..., 4] = (-sdc[..., 4] * (-flux_array[..., 4] + flux) - net_current[..., 4]) / (flux_array[..., 4] + flux)
+        sdc_corr[..., 5] = (-sdc[..., 5] * ( flux_array[..., 5] - flux) - net_current[..., 5]) / (flux_array[..., 5] + flux)
+
+        # net_current, flux_array, surf_dif_coef
+        sdc_corr_od = np.zeros((nz, ny, nx, ng, 6))
+        sdc_corr_od[:  ,:  ,1: ,:,0] = sdc_corr[:  ,:  ,1: ,:,0]
+        sdc_corr_od[:  ,:  ,:-1,:,1] = sdc_corr[:  ,:  ,:-1,:,1]
+        sdc_corr_od[:  ,1: ,:  ,:,2] = sdc_corr[:  ,1: ,:  ,:,2]
+        sdc_corr_od[:  ,:-1,:  ,:,3] = sdc_corr[:  ,:-1,:  ,:,3]
+        sdc_corr_od[1: ,:  ,:  ,:,4] = sdc_corr[1: ,:  ,:  ,:,4]
+        sdc_corr_od[:-1,:  ,:  ,:,5] = sdc_corr[:-1,:  ,:  ,:,5]
+
+        # Check for diagonal dominance
+        dd_mask = (np.abs(sdc_corr_od) > sdc)
+        nd_mask = (dd_mask == False)
+        pos = (sdc_corr_od > 0.)
+        neg = (sdc_corr_od < 0.)
+
+        # Correct sdc for diagonal dominance
+        sdc[:  ,:  ,1: ,:,0] = nd_mask[:  ,:  ,1: ,:,0] * sdc[:  ,:  ,1: ,:,0] + dd_mask[:  ,:  ,1: ,:,0] * (neg[:  ,:  ,1: ,:,0] * np.abs(net_current[:  ,:  ,1: ,:,0] / (2 * flux_array[:  ,:  ,1: ,:,0])) + pos[:  ,:  ,1: ,:,0] * np.abs(net_current[:  ,:  ,1: ,:,0] / (2 * flux[:  ,:  ,1: ,:])))
+        sdc[:  ,:  ,:-1,:,1] = nd_mask[:  ,:  ,:-1,:,1] * sdc[:  ,:  ,:-1,:,1] + dd_mask[:  ,:  ,:-1,:,1] * (pos[:  ,:  ,:-1,:,1] * np.abs(net_current[:  ,:  ,:-1,:,1] / (2 * flux_array[:  ,:  ,:-1,:,1])) + neg[:  ,:  ,:-1,:,1] * np.abs(net_current[:  ,:  ,:-1,:,1] / (2 * flux[:  ,:  ,:-1,:])))
+        sdc[:  ,1: ,:  ,:,2] = nd_mask[:  ,1: ,:  ,:,2] * sdc[:  ,1: ,:  ,:,2] + dd_mask[:  ,1: ,:  ,:,2] * (neg[:  ,1: ,:  ,:,2] * np.abs(net_current[:  ,1: ,:  ,:,2] / (2 * flux_array[:  ,1: ,:  ,:,2])) + pos[:  ,1: ,:  ,:,2] * np.abs(net_current[:  ,1: ,:  ,:,2] / (2 * flux[:  ,1: ,:  ,:])))
+        sdc[:  ,:-1,:  ,:,3] = nd_mask[:  ,:-1,:  ,:,3] * sdc[:  ,:-1,:  ,:,3] + dd_mask[:  ,:-1,:  ,:,3] * (pos[:  ,:-1,:  ,:,3] * np.abs(net_current[:  ,:-1,:  ,:,3] / (2 * flux_array[:  ,:-1,:  ,:,3])) + neg[:  ,:-1,:  ,:,3] * np.abs(net_current[:  ,:-1,:  ,:,3] / (2 * flux[:  ,:-1,:  ,:])))
+        sdc[1: ,:  ,:  ,:,4] = nd_mask[1: ,:  ,:  ,:,4] * sdc[1: ,:  ,:  ,:,4] + dd_mask[1: ,:  ,:  ,:,4] * (neg[1: ,:  ,:  ,:,4] * np.abs(net_current[1: ,:  ,:  ,:,4] / (2 * flux_array[1: ,:  ,:  ,:,4])) + pos[1: ,:  ,:  ,:,4] * np.abs(net_current[1: ,:  ,:  ,:,4] / (2 * flux[1: ,:  ,:  ,:])))
+        sdc[:-1,:  ,:  ,:,5] = nd_mask[:-1,:  ,:  ,:,5] * sdc[:-1,:  ,:  ,:,5] + dd_mask[:-1,:  ,:  ,:,5] * (pos[:-1,:  ,:  ,:,5] * np.abs(net_current[:-1,:  ,:  ,:,5] / (2 * flux_array[:-1,:  ,:  ,:,5])) + neg[:-1,:  ,:  ,:,5] * np.abs(net_current[:-1,:  ,:  ,:,5] / (2 * flux[:-1,:  ,:  ,:])))
+
+        # Correct sdc correct for diagonal dominance
+        sdc_corr_od = nd_mask * sdc_corr_od + dd_mask * (pos * sdc - neg * sdc)
+
+        # Multiply by the surface area
+        sdc[..., 0:2] *= dy * dz
+        sdc[..., 2:4] *= dx * dz
+        sdc[..., 4:6] *= dx * dy
+        sdc_corr[..., 0:2] *= dy * dz
+        sdc_corr[..., 2:4] *= dx * dz
+        sdc_corr[..., 4:6] *= dx * dy
+
+        # Reshape the diffusion coefficient array
+        flux.shape = (nx*ny*nz*ng, 6)
+        sdc.shape = (nx*ny*nz*ng, 6)
+        sdc_corr.shape = (nx*ny*nz*ng, 6)
+        sdc_corr_od.shape = (nx*ny*nz*ng, 6)
+
+        # Set the diagonal
+        sdc_diag = sdc.sum(axis=1)
+        sdc_corr_diag = sdc_corr[:, 0:6:2].sum(axis=1) - sdc_corr[:, 1:6:2].sum(axis=1)
+        sdc_data  = [sdc_diag]
+        sdc_corr_data  = [sdc_corr_diag]
+        diags = [0]
+
+        # Set the off-diagonals
+        if nx > 1:
+            sdc_data.append(-sdc[ng:, 0])
+            sdc_data.append(-sdc[:-ng, 1])
+            sdc_corr_data.append( sdc_corr_od[ng:, 0])
+            sdc_corr_data.append(-sdc_corr_od[:-ng, 1])
+            diags.append(-ng)
+            diags.append(ng)
+        if ny > 1:
+            sdc_data.append(-sdc[nx*ng:, 2])
+            sdc_data.append(-sdc[:-nx*ng   , 3])
+            sdc_corr_data.append( sdc_corr_od[nx*ng:, 2])
+            sdc_corr_data.append(-sdc_corr_od[:-nx*ng   , 3])
+            diags.append(-nx*ng)
+            diags.append(nx*ng)
+        if nz > 1:
+            sdc_data.append(-sdc[nx*ny*ng:, 4])
+            sdc_data.append(-sdc[:-nx*ny*ng, 5])
+            sdc_corr_data.append( sdc_corr_od[nx*ny*ng:, 4])
+            sdc_corr_data.append(-sdc_corr_od[:-nx*ny*ng, 5])
+            diags.append(-nx*ny*ng)
+            diags.append(nx*ny*ng)
+
+        # Form a matrix of the surface diffusion coefficients corrections
+        sdc_matrix = sps.diags(sdc_data, diags)
+        sdc_corr_matrix = sps.diags(sdc_corr_data, diags)
+
+        return sdc_matrix, sdc_corr_matrix
