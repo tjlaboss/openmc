@@ -1532,7 +1532,7 @@ class MGXS(object):
 
         # Override energy groups bounds with indices
         all_groups = np.arange(self.num_groups, 0, -1, dtype=np.int)
-        all_groups = np.repeat(all_groups, len(query_nuclides)) 
+        all_groups = np.repeat(all_groups, len(query_nuclides))
         if 'energy low [MeV]' in df and 'energyout low [MeV]' in df:
             df.rename(columns={'energy low [MeV]': 'group in'},
                       inplace=True)
@@ -1727,7 +1727,6 @@ class MatrixMGXS(MGXS):
         xs_matrix = sps.block_diag(xs_array)
 
         return xs_matrix
-
 
     def get_xs(self, in_groups='all', out_groups='all',
                subdomains='all', nuclides='all',

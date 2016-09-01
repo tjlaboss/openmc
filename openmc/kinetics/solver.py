@@ -6,7 +6,6 @@ import warnings
 import os
 import sys
 import copy
-import abc
 import itertools
 
 import numpy as np
@@ -201,23 +200,46 @@ class Solver(object):
         for mgxs in self.states[time].mgxs_lib.values():
             mgxs.load_from_statepoint(statepoint_file)
 
+    def initialize(self):
+
+        self.states = OrderedDict()
+
+        for time in TIME_POINTS:
+            state = openmc.kinetics.State()
+            state.mesh = self.mesh
+            state.energy_groups = self.energy_groups
+            state.fine_groups = self.fine_groups
+            state.one_group = self.one_group
+            state.num_delayed_groups = self.num_delayed_groups
+            state.time = time
+            state.initialize_mgxs()
+            self.states[time] = state
+
     def compute_initial_flux(self):
 
+        # Create states and run initial OpenMC on initial state
+        self.run_openmc('START')
+
+        # Extract the destruction and production matrices
         state = self.states['START']
+        mgxs_lib = state.mgxs_lib
+        flux = mgxs_lib['absorption'].tallies['flux'].get_values().flatten()
+        state.flux = flux
         A = state.get_destruction_matrix()
         M = state.get_production_matrix()
 
-        # Get an initial estimate of the flux
-        mgxs_lib = state.mgxs_lib
-        flux = mgxs_lib['absorption'].tallies['flux'].get_values().flatten()
-
         # Compute the initial eigenvalue
-        self.k_crit = self.compute_eigenvalue(A, M, flux)
+        flux, self.k_crit = self.compute_eigenvalue(A, M, flux)
 
         # Normalize the initial flux
         state.flux = flux
         initial_power = state.get_powers().sum()
-        state.flux = state.flux / (self.initial_power / powers.sum())
+        norm_factor = self.initial_power / initial_power
+        state.flux *= norm_factor
+        state.k_crit = self.k_crit
+
+        # Compute the initial precursor concentration
+        state.compute_initial_precursor_concentration()
 
     def compute_eigenvalue(self, A, M, flux):
 
@@ -253,10 +275,11 @@ class Solver(object):
             print('linear solver iter {0} resid {1:1.5e} k-eff {2:1.6f}'\
                   .format(i, residual, k_eff))
 
-            if residual < 1.e-6 and i > 5:
+            if residual < 1.e-10 and i > 100:
                 break
 
-        return k_eff
+        return flux, k_eff
+
 
     def generate_tallies_file(self, time):
 

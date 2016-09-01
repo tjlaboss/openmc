@@ -3,6 +3,7 @@ from numbers import Integral
 import warnings
 import copy
 import itertools
+import sys
 
 import numpy as np
 import scipy.sparse as sps
@@ -64,8 +65,13 @@ class State(object):
         self._flux = None
         self._precursor_conc = None
         self._mgxs_lib = None
-        self._k_crit = None
+        self._k_crit = 1.0
         self._num_delayed_groups = 6
+        self._time = None
+
+    @property
+    def time(self):
+        return self._time
 
     @property
     def mesh(self):
@@ -102,6 +108,10 @@ class State(object):
     @property
     def num_delayed_groups(self):
         return self._num_delayed_groups
+
+    @time.setter
+    def time(self, time):
+        self._time = time
 
     @mesh.setter
     def mesh(self, mesh):
@@ -149,9 +159,14 @@ class State(object):
         absorb = self.mgxs_lib['absorption'].get_mean_matrix()
         stream, stream_corr = self.compute_surface_dif_coefs()
         outscatter = sps.diags(np.asarray(inscatter.sum(axis=0)).flatten(), 0)
+        loss_matrix = dxyz * (absorb + outscatter - inscatter) \
+                      + stream + stream_corr
+
+        print('loss matrix source')
+        print(loss_matrix * self.flux)
 
         # Return the destruction matrix
-        return dxyz * (absorb + outscatter - inscatter) + stream + stream_corr
+        return loss_matrix
 
     def get_production_matrix(self):
 
@@ -162,10 +177,13 @@ class State(object):
         chi_p = self.mgxs_lib['chi-prompt'].get_mean_matrix()
         chi_d = self.mgxs_lib['chi-delayed'].get_mean_matrix()
         nu_fis_p = self.mgxs_lib['prompt-nu-fission'].get_mean_matrix()
-        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_mean_matrix()
+        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_mean_matrix(True)
 
-        if isinstance(nu_fis_d, list):
-            nu_fis_d = sum(nu_fis_d)
+        print('prod matrix delayed source')
+        print(dxyz * chi_d * nu_fis_d * self.flux / self.k_crit)
+
+        print('prod matrix prompt source')
+        print(dxyz * chi_p * nu_fis_p * self.flux / self.k_crit)
 
         # Return the production matrix
         return dxyz * (chi_p * nu_fis_p + chi_d * nu_fis_d)
@@ -176,7 +194,7 @@ class State(object):
         dxyz = np.prod(self.mesh.width)
 
         # Extract the necessary cross sections
-        kappa_fission = mgxs_lib['kappa-fission'].get_mean_matrix()
+        kappa_fission = self.mgxs_lib['kappa-fission'].get_mean_matrix()
 
         # Return the destruction matrix
         return dxyz * kappa_fission
@@ -184,6 +202,139 @@ class State(object):
     def get_powers(self):
 
         return self.get_kappa_fission_matrix() * self.flux
+
+    def get_source(self):
+
+        # Get the dimensions of the mesh
+        nx, ny, nz = self.mesh.dimension
+        dx, dy, dz = self.mesh.width
+        dxyz = dx * dy * dz
+        ng = self.energy_groups.num_groups
+        nd = self.num_delayed_groups
+
+        # Extract the necessary cross sections
+        chi_d = self.mgxs_lib['chi-delayed'].get_mean_matrix(True)
+        decay_rate = self.mgxs_lib['decay-rate'].get_mean_array()
+        inv_velocity = self.mgxs_lib['inverse-velocity'].get_mean_matrix()
+        #dt = self.clock.dt_inner
+        dt = 1.e-10
+
+        # Compute the delayed source
+        delayed_source = decay_rate / (1.0 + dt * decay_rate)
+        delayed_source = delayed_source * self.precursor_conc
+
+        # Multiply the delayed source by the delayed spectrum
+        if self.mgxs_lib['chi-delayed'].delayed_groups is None:
+            delayed_source.shape = (nz, ny, nx, nd)
+            delayed_source = delayed_source.sum(axis=3)
+            delayed_source = delayed_source.flatten()
+            delayed_source = np.repeat(delayed_source, ng)
+            delayed_source = chi_d * delayed_source
+        else:
+            delayed_source = np.repeat(delayed_source, ng)
+            delayed_source = chi_d * delayed_source
+            delayed_source.shape = (nz, ny, nx, nd, ng)
+            delayed_source = delayed_source.sum(axis=3)
+            delayed_source = delayed_source.flatten()
+
+        # Compute the time absorption source
+        time_source = inv_velocity * self.flux / dt
+
+        print('delayed source')
+        print(dxyz * delayed_source)
+
+        print('time source')
+        print(dxyz * time_source)
+
+        # Combine to get the total source
+        return dxyz * (time_source + delayed_source)
+
+    def get_transient_matrix(self):
+
+        # Get the dimensions of the mesh
+        nx, ny, nz = self.mesh.dimension
+        dx, dy, dz = self.mesh.width
+        ng = self.energy_groups.num_groups
+        nd = self.num_delayed_groups
+        dxyz = dx * dy * dz
+
+        # Extract the necessary cross sections
+        chi_p = self.mgxs_lib['chi-prompt'].get_mean_matrix()
+        chi_d = self.mgxs_lib['chi-delayed'].get_mean_matrix()
+        nu_fis_p = self.mgxs_lib['prompt-nu-fission'].get_mean_matrix()
+        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_mean_array()
+        decay_rate = self.mgxs_lib['decay-rate'].get_mean_array()
+        inv_velocity = self.mgxs_lib['inverse-velocity'].get_mean_matrix()
+        inscatter = self.mgxs_lib['nu-scatter matrix'].get_mean_matrix()
+        absorb = self.mgxs_lib['absorption'].get_mean_matrix()
+        stream, stream_corr = self.compute_surface_dif_coefs()
+        outscatter = sps.diags(np.asarray(inscatter.sum(axis=0)).flatten(), 0)
+        #dt = self.clock.dt_inner
+        dt = 1.e-10
+
+        # Get the destruction matrix
+        dest_matrix = dxyz * (absorb + outscatter - inscatter) \
+                      + stream + stream_corr
+
+        # Get the prompt production matrix
+        prod_matrix_p = chi_p * nu_fis_p / self.k_crit
+
+        # Compute the delayed production matrix
+        prod_array_d = dt * decay_rate / (1.0 + dt * decay_rate)
+        prod_array_d = np.repeat(prod_array_d, ng)
+        prod_array_d = prod_array_d * nu_fis_d / self.k_crit
+
+        if self.mgxs_lib['chi-delayed'].delayed_groups is None:
+            prod_array_d.shape = (nz, ny, nx, nd, ng)
+            prod_array_d = prod_array_d.sum(axis=3)
+            prod_array_d = prod_array_d.flatten()
+            prod_matrix_d = sps.diags(prod_array_d)
+        else:
+            print('This option is not currently supported')
+
+        prod_matrix_d = chi_d * prod_matrix_d
+        prod_matrix = dxyz * (prod_matrix_p + prod_matrix_d)
+
+        # Compute the time absorption source
+        time_source = dxyz * inv_velocity / dt
+
+        print('transient delayed production')
+        print(dxyz * prod_matrix_d * self.flux)
+
+        print('transient prompt production')
+        print(dxyz * prod_matrix_p * self.flux)
+
+        print('transient time source')
+        print(time_source * self.flux)
+
+        print('transient dest source')
+        print(dest_matrix * self.flux)
+
+        # Combine to get the total source
+        transient_matrix = time_source + dest_matrix - prod_matrix
+        return transient_matrix
+
+    def compute_initial_precursor_concentration(self):
+
+        # Get the dimensions of the mesh
+        nx, ny, nz = self.mesh.dimension
+        dx, dy, dz = self.mesh.width
+        ng = self.energy_groups.num_groups
+        nd = self.num_delayed_groups
+
+        # Extract the necessary cross sections
+        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_mean_matrix()
+        decay_rate = self.mgxs_lib['decay-rate'].get_mean_array()
+
+        # Get the flux and repeat to cover all delayed groups
+        flux = copy.deepcopy(self.flux)
+        flux = np.tile(flux, nd)
+
+        del_fis_rate = nu_fis_d * flux
+        del_fis_rate.shape = (nz, ny, nx, nd, ng)
+        del_fis_rate = del_fis_rate.sum(axis=4)
+        del_fis_rate = del_fis_rate.flatten()
+        self.precursor_conc = del_fis_rate / decay_rate / self.k_crit
 
     def initialize_mgxs(self):
         """Initialize all the tallies for the problem.
@@ -194,12 +345,7 @@ class State(object):
         delayed_groups = list(range(1,self.num_delayed_groups + 1))
 
         # Create elements and ordered dicts and initialize to None
-        self._A                = None
-        self._M                = None
-        self._AM               = None
-        self._kappa_fission    = None
         self._flux             = None
-        self._source           = None
         self._power            = None
         self._precursor_conc   = None
         self._mgxs_lib         = OrderedDict()
@@ -213,39 +359,39 @@ class State(object):
         # Populate the MGXS in the MGXS lib
         for mgxs_type in mgxs_types:
             if mgxs_type == 'diffusion-coefficient':
-                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
+                self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.fine_groups, by_nuclide=False,
-                    name= t + ' - ' + mgxs_type)
+                    name= self.time + ' - ' + mgxs_type)
             elif mgxs_type == 'nu-scatter matrix':
-                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
+                self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.energy_groups, by_nuclide=False,
-                    name= t + ' - ' + mgxs_type)
-                self._mgxs_lib[t][mgxs_type].correction = None
+                    name= self.time + ' - ' + mgxs_type)
+                self._mgxs_lib[mgxs_type].correction = None
             elif mgxs_type == 'chi-delayed':
-                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
+                self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.energy_groups,
                     by_nuclide=False,
-                    name= t + ' - ' + mgxs_type)
+                    name= self.time + ' - ' + mgxs_type)
             elif mgxs_type == 'decay-rate':
-                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
+                self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.one_group,
                     delayed_groups=delayed_groups, by_nuclide=False,
-                    name= t + ' - ' + mgxs_type)
+                    name= self.time + ' - ' + mgxs_type)
             elif mgxs_type in openmc.mgxs.MGXS_TYPES:
-                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
+                self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.energy_groups, by_nuclide=False,
-                    name= t + ' - ' + mgxs_type)
+                    name= self.time + ' - ' + mgxs_type)
             elif mgxs_type in openmc.mgxs.MDGXS_TYPES:
-                self._mgxs_lib[t][mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
+                self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.energy_groups,
                     delayed_groups=delayed_groups, by_nuclide=False,
-                    name= t + ' - ' + mgxs_type)
+                    name= self.time + ' - ' + mgxs_type)
 
     def compute_surface_dif_coefs(self):
 
@@ -264,7 +410,7 @@ class State(object):
         net_current[..., 4:6] /= (dx * dy)
 
         # Get the flux
-        flux = self.flux
+        flux = self.mgxs_lib['absorption'].tallies['flux'].get_values().flatten()
         flux.shape = (nz, ny, nx, ng)
         flux_array = np.zeros((nz, ny, nx, ng, 6))
 
@@ -344,7 +490,7 @@ class State(object):
         sdc_corr[..., 4:6] *= dx * dy
 
         # Reshape the diffusion coefficient array
-        flux.shape = (nx*ny*nz*ng, 6)
+        flux.shape = (nx*ny*nz*ng)
         sdc.shape = (nx*ny*nz*ng, 6)
         sdc_corr.shape = (nx*ny*nz*ng, 6)
         sdc_corr_od.shape = (nx*ny*nz*ng, 6)

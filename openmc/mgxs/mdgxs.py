@@ -190,21 +190,25 @@ class MDGXS(MGXS):
 
             self._delayed_groups = delayed_groups
 
-    def get_mean_matrix(self):
+    def get_mean_matrix(self, sum_delayed_groups=False):
 
-        # Get the values as an array
+        # Return the mean array as a diagonal matrix
         xs_array = self.get_xs(nuclides='sum')
-        xs_array.shape = (self.num_subdomains, self.num_delayed_groups, self.num_groups)
 
-        # Convert the array to a matrix
-        if self.delayed_groups != None:
-            xs_matrix = []
-            for g in range(self.num_delayed_groups):
-                xs_matrix.append(sps.diags(xs_array[:,(g,),:].flatten()))
-        else:
-            xs_matrix = sps.diags(xs_array.flatten())
+        # Sum over delayed groups, if requested
+        if sum_delayed_groups:
+            xs_array.shape = (self.num_subdomains, self.num_delayed_groups,
+                              self.num_groups)
+            xs_array = xs_array.sum(axis=1)
 
-        return xs_matrix
+        # Return a diagonal matrix
+        return sps.diags(xs_array.flatten())
+
+    def get_mean_array(self):
+
+        # Return the mean array as a diagonal matrix
+        xs_array = self.get_xs(nuclides='sum')
+        return xs_array.flatten()
 
     @property
     def filters(self):
@@ -1033,24 +1037,23 @@ class ChiDelayed(MDGXS):
 
         return self._xs_tally
 
-    def get_mean_matrix(self):
+    def get_mean_matrix(self, repeat_zeros=False):
+
+        # Get the dimensions
+        ns = self.num_subdomains
+        ng = self.num_groups
+        nd = self.num_delayed_groups
 
         # Get the values as an array
-        xs_array = self.get_xs(nuclides='sum')
+        xs_array = self.get_xs(nuclides='sum', squeeze=False)
 
-        # Convert the array to a matrix
-        if self.delayed_groups != None:
-            xs_matrix = []
-            for g in range(self.num_delayed_groups):
-                xs_array_g = np.repeat(xs_array[:,(g,),:], self.num_groups)
-                xs_array_g.shape = (self.num_subdomains, self.num_groups, self.num_groups)
-                xs_matrix.append(sps.block_diag(xs_array_g))
-        else:
-            xs_array_g = np.repeat(xs_array, self.num_groups)
-            xs_array_g.shape = (self.num_subdomains, self.num_groups, self.num_groups)
-            xs_matrix = sps.block_diag(xs_array_g)
+        # Reshape the array and return a block diagonal matrix
+        xs_array = np.repeat(xs_array, ng)
+        xs_array.shape = (ns * nd, ng, ng)
+        if repeat_zeros:
+            xs_array[:, :, 1:] = 0.
 
-        return xs_matrix
+        return sps.block_diag(xs_array)
 
     def get_slice(self, nuclides=[], groups=[], delayed_groups=[]):
         """Build a sliced ChiDelayed for the specified nuclides and energy
