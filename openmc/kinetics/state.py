@@ -162,9 +162,6 @@ class State(object):
         loss_matrix = dxyz * (absorb + outscatter - inscatter) \
                       + stream + stream_corr
 
-        print('loss matrix source')
-        print(loss_matrix * self.flux)
-
         # Return the destruction matrix
         return loss_matrix
 
@@ -178,12 +175,6 @@ class State(object):
         chi_d = self.mgxs_lib['chi-delayed'].get_mean_matrix()
         nu_fis_p = self.mgxs_lib['prompt-nu-fission'].get_mean_matrix()
         nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_mean_matrix(True)
-
-        print('prod matrix delayed source')
-        print(dxyz * chi_d * nu_fis_d * self.flux / self.k_crit)
-
-        print('prod matrix prompt source')
-        print(dxyz * chi_p * nu_fis_p * self.flux / self.k_crit)
 
         # Return the production matrix
         return dxyz * (chi_p * nu_fis_p + chi_d * nu_fis_d)
@@ -240,12 +231,6 @@ class State(object):
         # Compute the time absorption source
         time_source = inv_velocity * self.flux / dt
 
-        print('delayed source')
-        print(dxyz * delayed_source)
-
-        print('time source')
-        print(dxyz * time_source)
-
         # Combine to get the total source
         return dxyz * (time_source + delayed_source)
 
@@ -297,18 +282,6 @@ class State(object):
 
         # Compute the time absorption source
         time_source = dxyz * inv_velocity / dt
-
-        print('transient delayed production')
-        print(dxyz * prod_matrix_d * self.flux)
-
-        print('transient prompt production')
-        print(dxyz * prod_matrix_p * self.flux)
-
-        print('transient time source')
-        print(time_source * self.flux)
-
-        print('transient dest source')
-        print(dest_matrix * self.flux)
 
         # Combine to get the total source
         transient_matrix = time_source + dest_matrix - prod_matrix
