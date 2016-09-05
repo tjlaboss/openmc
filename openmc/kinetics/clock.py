@@ -5,8 +5,10 @@ import numpy as np
 TIME_POINTS = ['START',
                'PREVIOUS_OUT',
                'PREVIOUS_IN',
-               'FORWARD_IN',
                'FORWARD_OUT',
+               'FORWARD_IN',
+               'FORWARD_OUT_OLD',
+               'FORWARD_IN_OLD',
                'END']
 
 class Clock(object):
@@ -24,24 +26,6 @@ class Clock(object):
 
         # Reset the end time
         self._times['END'] = end
-
-
-    def __deepcopy__(self, memo):
-
-        existing = memo.get(id(self))
-
-        # If this is the first time we have tried to copy this object, create a copy
-        if existing is None:
-
-            clone = type(self).__new__(type(self))
-
-            memo[id(self)] = clone
-
-            return clone
-
-        # If this object has been copied before, return the first copy made
-        else:
-            return existing
 
     def __repr__(self):
 
@@ -78,36 +62,8 @@ class Clock(object):
     def times(self, times):
         self._times = np.float64(times)
 
-    def take_outer_step(self):
-        """Take an outer time step and reset all the inner time step values
-        to the starting point for the outer time step.
+    def get_inner_weight(self):
 
-        """
-
-        self.times['PREVIOUS_OUT'] = self.times['FORWARD_OUT']
-        self.times['PREVIOUS_IN']  = self.times['FORWARD_OUT']
-        self.times['FORWARD_IN']   = self.times['FORWARD_OUT']
-
-        if (self.times['END'] > self.times['FORWARD_OUT'] + self.dt_outer):
-            self.times['FORWARD_OUT'] = self.times['END']
-        else:
-            self.times['FORWARD_OUT'] = self.times['FORWARD_OUT'] + self.dt_outer
-
-    def take_inner_step(self):
-        """Take an inner time step.
-
-        """
-        self.times['PREVIOUS_IN']  = self.times['FORWARD_IN']
-
-        if (self.times['FORWARD_OUT'] > self.times['FORWARD_IN'] + self.dt_inner):
-            self.times['FORWARD_IN'] = self.times['FORWARD_OUT']
-        else:
-            self.times['FORWARD_IN'] = self.times['FORWARD_IN'] + self.dt_inner
-
-    def reset_to_previous_outer(self):
-        """Reset the time values to the previous outer time.
-
-        """
-
-        self.times['PREVIOUS_IN']  = self.times['PREVIOUS_IN']
-        self.times['FORWARD_IN']   = self.times['PREVIOUS_IN']
+        dt = self.times['FORWARD_IN'] - self.times['PREVIOUS_OUT']
+        wgt = dt / self.dt_outer
+        return wgt

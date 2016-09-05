@@ -53,6 +53,12 @@ class State(object):
     num_delayed_groups : int
         The number of delayed neutron precursor groups.
 
+    time : str
+        The time point of this state.
+
+    clock : openmc.kinetics.Clock
+        A clock object to indicate the current simulation time.
+
     """
 
     def __init__(self):
@@ -68,10 +74,37 @@ class State(object):
         self._k_crit = 1.0
         self._num_delayed_groups = 6
         self._time = None
+        self._clock = None
+        self._core_volume = 1.
+
+    def __deepcopy__(self, memo):
+
+        clone = type(self).__new__(type(self))
+        clone._mesh = self.mesh
+        clone._one_group = self.one_group
+        clone._energy_groups = self.energy_groups
+        clone._flux = copy.deepcopy(self._flux)
+        clone._precursor_conc = copy.deepcopy(self.precursor_conc)
+        clone._mgxs_lib = copy.deepcopy(self.mgxs_lib)
+        clone._k_crit = self.k_crit
+        clone._num_delayed_groups = self.num_delayed_groups
+        clone._clock = self.clock
+        clone._time = self.time
+        clone._core_volume = self.core_volume
+
+        return clone
+
+    @property
+    def core_volume(self):
+        return self._core_volume
 
     @property
     def time(self):
         return self._time
+
+    @property
+    def clock(self):
+        return self._clock
 
     @property
     def mesh(self):
@@ -109,9 +142,17 @@ class State(object):
     def num_delayed_groups(self):
         return self._num_delayed_groups
 
+    @core_volume.setter
+    def core_volume(self, core_volume):
+        self._core_volume = core_volume
+
     @time.setter
     def time(self, time):
         self._time = time
+
+    @clock.setter
+    def clock(self, clock):
+        self._clock = clock
 
     @mesh.setter
     def mesh(self, mesh):
@@ -181,18 +222,37 @@ class State(object):
 
     def get_kappa_fission_matrix(self):
 
-        # Get the volume of a mesh cell
-        dxyz = np.prod(self.mesh.width)
-
         # Extract the necessary cross sections
         kappa_fission = self.mgxs_lib['kappa-fission'].get_mean_matrix()
 
         # Return the destruction matrix
-        return dxyz * kappa_fission
+        return kappa_fission
 
-    def get_powers(self):
+    def get_core_power_density(self):
 
-        return self.get_kappa_fission_matrix() * self.flux
+        # Get the volume of a mesh cell
+        dxyz = np.prod(self.mesh.width)
+
+        # Compute the power in each mesh cell
+        powers = dxyz * self.get_kappa_fission_matrix() * self.flux
+
+        # Return the core power density
+        return powers.sum() / self.core_volume
+
+    def get_mesh_powers(self):
+
+        # Get the dimensions of the mesh
+        nx, ny, nz = self.mesh.dimension
+        dx, dy, dz = self.mesh.width
+        ng = self.energy_groups.num_groups
+
+        # Compute the power in each mesh cell
+        powers = self.get_kappa_fission_matrix() * self.flux
+        powers.shape = (ny, nz, nx, ng)
+        powers = powers.sum(axis=3)
+
+        # Return the core power density
+        return powers
 
     def get_source(self):
 
@@ -207,8 +267,7 @@ class State(object):
         chi_d = self.mgxs_lib['chi-delayed'].get_mean_matrix(True)
         decay_rate = self.mgxs_lib['decay-rate'].get_mean_array()
         inv_velocity = self.mgxs_lib['inverse-velocity'].get_mean_matrix()
-        #dt = self.clock.dt_inner
-        dt = 1.e-10
+        dt = self.clock.dt_inner
 
         # Compute the delayed source
         delayed_source = decay_rate / (1.0 + dt * decay_rate)
@@ -254,8 +313,7 @@ class State(object):
         absorb = self.mgxs_lib['absorption'].get_mean_matrix()
         stream, stream_corr = self.compute_surface_dif_coefs()
         outscatter = sps.diags(np.asarray(inscatter.sum(axis=0)).flatten(), 0)
-        #dt = self.clock.dt_inner
-        dt = 1.e-10
+        dt = self.clock.dt_inner
 
         # Get the destruction matrix
         dest_matrix = dxyz * (absorb + outscatter - inscatter) \
@@ -286,6 +344,33 @@ class State(object):
         # Combine to get the total source
         transient_matrix = time_source + dest_matrix - prod_matrix
         return transient_matrix
+
+    def propagate_precursors(self, state, dt):
+
+        # Get the dimensions of the mesh
+        nx, ny, nz = self.mesh.dimension
+        dx, dy, dz = self.mesh.width
+        ng = self.energy_groups.num_groups
+        nd = self.num_delayed_groups
+        dt = self.clock.dt_inner
+
+        # Extract the necessary cross sections
+        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_mean_matrix()
+        decay_rate = self.mgxs_lib['decay-rate'].get_mean_array()
+        old_conc = state.precursor_conc
+
+        # Get the flux and repeat to cover all delayed groups
+        flux = copy.deepcopy(self.flux)
+        flux = np.tile(flux, nd)
+
+        del_fis_rate = nu_fis_d * flux
+        del_fis_rate.shape = (nz, ny, nx, nd, ng)
+        del_fis_rate = del_fis_rate.sum(axis=4)
+        del_fis_rate = del_fis_rate.flatten()
+        source = dt / (1 + dt * decay_rate)
+        source *= del_fis_rate / self.k_crit
+
+        self.precursor_conc = old_conc / (1 + dt * decay_rate) + source
 
     def compute_initial_precursor_concentration(self):
 
@@ -318,16 +403,13 @@ class State(object):
         delayed_groups = list(range(1,self.num_delayed_groups + 1))
 
         # Create elements and ordered dicts and initialize to None
-        self._flux             = None
-        self._power            = None
-        self._precursor_conc   = None
         self._mgxs_lib         = OrderedDict()
 
         mgxs_types = ['transport', 'diffusion-coefficient', 'absorption',
                       'kappa-fission', 'nu-scatter matrix', 'chi-prompt',
                       'chi-delayed', 'inverse-velocity', 'prompt-nu-fission',
                       'current', 'delayed-nu-fission', 'chi-delayed',
-                      'decay-rate']
+                      'decay-rate', 'total']
 
         # Populate the MGXS in the MGXS lib
         for mgxs_type in mgxs_types:
