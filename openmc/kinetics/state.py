@@ -408,8 +408,7 @@ class State(object):
         mgxs_types = ['transport', 'diffusion-coefficient', 'absorption',
                       'kappa-fission', 'nu-scatter matrix', 'chi-prompt',
                       'chi-delayed', 'inverse-velocity', 'prompt-nu-fission',
-                      'current', 'delayed-nu-fission', 'chi-delayed',
-                      'decay-rate', 'total']
+                      'current', 'delayed-nu-fission', 'decay-rate', 'total']
 
         # Populate the MGXS in the MGXS lib
         for mgxs_type in mgxs_types:
