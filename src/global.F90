@@ -101,6 +101,7 @@ module global
 
   ! Default temperature and method for choosing temperatures
   integer :: temperature_method = TEMPERATURE_NEAREST
+  logical :: temperature_multipole = .false.
   real(8) :: temperature_tolerance = 10.0_8
   real(8) :: temperature_default = 293.6_8
 
@@ -122,11 +123,14 @@ module global
   ! Midpoint of the energy group structure
   real(8), allocatable :: energy_bin_avg(:)
 
-  ! Inverse velocities of the energy groups (provided or estimated)
-  real(8), allocatable :: inverse_velocities(:)
-
   ! Maximum Data Order
   integer :: max_order
+
+  ! Whether or not to convert Legendres to tabulars
+  logical :: legendre_to_tabular = .True.
+
+  ! Number of points to use in the Legendre to tabular conversion
+  integer :: legendre_to_tabular_points = 33
 
   ! ============================================================================
   ! TALLY-RELATED VARIABLES
@@ -303,6 +307,7 @@ module global
 
   logical :: survival_biasing = .false.
   real(8) :: weight_cutoff = 0.25_8
+  real(8) :: energy_cutoff = ZERO
   real(8) :: weight_survive = ONE
 
   ! ============================================================================
@@ -350,6 +355,9 @@ module global
 
   ! Write out initial source
   logical :: write_initial_source = .false.
+
+  ! Whether create fission neutrons or not. Only applied for MODE_FIXEDSOURCE
+  logical :: create_fission_neutrons = .true.
 
   ! ============================================================================
   ! CMFD VARIABLES
@@ -468,12 +476,7 @@ contains
       do i = 1, size(nuclides)
         call nuclides(i) % clear()
       end do
-
-      ! WARNING: The following statement should work but doesn't under gfortran
-      ! 4.6 because of a bug. Technically, commenting this out leaves a memory
-      ! leak.
-
-      ! deallocate(nuclides)
+      deallocate(nuclides)
     end if
 
     if (allocated(nuclides_0K)) then

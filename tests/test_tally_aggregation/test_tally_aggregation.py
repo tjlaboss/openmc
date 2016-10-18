@@ -16,20 +16,19 @@ class TallyAggregationTestHarness(PyAPITestHarness):
         self._input_set.settings.output = {'summary': True}
 
         # Initialize the nuclides
+        u234 = openmc.Nuclide('U234')
         u235 = openmc.Nuclide('U235')
         u238 = openmc.Nuclide('U238')
-        pu239 = openmc.Nuclide('Pu239')
 
         # Initialize the filters
-        energy_filter = openmc.Filter(type='energy', bins=[0.0, 0.253e-6,
-                                                           1.0e-3, 1.0, 20.0])
-        distrib_filter   = openmc.Filter(type='distribcell', bins=[60])
+        energy_filter = openmc.EnergyFilter([0.0, 0.253e-6, 1.0e-3, 1.0, 20.0])
+        distrib_filter = openmc.DistribcellFilter(60)
 
         # Initialized the tallies
         tally = openmc.Tally(name='distribcell tally')
         tally.filters = [energy_filter, distrib_filter]
         tally.scores = ['nu-fission', 'total']
-        tally.nuclides = [u235, u238, pu239]
+        tally.nuclides = [u234, u235, u238]
         tallies_file = openmc.Tallies([tally])
 
         # Export tallies to file
@@ -50,17 +49,17 @@ class TallyAggregationTestHarness(PyAPITestHarness):
         outstr = ''
 
         # Sum across all energy filter bins
-        tally_sum = tally.summation(filter_type='energy')
+        tally_sum = tally.summation(filter_type=openmc.EnergyFilter)
         outstr += ', '.join(map(str, tally_sum.mean))
         outstr += ', '.join(map(str, tally_sum.std_dev))
 
         # Sum across all distribcell filter bins
-        tally_sum = tally.summation(filter_type='distribcell')
+        tally_sum = tally.summation(filter_type=openmc.DistribcellFilter)
         outstr += ', '.join(map(str, tally_sum.mean))
         outstr += ', '.join(map(str, tally_sum.std_dev))
 
         # Sum across all nuclides
-        tally_sum = tally.summation(nuclides=['U235', 'U238', 'Pu239'])
+        tally_sum = tally.summation(nuclides=['U234', 'U235', 'U238'])
         outstr += ', '.join(map(str, tally_sum.mean))
         outstr += ', '.join(map(str, tally_sum.std_dev))
 

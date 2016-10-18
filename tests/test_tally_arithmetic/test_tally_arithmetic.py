@@ -19,9 +19,9 @@ class TallyArithmeticTestHarness(PyAPITestHarness):
         tallies_file = openmc.Tallies()
 
         # Initialize the nuclides
+        u234 = openmc.Nuclide('U234')
         u235 = openmc.Nuclide('U235')
         u238 = openmc.Nuclide('U238')
-        pu239 = openmc.Nuclide('Pu239')
 
         # Initialize Mesh
         mesh = openmc.Mesh(mesh_id=1)
@@ -31,18 +31,16 @@ class TallyArithmeticTestHarness(PyAPITestHarness):
         mesh.upper_right = [160.0, 160.0, 183.0]
 
         # Initialize the filters
-        energy_filter = openmc.Filter(type='energy', bins=(0.0, 0.253e-6,
-                                                           1.0e-3, 1.0, 20.0))
-        material_filter  = openmc.Filter(type='material', bins=(1, 3))
-        distrib_filter   = openmc.Filter(type='distribcell', bins=(60))
-        mesh_filter      = openmc.Filter(type='mesh')
-        mesh_filter.mesh = mesh
+        energy_filter = openmc.EnergyFilter((0.0, 0.253e-6, 1.0e-3, 1.0, 20.0))
+        material_filter  = openmc.MaterialFilter((1, 3))
+        distrib_filter   = openmc.DistribcellFilter(60)
+        mesh_filter      = openmc.MeshFilter(mesh)
 
         # Initialized the tallies
         tally = openmc.Tally(name='tally 1')
         tally.filters = [material_filter, energy_filter, distrib_filter]
         tally.scores = ['nu-fission', 'total']
-        tally.nuclides = [u235, pu239]
+        tally.nuclides = [u234, u235]
         tallies_file.append(tally)
 
         tally = openmc.Tally(name='tally 2')

@@ -50,6 +50,13 @@ DOMAIN_TYPES = ['cell',
                 'material',
                 'mesh']
 
+# Filter types corresponding to each domain
+_DOMAIN_TO_FILTER = {'cell': openmc.CellFilter,
+                     'distribcell': openmc.DistribcellFilter,
+                     'universe': openmc.UniverseFilter,
+                     'material': openmc.MaterialFilter,
+                     'mesh': openmc.MeshFilter}
+
 # Supported domain classes
 _DOMAINS = (openmc.Cell,
             openmc.Universe,
@@ -245,7 +252,7 @@ class MGXS(object):
     @property
     def filters(self):
         group_edges = self.energy_groups.group_edges
-        energy_filter = openmc.Filter('energy', group_edges)
+        energy_filter = openmc.EnergyFilter(group_edges)
         return [[energy_filter]] * len(self.scores)
 
     @property
@@ -266,11 +273,11 @@ class MGXS(object):
             self._tallies = OrderedDict()
 
             # Create a domain Filter object
-            domain_filter = openmc.Filter(self.domain_type, self.domain.id)
-
-            # If a mesh domain, give the mesh to the domain filter
+            filter_type = _DOMAIN_TO_FILTER[self.domain_type]
             if self.domain_type == 'mesh':
-                domain_filter.mesh = self.domain
+                domain_filter = filter_type(self.domain)
+            else:
+                domain_filter = filter_type(self.domain.id)
 
             # Create each Tally needed to compute the multi group cross section
             tally_metadata = zip(self.scores, self.tally_keys, self.filters)
@@ -335,7 +342,12 @@ class MGXS(object):
 
     @property
     def num_subdomains(self):
-        domain_filter = self.xs_tally.find_filter(self.domain_type)
+        if self.domain_type.startswith('avg('):
+            domain_type = self.domain_type[4:-1]
+        else:
+            domain_type = self.domain_type
+        filter_type = _DOMAIN_TO_FILTER[domain_type]
+        domain_filter = self.xs_tally.find_filter(filter_type)
         return domain_filter.num_bins
 
     @property
@@ -700,11 +712,11 @@ class MGXS(object):
         # Use tally "slicing" to ensure that tallies correspond to our domain
         # NOTE: This is important if tally merging was used
         if self.domain_type == 'mesh':
-            filters = [self.domain_type]
+            filters = [_DOMAIN_TO_FILTER[self.domain_type]]
             xyz = [range(1, x+1) for x in self.domain.dimension]
             filter_bins = [tuple(itertools.product(*xyz))]
         elif self.domain_type != 'distribcell':
-            filters = [self.domain_type]
+            filters = [_DOMAIN_TO_FILTER[self.domain_type]]
             filter_bins = [(self.domain.id,)]
         # Distribcell filters only accept single cell - neglect it when slicing
         else:
@@ -797,14 +809,14 @@ class MGXS(object):
             cv.check_iterable_type('subdomains', subdomains, Integral,
                                    max_depth=3)
             for subdomain in subdomains:
-                filters.append(self.domain_type)
+                filters.append(_DOMAIN_TO_FILTER[self.domain_type])
                 filter_bins.append((subdomain,))
 
         # Construct list of energy group bounds tuples for all requested groups
         if not isinstance(groups, basestring):
             cv.check_iterable_type('groups', groups, Integral)
             for group in groups:
-                filters.append('energy')
+                filters.append(openmc.EnergyFilter)
                 filter_bins.append((self.energy_groups.get_group_bounds(group),))
 
         # Construct a collection of the nuclides to retrieve from the xs tally
@@ -912,7 +924,8 @@ class MGXS(object):
 
             # Sum across all applicable fine energy group filters
             for i, tally_filter in enumerate(tally.filters):
-                if 'energy' not in tally_filter.type:
+                if not isinstance(tally_filter, (openmc.EnergyFilter,
+                                                 openmc.EnergyoutFilter)):
                     continue
                 elif len(tally_filter.bins) != len(fine_edges):
                     continue
@@ -974,14 +987,16 @@ class MGXS(object):
 
         if self.derived:
             avg_xs._rxn_rate_tally = avg_xs.rxn_rate_tally.average(
-                filter_type=self.domain_type, filter_bins=subdomains)
+                filter_type=_DOMAIN_TO_FILTER[self.domain_type],
+                filter_bins=subdomains)
         else:
             avg_xs._rxn_rate_tally = None
             avg_xs._xs_tally = None
 
             # Average each of the tallies across subdomains
             for tally_type, tally in avg_xs.tallies.items():
-                tally_avg = tally.average(filter_type=self.domain_type,
+                filt_type = _DOMAIN_TO_FILTER[self.domain_type]
+                tally_avg = tally.average(filter_type=filt_type,
                                           filter_bins=subdomains)
                 avg_xs.tallies[tally_type] = tally_avg
 
@@ -1028,7 +1043,7 @@ class MGXS(object):
                 group_bounds = self.energy_groups.get_group_bounds(group)
                 energy_bins.append(group_bounds)
             filter_bins.append(tuple(energy_bins))
-            filters.append('energy')
+            filters.append(openmc.EnergyFilter)
 
         # Clone this MGXS to initialize the sliced version
         slice_xs = copy.deepcopy(self)
@@ -1038,7 +1053,7 @@ class MGXS(object):
         # Slice each of the tallies across nuclides and energy groups
         for tally_type, tally in slice_xs.tallies.items():
             slice_nuclides = [nuc for nuc in nuclides if nuc in tally.nuclides]
-            if len(groups) != 0 and tally.contains_filter('energy'):
+            if len(groups) != 0 and tally.contains_filter(openmc.EnergyFilter):
                 tally_slice = tally.get_slice(filters=filters,
                                               filter_bins=filter_bins,
                                               nuclides=slice_nuclides)
@@ -1708,8 +1723,8 @@ class MatrixMGXS(MGXS):
     def filters(self):
         # Create the non-domain specific Filters for the Tallies
         group_edges = self.energy_groups.group_edges
-        energy = openmc.Filter('energy', group_edges)
-        energyout = openmc.Filter('energyout', group_edges)
+        energy = openmc.EnergyFilter(group_edges)
+        energyout = openmc.EnergyoutFilter(group_edges)
 
         return [[energy], [energy, energyout]]
 
@@ -1802,14 +1817,14 @@ class MatrixMGXS(MGXS):
             cv.check_iterable_type('subdomains', subdomains, Integral,
                                    max_depth=3)
             for subdomain in subdomains:
-                filters.append(self.domain_type)
+                filters.append(_DOMAIN_TO_FILTER[self.domain_type])
                 filter_bins.append((subdomain,))
 
         # Construct list of energy group bounds tuples for all requested groups
         if not isinstance(in_groups, basestring):
             cv.check_iterable_type('groups', in_groups, Integral)
             for group in in_groups:
-                filters.append('energy')
+                filters.append(openmc.EnergyFilter)
                 filter_bins.append((
                     self.energy_groups.get_group_bounds(group),))
 
@@ -1817,7 +1832,7 @@ class MatrixMGXS(MGXS):
         if not isinstance(out_groups, basestring):
             cv.check_iterable_type('groups', out_groups, Integral)
             for group in out_groups:
-                filters.append('energyout')
+                filters.append(openmc.EnergyoutFilter)
                 filter_bins.append((
                     self.energy_groups.get_group_bounds(group),))
 
@@ -1929,9 +1944,10 @@ class MatrixMGXS(MGXS):
 
             # Slice each of the tallies across energyout groups
             for tally_type, tally in slice_xs.tallies.items():
-                if tally.contains_filter('energyout'):
-                    tally_slice = tally.get_slice(filters=['energyout'],
-                                                  filter_bins=filter_bins)
+                if tally.contains_filter(openmc.EnergyoutFilter):
+                    tally_slice = tally.get_slice(
+                        filters=[openmc.EnergyoutFilter],
+                        filter_bins=filter_bins)
                     slice_xs.tallies[tally_type] = tally_slice
 
         slice_xs.sparse = self.sparse
@@ -2144,6 +2160,28 @@ class SurfaceMGXS(MGXS):
         return [self.rxn_type]
 
     @property
+    def domain(self):
+        return self._domain
+
+    @property
+    def domain_type(self):
+        return self._domain_type
+
+    @domain.setter
+    def domain(self, domain):
+        cv.check_type('domain', domain, openmc.Mesh)
+        self._domain = domain
+
+        # Assign a domain type
+        if self.domain_type is None:
+            self._domain_type = 'mesh'
+
+    @domain_type.setter
+    def domain_type(self, domain_type):
+        cv.check_value('domain type', domain_type, 'mesh')
+        self._domain_type = domain_type
+
+    @property
     def xs_tally(self):
         if self._xs_tally is None:
             if self.tallies is None:
@@ -2162,7 +2200,8 @@ class SurfaceMGXS(MGXS):
         xs_array = self.get_xs(nuclides='sum').flatten()
 
         # Convert the array to a matrix
-        xs_array.shape = (self.num_subdomains * self.num_groups, 12)
+        xs_array.shape = (self.num_subdomains * self.num_groups,
+                          4 * self.domain.num_dimensions)
 
         return xs_array
 
@@ -2172,7 +2211,8 @@ class SurfaceMGXS(MGXS):
         xs_array = self.get_xs(nuclides='sum').flatten()
 
         # Convert the array to a matrix
-        xs_array.shape = (self.num_subdomains * self.num_groups, 12)
+        xs_array.shape = (self.num_subdomains * self.num_groups,
+                          4 * self.domain.num_dimensions)
         xs_matrix = sps.lil_matrix(xs_array)
 
         return xs_matrix
@@ -2225,11 +2265,11 @@ class SurfaceMGXS(MGXS):
         # Use tally "slicing" to ensure that tallies correspond to our domain
         # NOTE: This is important if tally merging was used
         if self.domain_type == 'mesh':
-            filters = [self.domain_type]
+            filters = [_DOMAIN_TO_FILTER[self.domain_type]]
             xyz = [range(1, x+1) for x in self.domain.dimension]
             filter_bins = [tuple(itertools.product(*xyz))]
         elif self.domain_type != 'distribcell':
-            filters = [self.domain_type]
+            filters = [_DOMAIN_TO_FILTER[self.domain_type]]
             filter_bins = [(self.domain.id,)]
         # Distribcell filters only accept single cell - neglect it when slicing
         else:
@@ -2243,10 +2283,13 @@ class SurfaceMGXS(MGXS):
             self._rxn_rate_tally = None
             self._loaded_sp = False
 
+        # Make a list of the surface bins
+        surface_bins = list(range(1, 4 * self.domain.num_dimensions))
+
         # Find, slice and store Tallies from StatePoint
         # The tally slicing is needed if tally merging was used
         for tally_type, tally in self.tallies.items():
-            surface_filter = openmc.Filter('surface', list(range(1,13)))
+            surface_filter = openmc.SurfaceFilter(surface_bins)
             tally.filters.append(surface_filter)
             sp_tally = statepoint.get_tally(
                 tally.scores, tally.filters, tally.nuclides,
@@ -2370,8 +2413,9 @@ class SurfaceMGXS(MGXS):
             num_groups = len(groups)
 
         # Reshape tally data array with separate axes for domain and energy
-        num_subdomains = int(xs.shape[0] / (num_groups * 12))
-        new_shape = (num_subdomains, num_groups, 12) + xs.shape[1:]
+        num_surfaces = 4 * self.domain.num_dimensions
+        num_subdomains = int(xs.shape[0] / (num_groups * num_surfaces))
+        new_shape = (num_subdomains, num_groups, num_surfaces) + xs.shape[1:]
         xs = np.reshape(xs, new_shape)
 
         # Reverse data if user requested increasing energy groups since
@@ -2766,8 +2810,8 @@ class TransportXS(MGXS):
     @property
     def filters(self):
         group_edges = self.energy_groups.group_edges
-        energy_filter = openmc.Filter('energy', group_edges)
-        energyout_filter = openmc.Filter('energyout', group_edges)
+        energy_filter = openmc.EnergyFilter(group_edges)
+        energyout_filter = openmc.EnergyoutFilter(group_edges)
         return [[energy_filter], [energy_filter], [energyout_filter]]
 
     @property
@@ -3866,8 +3910,8 @@ class ScatterMatrixXS(MatrixMGXS):
     @property
     def filters(self):
         group_edges = self.energy_groups.group_edges
-        energy = openmc.Filter('energy', group_edges)
-        energyout = openmc.Filter('energyout', group_edges)
+        energy = openmc.EnergyFilter(group_edges)
+        energyout = openmc.EnergyoutFilter(group_edges)
 
         if self.correction == 'P0' and self.legendre_order == 0:
             filters = [[energy], [energy, energyout], [energyout]]
@@ -3885,7 +3929,7 @@ class ScatterMatrixXS(MatrixMGXS):
             if self.correction == 'P0' and self.legendre_order == 0:
                 scatter_p0 = self.tallies['{}-0'.format(self.rxn_type)]
                 scatter_p1 = self.tallies['{}-1'.format(self.rxn_type)]
-                energy_filter = scatter_p0.find_filter('energy')
+                energy_filter = scatter_p0.find_filter(openmc.EnergyFilter)
                 energy_filter = copy.deepcopy(energy_filter)
                 scatter_p1 = scatter_p1.diagonalize_filter(energy_filter)
                 self._rxn_rate_tally = scatter_p0 - scatter_p1
@@ -4028,9 +4072,9 @@ class ScatterMatrixXS(MatrixMGXS):
 
             # Slice each of the tallies across energyout groups
             for tally_type, tally in slice_xs.tallies.items():
-                if tally.contains_filter('energyout'):
-                    tally_slice = tally.get_slice(filters=['energyout'],
-                                                  filter_bins=filter_bins)
+                if tally.contains_filter(openmc.EnergyoutFilter):
+                    tally_slice = tally.get_slice(
+                        filters=[openmc.EnergyoutFilter], filter_bins=filter_bins)
                     slice_xs.tallies[tally_type] = tally_slice
 
         slice_xs.sparse = self.sparse
@@ -4116,21 +4160,21 @@ class ScatterMatrixXS(MatrixMGXS):
         if not isinstance(subdomains, basestring):
             cv.check_iterable_type('subdomains', subdomains, Integral, max_depth=3)
             for subdomain in subdomains:
-                filters.append(self.domain_type)
+                filters.append(_DOMAIN_TO_FILTER[self.domain_type])
                 filter_bins.append((subdomain,))
 
         # Construct list of energy group bounds tuples for all requested groups
         if not isinstance(in_groups, basestring):
             cv.check_iterable_type('groups', in_groups, Integral)
             for group in in_groups:
-                filters.append('energy')
+                filters.append(openmc.EnergyFilter)
                 filter_bins.append((self.energy_groups.get_group_bounds(group),))
 
         # Construct list of energy group bounds tuples for all requested groups
         if not isinstance(out_groups, basestring):
             cv.check_iterable_type('groups', out_groups, Integral)
             for group in out_groups:
-                filters.append('energyout')
+                filters.append(openmc.EnergyoutFilter)
                 filter_bins.append((self.energy_groups.get_group_bounds(group),))
 
         # Construct CrossScore for requested scattering moment
@@ -4634,8 +4678,8 @@ class MultiplicityMatrixXS(MatrixMGXS):
     def filters(self):
         # Create the non-domain specific Filters for the Tallies
         group_edges = self.energy_groups.group_edges
-        energy = openmc.Filter('energy', group_edges)
-        energyout = openmc.Filter('energyout', group_edges)
+        energy = openmc.EnergyFilter(group_edges)
+        energyout = openmc.EnergyoutFilter(group_edges)
 
         return [[energy, energyout], [energy, energyout]]
 
@@ -4898,8 +4942,8 @@ class Chi(MGXS):
     def filters(self):
         # Create the non-domain specific Filters for the Tallies
         group_edges = self.energy_groups.group_edges
-        energyout = openmc.Filter('energyout', group_edges)
-        energyin = openmc.Filter('energy', [group_edges[0], group_edges[-1]])
+        energyout = openmc.EnergyoutFilter(group_edges)
+        energyin = openmc.EnergyFilter([group_edges[0], group_edges[-1]])
         return [[energyin], [energyout]]
 
     @property
@@ -4920,12 +4964,11 @@ class Chi(MGXS):
             nu_fission_in = self.tallies['nu-fission-in']
 
             # Remove coarse energy filter to keep it out of tally arithmetic
-            energy_filter = nu_fission_in.find_filter('energy')
+            energy_filter = nu_fission_in.find_filter(openmc.EnergyFilter)
             nu_fission_in.remove_filter(energy_filter)
 
             # Compute chi
             self._xs_tally = self.rxn_rate_tally / nu_fission_in
-            super(Chi, self)._compute_xs()
 
             # Add the coarse energy filter back to the nu-fission tally
             nu_fission_in.filters.append(energy_filter)
@@ -4973,7 +5016,7 @@ class Chi(MGXS):
         # Temporarily remove energy filter from nu-fission-in since its
         # group structure will work in super MGXS.get_slice(...) method
         nu_fission_in = self.tallies['nu-fission-in']
-        energy_filter = nu_fission_in.find_filter('energy')
+        energy_filter = nu_fission_in.find_filter(openmc.EnergyFilter)
         nu_fission_in.remove_filter(energy_filter)
 
         # Call super class method and null out derived tallies
@@ -4991,8 +5034,8 @@ class Chi(MGXS):
 
             # Slice nu-fission-out tally along energyout filter
             nu_fission_out = slice_xs.tallies['nu-fission-out']
-            tally_slice = nu_fission_out.get_slice(filters=['energyout'],
-                                                   filter_bins=filter_bins)
+            tally_slice = nu_fission_out.get_slice(
+                filters=[openmc.EnergyoutFilter], filter_bins=filter_bins)
             slice_xs._tallies['nu-fission-out'] = tally_slice
 
         # Add energy filter back to nu-fission-in tallies
@@ -5117,14 +5160,14 @@ class Chi(MGXS):
         if not isinstance(subdomains, basestring):
             cv.check_iterable_type('subdomains', subdomains, Integral, max_depth=3)
             for subdomain in subdomains:
-                filters.append(self.domain_type)
+                filters.append(_DOMAIN_TO_FILTER[self.domain_type])
                 filter_bins.append((subdomain,))
 
         # Construct list of energy group bounds tuples for all requested groups
         if not isinstance(groups, basestring):
             cv.check_iterable_type('groups', groups, Integral)
             for group in groups:
-                filters.append('energyout')
+                filters.append(openmc.EnergyoutFilter)
                 filter_bins.append((self.energy_groups.get_group_bounds(group),))
 
         # If chi was computed for each nuclide in the domain
@@ -5144,7 +5187,7 @@ class Chi(MGXS):
                 nu_fission_out = nu_fission_out.summation(nuclides=nuclides)
 
                 # Remove coarse energy filter to keep it out of tally arithmetic
-                energy_filter = nu_fission_in.find_filter('energy')
+                energy_filter = nu_fission_in.find_filter(openmc.EnergyFilter)
                 nu_fission_in.remove_filter(energy_filter)
 
                 # Compute chi and store it as the xs_tally attribute so we can
@@ -5877,7 +5920,8 @@ class DiffusionCoefficient(TransportXS):
     def rxn_rate_tally(self):
         if self._rxn_rate_tally is None:
             self.tallies['scatter-1'].filters[-1].type = 'energy'
-            transport = (self.tallies['total'] - self.tallies['scatter-1']) / self.tallies['flux']
+            transport = (self.tallies['total'] - self.tallies['scatter-1']) / \
+                        self.tallies['flux']
             dif_coef = transport**(-1) / 3.0
             self._rxn_rate_tally = dif_coef * self.tallies['flux']
             self._rxn_rate_tally.sparse = self.sparse
@@ -5913,7 +5957,8 @@ class DiffusionCoefficient(TransportXS):
         if self._rxn_rate_tally is None:
             self.tallies['scatter-1'].filters[-1].type = 'energy'
 
-        transport = (self.tallies['total'] - self.tallies['scatter-1']) / self.tallies['flux']
+        transport = (self.tallies['total'] - self.tallies['scatter-1']) / \
+                    self.tallies['flux']
         dif_coef = transport**(-1) / 3.0
         flux_tally = condensed_xs.tallies['flux']
         dif_tally = dif_coef * flux_tally

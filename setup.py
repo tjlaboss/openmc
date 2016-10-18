@@ -1,12 +1,19 @@
 #!/usr/bin/env python
 
 import glob
+import numpy as np
 try:
     from setuptools import setup
     have_setuptools = True
 except ImportError:
     from distutils.core import setup
     have_setuptools = False
+
+try:
+    from Cython.Build import cythonize
+    have_cython = True
+except ImportError:
+    have_cython = False
 
 kwargs = {'name': 'openmc',
           'version': '0.8.0',
@@ -46,6 +53,13 @@ if have_setuptools:
         'package_data': {
             'openmc.data': ['mass.mas12']
         },
+    })
+
+# If Cython is present, add resonance reconstruction capability
+if have_cython:
+    kwargs.update({
+        'ext_modules': cythonize('openmc/data/reconstruct.pyx'),
+        'include_dirs': [np.get_include()]
     })
 
 setup(**kwargs)

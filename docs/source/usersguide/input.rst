@@ -121,10 +121,13 @@ multi-group mode.
 ``<cutoff>`` Element
 --------------------
 
-The ``<cutoff>`` element indicates the weight cutoff used below which particles
-undergo Russian roulette. Surviving particles are assigned a user-determined
-weight. Note that weight cutoffs and Russian rouletting are not turned on by
-default. This element has the following attributes/sub-elements:
+The ``<cutoff>`` element indicates two kinds of cutoffs. The first is the weight
+cutoff used below which particles undergo Russian roulette. Surviving particles
+are assigned a user-determined weight. Note that weight cutoffs and Russian
+rouletting are not turned on by default. The second is the energy cutoff which
+is used to kill particles under certain energy. The energy cutoff should not be
+used unless you know particles under the energy are of no importance to results
+you care. This element has the following attributes/sub-elements:
 
   :weight:
     The weight below which particles undergo Russian roulette.
@@ -136,6 +139,11 @@ default. This element has the following attributes/sub-elements:
     roulette.
 
     *Default*: 1.0
+
+  :energy:
+    The energy under which particles will be killed.
+
+    *Default*: 0.0
 
 .. _eigenvalue:
 
@@ -292,8 +300,8 @@ OpenMC can use it for on-the-fly Doppler-broadening of resolved resonance range
 cross sections. If this element is absent from the settings.xml file, the
 :envvar:`OPENMC_MULTIPOLE_LIBRARY` environment variable will be used.
 
-  .. note:: The :ref:`temperature_method` must also be set to "multipole" for
-            windowed multipole functionality.
+  .. note:: The <temperature_multipole> element must also be set to "true" for
+    windowed multipole functionality.
 
 ``<max_order>`` Element
 ---------------------------
@@ -709,6 +717,36 @@ survival biasing, otherwise known as implicit capture or absorption.
 
   *Default*: false
 
+.. _tabular_legendre:
+
+``<tabular_legendre>`` Element
+---------------------------------
+
+The optional ``<tabular_legendre>`` element specifies how the multi-group
+Legendre scattering kernel is represented if encountered in a multi-group
+problem.  Specifically, the options are to either convert the Legendre
+expansion to a tabular representation or leave it as a set of Legendre
+coefficients. Converting to a tabular representation will cost memory but can
+allow for a decrease in runtime compared to leaving as a set of Legendre
+coefficients. This element has the following attributes/sub-elements:
+
+  :enable:
+    This attribute/sub-element denotes whether or not the conversion of a
+    Legendre scattering expansion to the tabular format should be performed or
+    not. A value of “true” means the conversion should be performed, “false”
+    means it will not.
+
+    *Default*: true
+
+  :num_points:
+    If the conversion is to take place the number of tabular points is
+    required. This attribute/sub-element allows the user to set the desired
+    number of points.
+
+    *Default*: 33
+
+  .. note:: This element is only used in the multi-group :ref:`energy_mode`.
+
 .. _temperature_default:
 
 ``<temperature_default>`` Element
@@ -725,18 +763,28 @@ a material default temperature.
 ``<temperature_method>`` Element
 --------------------------------
 
-The ``<temperature_method>`` element has an accepted value of "nearest",
-"interpolation", or "multipole". A value of "nearest" indicates that for each
+The ``<temperature_method>`` element has an accepted value of "nearest" or
+"interpolation". A value of "nearest" indicates that for each
 cell, the nearest temperature at which cross sections are given is to be
 applied, within a given tolerance (see :ref:`temperature_tolerance`). A value of
 "interpolation" indicates that cross sections are to be linear-linear
 interpolated between temperatures at which nuclear data are present (see
-:ref:`temperature_treatment`). A value of "multipole" indicates that the
-windowed multipole method should be used to evaluate temperature-dependent cross
-sections in the resolved resonance range (a :ref:`windowed multipole library
-<multipole_library>` must also be available).
+:ref:`temperature_treatment`).
 
   *Default*: "nearest"
+
+.. _temperature_multipole:
+
+``<temperature_multipole>`` Element
+-----------------------------------
+
+The ``<temperature_multipole>`` element toggles the windowed multipole
+capability on or off. If this element is set to "True" and the relevant data is
+available, OpenMC will use the windowed multipole method to evaluate and Doppler
+broaden cross sections in the resolved resonance range.  This override other
+methods like "nearest" and "interpolation" in the resolved resonance range.
+
+  *Default*: False
 
 .. _temperature_tolerance:
 
@@ -850,17 +898,6 @@ problem. It has the following attributes/sub-elements:
 
     *Default*: None
 
-
-``<use_windowed_multipole>`` Element
-------------------------------------
-
-The ``<use_windowed_multipole>`` element toggles the windowed multipole
-capability on or off. If this element is set to "True" and the relevant data is
-available, OpenMC will use the windowed multipole method to evaluate and Doppler
-broaden cross sections in the resolved resonance range.
-
-  *Default*: False
-
 ``<verbosity>`` Element
 -----------------------
 
@@ -872,6 +909,19 @@ displayed. This element takes the following attributes:
     The specified verbosity between 1 and 10.
 
     *Default*: 5
+
+``<create_fission_neutrons>`` Element
+-------------------------------------
+
+The ``<create_fission_neutrons>`` element indicates whether fission neutrons
+should be created or not.  If this element is set to "true", fission neutrons
+will be created; otherwise the fission is treated as capture and no fission
+neutron will be created. Note that this option is only applied to fixed source
+calculation. For eigenvalue calculation, fission will always be treated as real
+fission.
+
+  *Default*: true
+
 
 ``<volume_calc>`` Element
 -------------------------
