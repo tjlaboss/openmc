@@ -1120,19 +1120,6 @@ contains
       end select
     end if
 
-    ! Check whether create fission sites
-    if (run_mode == MODE_FIXEDSOURCE) then
-      if (check_for_node(doc, "create_fission_neutrons")) then
-        call get_node_value(doc, "create_fission_neutrons", temp_str)
-        temp_str = to_lower(temp_str)
-        if (trim(temp_str) == 'true' .or. trim(temp_str) == '1') then
-          create_fission_neutrons = .true.
-        else if (trim(temp_str) == 'false' .or. trim(temp_str) == '0') then
-          create_fission_neutrons = .false.
-        end if
-      end if
-    end if
-
     ! Check for tabular_legendre options
     if (check_for_node(doc, "tabular_legendre")) then
 
@@ -1154,6 +1141,19 @@ contains
         if (legendre_to_tabular_points <= 1 .and. (.not. run_CE)) then
           call fatal_error("The 'num_points' subelement/attribute of the &
                &'tabular_legendre' element must contain a value greater than 1")
+        end if
+      end if
+    end if
+
+    ! Check whether create fission sites
+    if (run_mode == MODE_FIXEDSOURCE) then
+      if (check_for_node(doc, "create_fission_neutrons")) then
+        call get_node_value(doc, "create_fission_neutrons", temp_str)
+        temp_str = to_lower(temp_str)
+        if (trim(temp_str) == 'true' .or. trim(temp_str) == '1') then
+          create_fission_neutrons = .true.
+        else if (trim(temp_str) == 'false' .or. trim(temp_str) == '0') then
+          create_fission_neutrons = .false.
         end if
       end if
     end if
@@ -3067,8 +3067,8 @@ contains
             ! index is simply the group (after flipping for the different
             ! ordering of the library and tallying systems).
             if (.not. run_CE) then
-              if (n_words == energy_groups + 1) then
-                if (all(filt % bins == energy_bins(energy_groups + 1:1:-1))) &
+              if (n_words == num_energy_groups + 1) then
+                if (all(filt % bins == energy_bins(num_energy_groups + 1:1:-1))) &
                      then
                   filt % matches_transport_groups = .true.
                 end if
@@ -3093,8 +3093,8 @@ contains
             ! index is simply the group (after flipping for the different
             ! ordering of the library and tallying systems).
             if (.not. run_CE) then
-              if (n_words == energy_groups + 1) then
-                if (all(filt % bins == energy_bins(energy_groups + 1:1:-1))) &
+              if (n_words == num_energy_groups + 1) then
+                if (all(filt % bins == energy_bins(num_energy_groups + 1:1:-1))) &
                      then
                   filt % matches_transport_groups = .true.
                 end if
@@ -3108,14 +3108,6 @@ contains
           t % estimator = ESTIMATOR_ANALOG
 
         case ('delayedgroup')
-          ! Check to see if running in MG mode, because if so, the current
-          ! system isnt set up yet to support delayed group data and thus
-          ! these tallies
-          if (.not. run_CE) then
-            call fatal_error("delayedgroup filter on tally " &
-                             // trim(to_str(t % id)) // " not yet supported&
-                             & for multi-group mode.")
-          end if
 
           ! Allocate and declare the filter type
           allocate(DelayedGroupFilter::t % filters(j) % obj)
@@ -3606,7 +3598,13 @@ contains
             end if
           case ('decay-rate')
             t % score_bins(j) = SCORE_DECAY_RATE
-            t % estimator = ESTIMATOR_ANALOG
+
+            ! Set tally estimator to analog for CE mode
+            ! (MG mode has all data available without a collision being
+            ! necessary)
+            if (run_CE) then
+              t % estimator = ESTIMATOR_ANALOG
+            end if
           case ('delayed-nu-fission')
             t % score_bins(j) = SCORE_DELAYED_NU_FISSION
             if (t % find_filter(FILTER_ENERGYOUT) > 0) then
@@ -3618,12 +3616,6 @@ contains
             if (t % find_filter(FILTER_ENERGYOUT) > 0) then
               ! Set tally estimator to analog
               t % estimator = ESTIMATOR_ANALOG
-            end if
-
-            ! Disallow for MG mode since data not present
-            if (.not. run_CE) then
-              call fatal_error("Cannot tally delayed nu-fission rate in &
-                               &multi-group mode")
             end if
           case ('kappa-fission')
             t % score_bins(j) = SCORE_KAPPA_FISSION
@@ -4661,15 +4653,25 @@ contains
     ! Open file for reading
     file_id = file_open(path_cross_sections, 'r', parallel=.true.)
 
-    if (attribute_exists(file_id, "groups")) then
-      ! Get neutron group count
-      call read_attribute(energy_groups, file_id, "groups")
+    if (attribute_exists(file_id, "energy_groups")) then
+      ! Get neutron energy group count
+      call read_attribute(num_energy_groups, file_id, "energy_groups")
     else
-      call fatal_error("'groups' attribute must exist!")
+      call fatal_error("'energy_groups' attribute must exist!")
     end if
 
-    allocate(rev_energy_bins(energy_groups + 1))
-    allocate(energy_bins(energy_groups + 1))
+    if (attribute_exists(file_id, "delayed_groups")) then
+      ! Get neutron delayed group count
+      call read_attribute(num_delayed_groups, file_id, "delayed_groups")
+    else
+      num_delayed_groups = 0
+      call write_message("WARNING: delayed_groups element not provided so &
+           &number of delayed groups set to 0")
+    end if
+
+    allocate(rev_energy_bins(num_energy_groups + 1))
+    allocate(energy_bins(num_energy_groups + 1))
+
     if (attribute_exists(file_id, "group structure")) then
       ! Get neutron group structure
       call read_attribute(energy_bins, file_id, "group structure")
@@ -4678,10 +4680,10 @@ contains
     end if
 
     ! First reverse the order of energy_groups
-    energy_bins = energy_bins(energy_groups + 1:1:-1)
+    energy_bins = energy_bins(num_energy_groups + 1:1:-1)
 
-    allocate(energy_bin_avg(energy_groups))
-    do i = 1, energy_groups
+    allocate(energy_bin_avg(num_energy_groups))
+    do i = 1, num_energy_groups
       energy_bin_avg(i) = HALF * (energy_bins(i) + energy_bins(i + 1))
     end do
 
