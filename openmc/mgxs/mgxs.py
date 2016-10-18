@@ -2064,11 +2064,11 @@ class MatrixMGXS(MGXS):
 
 class SurfaceMGXS(MGXS):
     """An abstract multi-group cross section for some energy group structure
-    within some spatial domain.
+    on the surfaces of a mesh domain.
 
     This class can be used for both OpenMC input generation and tally data
-    post-processing to compute spatially-homogenized and energy-integrated
-    multi-group cross sections for multi-group neutronics calculations.
+    post-processing to compute surface- and energy-integrated multi-group cross
+    section for multi-group neutronics calculations.
 
     NOTE: Users should instantiate the subclasses of this abstract class.
 
@@ -2122,11 +2122,9 @@ class SurfaceMGXS(MGXS):
         Derived tally for the multi-group cross section. This attribute
         is None unless the multi-group cross section has been computed.
     num_subdomains : int
-        The number of subdomains is unity for 'material', 'cell' and 'universe'
-        domain types. This is equal to the number of cell instances
-        for 'distribcell' domain types (it is equal to unity prior to loading
-        tally data from a statepoint file) and the number of mesh cells for
-        'mesh' domain types.
+        The number of subdomains is equal to the number of mesh surfaces times
+        two to account for both the incoming and outgoing current from the
+        mesh cell surfaces.
     num_nuclides : int
         The number of nuclides for which the multi-group cross section is
         being tracked. This is unity if the by_nuclide attribute is False.
@@ -2153,7 +2151,7 @@ class SurfaceMGXS(MGXS):
     def __init__(self, domain=None, domain_type=None, energy_groups=None,
                  by_nuclide=False, name=''):
         super(SurfaceMGXS, self).__init__(domain, domain_type, energy_groups,
-                                    by_nuclide, name)
+                                          by_nuclide, name)
 
     @property
     def scores(self):
@@ -2513,7 +2511,7 @@ class SurfaceMGXS(MGXS):
         if 'energy low [MeV]' in df and 'energyout low [MeV]' in df:
             df.rename(columns={'energy low [MeV]': 'group in'},
                       inplace=True)
-            in_groups = np.tile(all_groups, int(self.num_subdomains * 6))
+            in_groups = np.tile(all_groups, int(self.num_subdomains))
             in_groups = np.repeat(in_groups, int(df.shape[0] / in_groups.size))
             df['group in'] = in_groups
             del df['energy high [MeV]']
@@ -5691,7 +5689,7 @@ class PromptNuFissionXS(MGXS):
 
 
 class Current(SurfaceMGXS):
-    r"""A total multi-group cross section.
+    r"""A current multi-group cross section.
 
     This class can be used for both OpenMC input generation and tally data
     post-processing to compute spatially-homogenized and energy-integrated
