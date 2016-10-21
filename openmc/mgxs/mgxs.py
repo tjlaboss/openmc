@@ -10,7 +10,6 @@ import abc
 import itertools
 
 import numpy as np
-import scipy.sparse as sps
 
 import openmc
 import openmc.checkvalue as cv
@@ -328,16 +327,6 @@ class MGXS(object):
 
         return self._xs_tally
 
-    def get_mean_matrix(self):
-
-        # Get the values as an array
-        xs_array = self.get_xs(nuclides='sum')
-
-        # Convert the array to a matrix
-        xs_matrix = sps.diags(xs_array.flatten())
-
-        return xs_matrix
-
     @property
     def sparse(self):
         return self._sparse
@@ -445,6 +434,9 @@ class MGXS(object):
         """
 
         cv.check_type('sparse', sparse, bool)
+
+        if sparse:
+            import scipy.sparse as sps
 
         # Sparsify or densify the derived MGXS tallies and the base tallies
         if self._xs_tally:
@@ -749,13 +741,15 @@ class MGXS(object):
 
     def get_xs(self, groups='all', subdomains='all', nuclides='all',
                xs_type='macro', order_groups='increasing',
-               value='mean', squeeze=True, **kwargs):
-        r"""Returns an array of multi-group cross sections.
+               value='mean', representation='ndarray', **kwargs):
+        r"""Returns a data object of multi-group cross sections.
 
-        This method constructs a 3D NumPy array for the requested
-        multi-group cross section data for one or more subdomains
-        (1st dimension), energy groups (2nd dimension), and nuclides
-        (3rd dimension).
+        This method constructs a 3D NumPy array for the requested multi-group
+        cross section data for one or more subdomains (1st dimension), energy
+        groups (2nd dimension), and nuclides (3rd dimension). The data can also
+        be return as a flattened array or matrix. A matrix can only be returned
+        if there is one nuclide or if nuclides is 'sum'. If a matrix is
+        requested, it is blocked by energy group.
 
         Parameters
         ----------
@@ -777,13 +771,20 @@ class MGXS(object):
             Defaults to 'increasing'.
         value : {'mean', 'std_dev', 'rel_err'}
             A string for the type of value to return. Defaults to 'mean'.
-        squeeze : bool
-            A boolean representing whether to eliminate the extra dimensions
-            of the multi-dimensional array to be returned. Defaults to True.
+        representation: {'array', 'ndarray', 'matrix'}
+            The representation of the returned data object. Defaults to
+           'ndarray'.
 
         Returns
         -------
-        numpy.ndarray
+        numpy.ndarray or scipy.sparse.csr_matrix
+            A NumPy array or SciPy sparse matrix of the multi-group cross
+            section. If the representation is 'ndarray', the NumPy array is
+            indexed in the order each group, subdomain and nuclide is listed in
+            the parameters. If the representation is 'array', the array is
+            flattened. If the representation is 'matrix', a Scipy sparse CSR
+            matrix is returned blocked by energy groups.
+
             A NumPy array of the multi-group cross section indexed in the order
             each group, subdomain and nuclide is listed in the parameters.
 
@@ -793,6 +794,9 @@ class MGXS(object):
             When this method is called before the multi-group cross section is
             computed from tally data.
 
+        ValueError
+            When a matrix representation is requested with more than one
+            nuclide.
         """
 
         cv.check_value('value', value, ['mean', 'std_dev', 'rel_err'])
@@ -834,10 +838,12 @@ class MGXS(object):
 
         # If user requested the sum for all nuclides, use tally summation
         if nuclides == 'sum' or nuclides == ['sum']:
+            num_nuclides = 1
             xs_tally = self.xs_tally.summation(nuclides=query_nuclides)
             xs = xs_tally.get_values(filters=filters,
                                      filter_bins=filter_bins, value=value)
         else:
+            num_nuclides = len(query_nuclides)
             xs = self.xs_tally.get_values(filters=filters, filter_bins=filter_bins,
                                           nuclides=query_nuclides, value=value)
 
@@ -869,7 +875,25 @@ class MGXS(object):
         if order_groups == 'increasing':
             xs = xs[:, ::-1, :]
 
-        if squeeze:
+        # Reshape data based on desired representation
+        if representation == 'matrix':
+
+            # Make sure sparse is set to true to return sparse matrix
+            self.sparse = True
+
+            if num_nuclides != 1:
+                msg = 'Cannot get a matrix representation for {0} MGXS with '\
+                      'more than 1 nuclide requested.'.format(self.rxn_type)
+                raise ValueError(msg)
+
+            # Get a sparse diagonal matrix in CSR format
+            xs = sps.diags(xs.flatten()).tocsr()
+
+        elif representation == 'array':
+            xs = xs.flatten()
+
+        else:
+            # Remove any unnecessary dimensions
             xs = np.squeeze(xs)
             xs = np.atleast_1d(xs)
 
@@ -1736,27 +1760,23 @@ class MatrixMGXS(MGXS):
     def estimator(self):
         return 'analog'
 
-    def get_mean_matrix(self, row_column='outin'):
-
-        # Get the values as an array
-        xs_array = self.get_xs(nuclides='sum', row_column=row_column)
-
-        # Convert the array to a matrix
-        xs_array.shape = (self.num_subdomains, self.num_groups, self.num_groups)
-        xs_matrix = sps.block_diag(xs_array)
-
-        return xs_matrix
-
     def get_xs(self, in_groups='all', out_groups='all',
                subdomains='all', nuclides='all',
                xs_type='macro', order_groups='increasing',
-               row_column='inout', value='mean', squeeze=True, **kwargs):
-        """Returns an array of multi-group cross sections.
+               row_column='inout', value='mean', representation='ndarray',
+               **kwargs):
+        """Returns a data object of multi-group cross sections.
 
-        This method constructs a 4D NumPy array for the requested
-        multi-group cross section data for one or more subdomains
-        (1st dimension), energy groups in (2nd dimension), energy groups out
-        (3rd dimension), and nuclides (4th dimension).
+        This method constructs a 4D NumPy array for the requested multi-group
+        cross section data. If row_column is 'inout', the array is ordered by
+        subdomains (1st dimension), energy groups in (2nd dimension), energy
+        groups out (3rd dimension), and nuclides (4th dimension). If row_column
+        is 'outin', the array is ordered by subdomains (1st dimension), energy
+        groups out (2nd dimension), energy groups in (3rd dimension), and
+        nuclides (4th dimension). The data can also be return as a flattened
+        array or matrix. A matrix can only be returned if there is one nuclide
+        or if nuclides is 'sum'. If a matrix is requested, it is blocked by
+        energy group.
 
         Parameters
         ----------
@@ -1785,21 +1805,29 @@ class MatrixMGXS(MGXS):
             Defaults to 'inout'.
         value : {'mean', 'std_dev', 'rel_err'}
             A string for the type of value to return. Defaults to 'mean'.
-        squeeze : bool
-            A boolean representing whether to eliminate the extra dimensions
-            of the multi-dimensional array to be returned. Defaults to True.
+        representation: {'array', 'ndarray', 'matrix'}
+            The representation of the returned data object. Defaults to
+           'ndarray'.
 
         Returns
         -------
-        ndarray
-            A NumPy array of the multi-group cross section indexed in the order
-            each group and subdomain is listed in the parameters.
+        ndarray or scipy.sparse.csr_matrix
+            A NumPy array or SciPy sparse matrix of the multi-group cross
+            section. If the representation is 'ndarray', the NumPy array is
+            indexed in the order each group, subdomain and nuclide is listed in
+            the parameters. If the representation is 'array', the array is
+            flattened. If the representation is 'matrix', a Scipy sparse CSR
+            matrix is returned blocked by energy groups.
 
         Raises
         ------
         ValueError
             When this method is called before the multi-group cross section is
             computed from tally data.
+
+        ValueError
+            When a matrix representation is requested with more than one
+            nuclide.
 
         """
 
@@ -1851,10 +1879,12 @@ class MatrixMGXS(MGXS):
 
         # Use tally summation if user requested the sum for all nuclides
         if nuclides == 'sum' or nuclides == ['sum']:
+            num_nuclides = 1
             xs_tally = self.xs_tally.summation(nuclides=query_nuclides)
             xs = xs_tally.get_values(filters=filters, filter_bins=filter_bins,
                                      value=value)
         else:
+            num_nuclides = len(query_nuclides)
             xs = self.xs_tally.get_values(filters=filters,
                                           filter_bins=filter_bins,
                                           nuclides=query_nuclides, value=value)
@@ -1897,7 +1927,32 @@ class MatrixMGXS(MGXS):
         if order_groups == 'increasing':
             xs = xs[:, ::-1, ::-1, :]
 
-        if squeeze:
+        # Reshape data based on desired representation
+        if representation == 'matrix':
+
+            # Make sure sparse is set to true to return sparse matrix
+            self.sparse = True
+
+            if num_nuclides != 1:
+                msg = 'Cannot get a matrix representation for {0} MGXS with '\
+                      'more than 1 nuclide requested.'.format(self.rxn_type)
+                raise ValueError(msg)
+
+            # Reshape the array into a block diagonal matrix
+            if row_column == 'inout':
+                xs.shape = (num_subdomains, num_in_groups, num_out_groups,
+                            xs.shape[-1])
+            else:
+                xs.shape = (num_subdomains, num_out_groups, num_in_groups,
+                            xs.shape[-1])
+
+            # Get a sparse block diagonal matrix in CSR form
+            xs = sps.block_diag(xs).tocsr()
+
+        elif representation == 'array':
+            xs = xs.flatten()
+
+        else:
             xs = np.squeeze(xs)
             xs = np.atleast_2d(xs)
 
@@ -2196,29 +2251,6 @@ class SurfaceMGXS(MGXS):
 
         return self._xs_tally
 
-    def get_mean_array(self):
-
-        # Get the values as an array
-        xs_array = self.get_xs(nuclides='sum').flatten()
-
-        # Convert the array to a matrix
-        xs_array.shape = (self.num_subdomains * self.num_groups,
-                          4 * self.domain.num_dimensions)
-
-        return xs_array
-
-    def get_mean_matrix(self):
-
-        # Get the values as an array
-        xs_array = self.get_xs(nuclides='sum').flatten()
-
-        # Convert the array to a matrix
-        xs_array.shape = (self.num_subdomains * self.num_groups,
-                          4 * self.domain.num_dimensions)
-        xs_matrix = sps.lil_matrix(xs_array)
-
-        return xs_matrix
-
     def load_from_statepoint(self, statepoint):
         """Extracts tallies in an OpenMC StatePoint with the data needed to
         compute multi-group cross sections.
@@ -2305,13 +2337,15 @@ class SurfaceMGXS(MGXS):
 
     def get_xs(self, groups='all', subdomains='all', nuclides='all',
                xs_type='macro', order_groups='increasing',
-               value='mean', squeeze=True, **kwargs):
-        r"""Returns an array of multi-group cross sections.
+               value='mean', representation='ndarray', **kwargs):
+        r"""Returns a data object of multi-group cross sections.
 
-        This method constructs a 3D NumPy array for the requested
-        multi-group cross section data for one or more subdomains
-        (1st dimension), energy groups (2nd dimension), and nuclides
-        (3rd dimension).
+        This method constructs a 3D NumPy array for the requested multi-group
+        cross section data for one or more subdomains (1st dimension), energy
+        groups (2nd dimension), and nuclides (3rd dimension). The data can also
+        be return as a flattened array or matrix. A matrix can only be returned
+        if there is one nuclide or if nuclides is 'sum'. If a matrix is
+        requested, it is blocked by energy group.
 
         Parameters
         ----------
@@ -2333,13 +2367,20 @@ class SurfaceMGXS(MGXS):
             Defaults to 'increasing'.
         value : {'mean', 'std_dev', 'rel_err'}
             A string for the type of value to return. Defaults to 'mean'.
-        squeeze : bool
-            A boolean representing whether to eliminate the extra dimensions
-            of the multi-dimensional array to be returned. Defaults to True.
+        representation: {'array', 'ndarray', 'matrix'}
+            The representation of the returned data object. Defaults to
+           'ndarray'.
 
         Returns
         -------
-        numpy.ndarray
+        numpy.ndarray or scipy.sparse.csr_matrix
+            A NumPy array or SciPy sparse matrix of the multi-group cross
+            section. If the representation is 'ndarray', the NumPy array is
+            indexed in the order each group, subdomain and nuclide is listed in
+            the parameters. If the representation is 'array', the array is
+            flattened. If the representation is 'matrix', a Scipy sparse CSR
+            matrix is returned blocked by energy groups.
+
             A NumPy array of the multi-group cross section indexed in the order
             each group, subdomain and nuclide is listed in the parameters.
 
@@ -2348,6 +2389,10 @@ class SurfaceMGXS(MGXS):
         ValueError
             When this method is called before the multi-group cross section is
             computed from tally data.
+
+        ValueError
+            When a matrix representation is requested with more than one
+            nuclide.
 
         """
 
@@ -2389,10 +2434,12 @@ class SurfaceMGXS(MGXS):
 
         # If user requested the sum for all nuclides, use tally summation
         if nuclides == 'sum' or nuclides == ['sum']:
+            num_nuclides = 1
             xs_tally = self.xs_tally.summation(nuclides=query_nuclides)
             xs = xs_tally.get_values(filters=filters,
                                      filter_bins=filter_bins, value=value)
         else:
+            num_nuclides = len(query_nuclides)
             xs = self.xs_tally.get_values(filters=filters, filter_bins=filter_bins,
                                           nuclides=query_nuclides, value=value)
 
@@ -2425,7 +2472,25 @@ class SurfaceMGXS(MGXS):
         if order_groups == 'increasing':
             xs = xs[:, ::-1, :, :]
 
-        if squeeze:
+        # Reshape data based on desired representation
+        if representation == 'matrix':
+
+            # Make sure sparse is set to true to return sparse matrix
+            self.sparse = True
+
+            if num_nuclides != 1:
+                msg = 'Cannot get a matrix representation for {0} MGXS with '\
+                      'more than 1 nuclide requested.'.format(self.rxn_type)
+                raise ValueError(msg)
+
+            # Get a sparse diagonal matrix in CSR format
+            xs = sps.diags(xs.flatten()).tocsr()
+
+        elif representation == 'array':
+            xs = xs.flatten()
+
+        else:
+            # Remove any unnecessary dimensions
             xs = np.squeeze(xs)
             xs = np.atleast_1d(xs)
 
@@ -4085,13 +4150,17 @@ class ScatterMatrixXS(MatrixMGXS):
     def get_xs(self, in_groups='all', out_groups='all',
                subdomains='all', nuclides='all', moment='all',
                xs_type='macro', order_groups='increasing',
-               row_column='inout', value='mean', squeeze=True):
-        r"""Returns an array of multi-group cross sections.
+               row_column='inout', value='mean',
+               representation='ndarray', **kwargs):
+        r"""Returns a data object of multi-group cross sections.
 
-        This method constructs a 5D NumPy array for the requested
-        multi-group cross section data for one or more subdomains
-        (1st dimension), energy groups in (2nd dimension), energy groups out
-        (3rd dimension), nuclides (4th dimension), and moments (5th dimension).
+        This method constructs a 5D NumPy array for the requested multi-group
+        cross section data for one or more subdomains (1st dimension), energy
+        groups in (2nd dimension), energy groups out (3rd dimension), nuclides
+        (4th dimension), and moments (5th dimension). The data can also be
+        return as a flattened array or matrix. A matrix can only be returned if
+        there is one nuclide or if nuclides is 'sum' and there is one moment.
+        If a matrix is requested, it is blocked by energy group.
 
         NOTE: The scattering moments are not multiplied by the :math:`(2l+1)/2`
         prefactor in the expansion of the scattering source into Legendre
@@ -4127,9 +4196,9 @@ class ScatterMatrixXS(MatrixMGXS):
             Defaults to 'inout'.
         value : {'mean', 'std_dev', 'rel_err'}
             A string for the type of value to return. Defaults to 'mean'.
-        squeeze : bool
-            A boolean representing whether to eliminate the extra dimensions
-            of the multi-dimensional array to be returned. Defaults to True.
+        representation: {'array', 'ndarray', 'matrix'}
+            The representation of the returned data object. Defaults to
+           'ndarray'.
 
         Returns
         -------
@@ -4143,6 +4212,13 @@ class ScatterMatrixXS(MatrixMGXS):
             When this method is called before the multi-group cross section is
             computed from tally data.
 
+        ValueError
+            When a matrix representation is requested with more than one
+            nuclide.
+
+        ValueError
+            When a matrix representation is requested with more than one
+            moment.
         """
 
         cv.check_value('value', value, ['mean', 'std_dev', 'rel_err'])
@@ -4200,10 +4276,12 @@ class ScatterMatrixXS(MatrixMGXS):
 
         # Use tally summation if user requested the sum for all nuclides
         if nuclides == 'sum' or nuclides == ['sum']:
+            num_nuclides = 1
             xs_tally = self.xs_tally.summation(nuclides=query_nuclides)
             xs = xs_tally.get_values(scores=scores, filters=filters,
                                      filter_bins=filter_bins, value=value)
         else:
+            num_nuclides = len(query_nuclides)
             xs = self.xs_tally.get_values(scores=scores, filters=filters,
                                           filter_bins=filter_bins,
                                           nuclides=query_nuclides, value=value)
@@ -4245,7 +4323,37 @@ class ScatterMatrixXS(MatrixMGXS):
         if order_groups == 'increasing':
             xs = xs[:, ::-1, ::-1, :]
 
-        if squeeze:
+        # Reshape data based on desired representation
+        if representation == 'matrix':
+
+            # Make sure sparse is set to true to return sparse matrix
+            self.sparse = True
+
+            if num_nuclides != 1:
+                msg = 'Cannot get a matrix representation for {0} MGXS with '\
+                      'more than 1 nuclide requested.'.format(self.rxn_type)
+                raise ValueError(msg)
+
+            if moment == 'all' and self.legendre_order > 1:
+                msg = 'Cannot get a matrix representation for {0} MGXS with '\
+                      'more than 1 moment requested.'.format(self.rxn_type)
+                raise ValueError(msg)
+
+            # Reshape the array into a block diagonal matrix
+            if row_column == 'inout':
+                xs.shape = (num_subdomains, num_in_groups, num_out_groups,
+                            xs.shape[-1])
+            else:
+                xs.shape = (num_subdomains, num_out_groups, num_in_groups,
+                            xs.shape[-1])
+
+            # Get a sparse block diagonal matrix in CSR form
+            xs = sps.block_diag(xs).tocsr()
+
+        elif representation == 'array':
+            xs = xs.flatten()
+
+        else:
             xs = np.squeeze(xs)
             xs = np.atleast_2d(xs)
 
@@ -4977,18 +5085,6 @@ class Chi(MGXS):
 
         return self._xs_tally
 
-    def get_mean_matrix(self):
-
-        # Get the values as an array
-        xs_array = self.get_xs(nuclides='sum')
-
-        # Convert the array to a matrix
-        xs_array = np.repeat(xs_array, self.num_groups)
-        xs_array.shape = (self.num_subdomains, self.num_groups, self.num_groups)
-        xs_matrix = sps.block_diag(xs_array)
-
-        return xs_matrix
-
     def get_slice(self, nuclides=[], groups=[]):
         """Build a sliced Chi for the specified nuclides and energy groups.
 
@@ -5099,13 +5195,17 @@ class Chi(MGXS):
 
     def get_xs(self, groups='all', subdomains='all', nuclides='all',
                xs_type='macro', order_groups='increasing',
-               value='mean', squeeze=True, **kwargs):
-        """Returns an array of the fission spectrum.
+               value='mean', representation='ndarray', **kwargs):
+        """Returns a data object array of the fission spectrum.
 
         This method constructs a 3D NumPy array for the requested
         multi-group cross section data for one or more subdomains
         (1st dimension), energy groups (2nd dimension), and nuclides
-        (3rd dimension).
+        (3rd dimension). The data can also be return as a flattened array or
+        matrix. If a matrix is requested, it is blocked by energy group. A
+        matrix can only be returned if there is one nuclide or if nuclides is
+        'sum'. Since the energy groups represent *outgoing* energy groups for
+        this MGXS, the matrix is returned with groups in 'inout' form.
 
         Parameters
         ----------
@@ -5127,15 +5227,19 @@ class Chi(MGXS):
             Defaults to 'increasing'.
         value : {'mean', 'std_dev', 'rel_err'}
             A string for the type of value to return. Defaults to 'mean'.
-        squeeze : bool
-            A boolean representing whether to eliminate the extra dimensions
-            of the multi-dimensional array to be returned. Defaults to True.
+        representation: {'array', 'ndarray', 'matrix'}
+            The representation of the returned data object. Defaults to
+           'ndarray'.
 
         Returns
         -------
-        numpy.ndarray
-            A NumPy array of the multi-group cross section indexed in the order
-            each group, subdomain and nuclide is listed in the parameters.
+        ndarray or scipy.sparse.csr_matrix
+            A NumPy array or SciPy sparse matrix of the multi-group cross
+            section. If the representation is 'ndarray', the NumPy array is
+            indexed in the order each group, subdomain and nuclide is listed in
+            the parameters. If the representation is 'array', the array is
+            flattened. If the representation is 'matrix', a Scipy sparse CSR
+            matrix is returned blocked by energy groups.
 
         Raises
         ------
@@ -5143,6 +5247,9 @@ class Chi(MGXS):
             When this method is called before the multi-group cross section is
             computed from tally data.
 
+        ValueError
+            When a matrix representation is requested with more than one
+            nuclide.
         """
 
         cv.check_value('value', value, ['mean', 'std_dev', 'rel_err'])
@@ -5179,6 +5286,8 @@ class Chi(MGXS):
             # nuclides in the domain
             if nuclides == 'sum' or nuclides == ['sum']:
 
+                num_nuclides = 1
+
                 # Retrieve the fission production tallies
                 nu_fission_in = self.tallies['nu-fission-in']
                 nu_fission_out = self.tallies['nu-fission-out']
@@ -5205,6 +5314,7 @@ class Chi(MGXS):
             # Get chi for all nuclides in the domain
             elif nuclides == 'all':
                 nuclides = self.get_nuclides()
+                num_nuclides = len(nuclides)
                 xs = self.xs_tally.get_values(filters=filters,
                                               filter_bins=filter_bins,
                                               nuclides=nuclides, value=value)
@@ -5212,12 +5322,14 @@ class Chi(MGXS):
             # Get chi for user-specified nuclides in the domain
             else:
                 cv.check_iterable_type('nuclides', nuclides, basestring)
+                num_nuclides = len(nuclides)
                 xs = self.xs_tally.get_values(filters=filters,
                                               filter_bins=filter_bins,
                                               nuclides=nuclides, value=value)
 
         # If chi was computed as an average of nuclides in the domain
         else:
+            num_nuclides = 1
             xs = self.xs_tally.get_values(filters=filters,
                                           filter_bins=filter_bins, value=value)
 
@@ -5240,7 +5352,30 @@ class Chi(MGXS):
         if order_groups == 'increasing':
             xs = xs[:, ::-1, :]
 
-        if squeeze:
+        # Reshape data based on desired representation
+        if representation == 'matrix':
+
+            # Make sure sparse is set to true to return sparse matrix
+            self.sparse = True
+
+            if num_nuclides != 1:
+                msg = 'Cannot get a matrix representation for {0} MGXS with '\
+                      'more than 1 nuclide requested.'.format(self.rxn_type)
+                raise ValueError(msg)
+
+            # Repeat the xs to get the same chi for every incoming group
+            xs = np.repeat(xs, num_groups)
+
+            # Reshape the matrix to make energy group blocks
+            xs.shape = (num_subdomains, num_groups, num_groups)
+
+            # Get a sparse block diagonal matrix in CSR form
+            xs = sps.block_diag(xs).tocsr()
+
+        elif representation == 'array':
+            xs = xs.flatten()
+
+        else:
             xs = np.squeeze(xs)
             xs = np.atleast_1d(xs)
 

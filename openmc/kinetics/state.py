@@ -196,8 +196,9 @@ class State(object):
         dxyz = np.prod(self.mesh.width)
 
         # Extract the necessary cross sections
-        inscatter = self.mgxs_lib['nu-scatter matrix'].get_mean_matrix()
-        absorb = self.mgxs_lib['absorption'].get_mean_matrix()
+        inscatter = self.mgxs_lib['nu-scatter matrix']\
+                        .get_xs(representation='matrix')
+        absorb = self.mgxs_lib['absorption'].get_xs(reprensentation='matrix')
         stream, stream_corr = self.compute_surface_dif_coefs()
         outscatter = sps.diags(np.asarray(inscatter.sum(axis=0)).flatten(), 0)
         loss_matrix = dxyz * (absorb + outscatter - inscatter) \
@@ -212,10 +213,12 @@ class State(object):
         dxyz = np.prod(self.mesh.width)
 
         # Extract the necessary cross sections
-        chi_p = self.mgxs_lib['chi-prompt'].get_mean_matrix()
-        chi_d = self.mgxs_lib['chi-delayed'].get_mean_matrix()
-        nu_fis_p = self.mgxs_lib['prompt-nu-fission'].get_mean_matrix()
-        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_mean_matrix(True)
+        chi_p = self.mgxs_lib['chi-prompt'].get_xs(representation='matrix')
+        chi_d = self.mgxs_lib['chi-delayed'].get_xs(representation='matrix')
+        nu_fis_p = self.mgxs_lib['prompt-nu-fission']\
+                       .get_xs(representation='matrix')
+        nu_fis_d = self.mgxs_lib['delayed-nu-fission']\
+                       .get_xs(representation='matrix')
 
         # Return the production matrix
         return dxyz * (chi_p * nu_fis_p + chi_d * nu_fis_d)
@@ -223,7 +226,8 @@ class State(object):
     def get_kappa_fission_matrix(self):
 
         # Extract the necessary cross sections
-        kappa_fission = self.mgxs_lib['kappa-fission'].get_mean_matrix()
+        kappa_fission = self.mgxs_lib['kappa-fission']\
+                            .get_xs(representation='matrix')
 
         # Return the destruction matrix
         return kappa_fission
@@ -264,9 +268,10 @@ class State(object):
         nd = self.num_delayed_groups
 
         # Extract the necessary cross sections
-        chi_d = self.mgxs_lib['chi-delayed'].get_mean_matrix(True)
-        decay_rate = self.mgxs_lib['decay-rate'].get_mean_array()
-        inv_velocity = self.mgxs_lib['inverse-velocity'].get_mean_matrix()
+        chi_d = self.mgxs_lib['chi-delayed'].get_xs(representation='matrix')
+        decay_rate = self.mgxs_lib['decay-rate'].get_xs(representation='array')
+        inv_velocity = self.mgxs_lib['inverse-velocity']\
+                           .get_xs(representation='matrix')
         dt = self.clock.dt_inner
 
         # Compute the delayed source
@@ -303,14 +308,14 @@ class State(object):
         dxyz = dx * dy * dz
 
         # Extract the necessary cross sections
-        chi_p = self.mgxs_lib['chi-prompt'].get_mean_matrix()
-        chi_d = self.mgxs_lib['chi-delayed'].get_mean_matrix()
-        nu_fis_p = self.mgxs_lib['prompt-nu-fission'].get_mean_matrix()
-        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_mean_array()
-        decay_rate = self.mgxs_lib['decay-rate'].get_mean_array()
-        inv_velocity = self.mgxs_lib['inverse-velocity'].get_mean_matrix()
-        inscatter = self.mgxs_lib['nu-scatter matrix'].get_mean_matrix()
-        absorb = self.mgxs_lib['absorption'].get_mean_matrix()
+        chi_p = self.mgxs_lib['chi-prompt'].get_xs(representation='matrix')
+        chi_d = self.mgxs_lib['chi-delayed'].get_xs(representation='matrix')
+        nu_fis_p = self.mgxs_lib['prompt-nu-fission'].get_xs(representation='matrix')
+        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_xs(representation='array')
+        decay_rate = self.mgxs_lib['decay-rate'].get_xs(representation='array')
+        inv_velocity = self.mgxs_lib['inverse-velocity'].get_xs(representation='matrix')
+        inscatter = self.mgxs_lib['nu-scatter matrix'].get_xs(representation='matrix')
+        absorb = self.mgxs_lib['absorption'].get_xs(representation='matrix')
         stream, stream_corr = self.compute_surface_dif_coefs()
         outscatter = sps.diags(np.asarray(inscatter.sum(axis=0)).flatten(), 0)
         dt = self.clock.dt_inner
@@ -355,8 +360,8 @@ class State(object):
         dt = self.clock.dt_inner
 
         # Extract the necessary cross sections
-        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_mean_matrix()
-        decay_rate = self.mgxs_lib['decay-rate'].get_mean_array()
+        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_xs(representation='matrix')
+        decay_rate = self.mgxs_lib['decay-rate'].get_xs(representation='array')
         old_conc = state.precursor_conc
 
         # Get the flux and repeat to cover all delayed groups
@@ -381,8 +386,8 @@ class State(object):
         nd = self.num_delayed_groups
 
         # Extract the necessary cross sections
-        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_mean_matrix()
-        decay_rate = self.mgxs_lib['decay-rate'].get_mean_array()
+        nu_fis_d = self.mgxs_lib['delayed-nu-fission'].get_xs(representation='matrix')
+        decay_rate = self.mgxs_lib['decay-rate'].get_xs(representation='array')
 
         # Get the flux and repeat to cover all delayed groups
         flux = copy.deepcopy(self.flux)
@@ -455,7 +460,7 @@ class State(object):
         ng = self.energy_groups.num_groups
 
         # Compute the net current
-        partial_current = self.mgxs_lib['current'].get_mean_array()
+        partial_current = self.mgxs_lib['current'].get_xs(representation='array')
         net_current = partial_current[:, range(6)] - partial_current[:, range(6,12)]
         net_current[:, 0:6:2] = -net_current[:, 0:6:2]
         net_current.shape = (nz, ny, nx, ng, 6)
