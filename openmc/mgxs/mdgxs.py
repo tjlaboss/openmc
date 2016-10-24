@@ -1344,17 +1344,31 @@ class ChiDelayed(MDGXS):
 
             # Get chi delayed for user-specified nuclides in the domain
             else:
+
+                # Sum over delayed groups, if requested
+                xs_tally = self._xs_tally
+                if delayed_groups == 'sum' or delayed_groups == ['sum']:
+                    xs_tally = xs_tally.summation\
+                               (filter_type=openmc.DelayedGroupFilter)
+
                 cv.check_iterable_type('nuclides', nuclides, basestring)
                 num_nuclides = len(nuclides)
-                xs = self.xs_tally.get_values(filters=filters,
-                                              filter_bins=filter_bins,
-                                              nuclides=nuclides, value=value)
+                xs = xs_tally.get_values(filters=filters,
+                                         filter_bins=filter_bins,
+                                         nuclides=nuclides, value=value)
 
         # If chi delayed was computed as an average of nuclides in the domain
         else:
+
+            # Sum over delayed groups, if requested
+            xs_tally = self._xs_tally
+            if delayed_groups == 'sum' or delayed_groups == ['sum']:
+                xs_tally = xs_tally.summation\
+                           (filter_type=openmc.DelayedGroupFilter)
+
             num_nuclides = 1
-            xs = self.xs_tally.get_values(filters=filters,
-                                          filter_bins=filter_bins, value=value)
+            xs = xs_tally.get_values(filters=filters,
+                                     filter_bins=filter_bins, value=value)
 
         # Eliminate the trivial score dimension
         xs = np.squeeze(xs, axis=len(xs.shape) - 1)
