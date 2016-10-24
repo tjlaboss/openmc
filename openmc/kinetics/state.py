@@ -461,6 +461,7 @@ class State(object):
 
         # Compute the net current
         partial_current = self.mgxs_lib['current'].get_xs(representation='array')
+        partial_current.shape = (partial_current.shape[0] / 12, 12)
         net_current = partial_current[:, range(6)] - partial_current[:, range(6,12)]
         net_current[:, 0:6:2] = -net_current[:, 0:6:2]
         net_current.shape = (nz, ny, nx, ng, 6)

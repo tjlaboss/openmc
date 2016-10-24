@@ -424,8 +424,8 @@ class MDGXS(MGXS):
         # Reshape data based on desired representation
         if representation == 'matrix':
 
-            # Make sure sparse is set to true to return sparse matrix
-            self.sparse = True
+            # Make sure scipy.sparse module is loaded
+            import scipy.sparse as sps
 
             if num_nuclides != 1:
                 msg = 'Cannot get a matrix representation for {0} MGXS with '\
@@ -1402,8 +1402,8 @@ class ChiDelayed(MDGXS):
         # Reshape data based on desired representation
         if representation == 'matrix':
 
-            # Make sure sparse is set to true to return sparse matrix
-            self.sparse = True
+            # Make sure scipy.sparse module is loaded
+            import scipy.sparse as sps
 
             if num_nuclides != 1:
                 msg = 'Cannot get a matrix representation for {0} MGXS with '\
@@ -1849,6 +1849,7 @@ class DecayRate(MDGXS):
         return self._xs_tally
 
 
+@add_metaclass(ABCMeta)
 class MatrixMDGXS(MDGXS):
     """An abstract multi-delayed-group cross section for some energy group and
     delayed group structure within some spatial domain. This class is
@@ -1941,9 +1942,6 @@ class MatrixMDGXS(MDGXS):
         The key used to index multi-group cross sections in an HDF5 data store
 
     """
-
-    # This is an abstract class which cannot be instantiated
-    __metaclass__ = abc.ABCMeta
 
     @property
     def filters(self):
@@ -2148,8 +2146,8 @@ class MatrixMDGXS(MDGXS):
         # Reshape data based on desired representation
         if representation == 'matrix':
 
-            # Make sure sparse is set to true to return sparse matrix
-            self.sparse = True
+            # Make sure scipy.sparse module is loaded
+            import scipy.sparse as sps
 
             if num_nuclides != 1:
                 msg = 'Cannot get a matrix representation for {0} MGXS with '\

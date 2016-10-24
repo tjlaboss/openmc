@@ -873,8 +873,8 @@ class MGXS(object):
         # Reshape data based on desired representation
         if representation == 'matrix':
 
-            # Make sure sparse is set to true to return sparse matrix
-            self.sparse = True
+            # Make sure scipy.sparse module is loaded
+            import scipy.sparse as sps
 
             if num_nuclides != 1:
                 msg = 'Cannot get a matrix representation for {0} MGXS with '\
@@ -1922,8 +1922,8 @@ class MatrixMGXS(MGXS):
         # Reshape data based on desired representation
         if representation == 'matrix':
 
-            # Make sure sparse is set to true to return sparse matrix
-            self.sparse = True
+            # Make sure scipy.sparse module is loaded
+            import scipy.sparse as sps
 
             if num_nuclides != 1:
                 msg = 'Cannot get a matrix representation for {0} MGXS with '\
@@ -1932,11 +1932,9 @@ class MatrixMGXS(MGXS):
 
             # Reshape the array into a block diagonal matrix
             if row_column == 'inout':
-                xs.shape = (num_subdomains, num_in_groups, num_out_groups,
-                            xs.shape[-1])
+                xs.shape = (num_subdomains, num_in_groups, num_out_groups)
             else:
-                xs.shape = (num_subdomains, num_out_groups, num_in_groups,
-                            xs.shape[-1])
+                xs.shape = (num_subdomains, num_out_groups, num_in_groups)
 
             # Get a sparse block diagonal matrix in CSR form
             xs = sps.block_diag(xs).tocsr()
@@ -2195,9 +2193,6 @@ class SurfaceMGXS(MGXS):
         The key used to index multi-group cross sections in an HDF5 data store
 
     """
-
-    # This is an abstract class which cannot be instantiated
-    __metaclass__ = abc.ABCMeta
 
     def __init__(self, domain=None, domain_type=None, energy_groups=None,
                  by_nuclide=False, name=''):
@@ -2467,8 +2462,8 @@ class SurfaceMGXS(MGXS):
         # Reshape data based on desired representation
         if representation == 'matrix':
 
-            # Make sure sparse is set to true to return sparse matrix
-            self.sparse = True
+            # Make sure scipy.sparse module is loaded
+            import scipy.sparse as sps
 
             if num_nuclides != 1:
                 msg = 'Cannot get a matrix representation for {0} MGXS with '\
@@ -4318,8 +4313,8 @@ class ScatterMatrixXS(MatrixMGXS):
         # Reshape data based on desired representation
         if representation == 'matrix':
 
-            # Make sure sparse is set to true to return sparse matrix
-            self.sparse = True
+            # Make sure scipy.sparse module is loaded
+            import scipy.sparse as sps
 
             if num_nuclides != 1:
                 msg = 'Cannot get a matrix representation for {0} MGXS with '\
@@ -4333,11 +4328,9 @@ class ScatterMatrixXS(MatrixMGXS):
 
             # Reshape the array into a block diagonal matrix
             if row_column == 'inout':
-                xs.shape = (num_subdomains, num_in_groups, num_out_groups,
-                            xs.shape[-1])
+                xs.shape = (num_subdomains, num_in_groups, num_out_groups)
             else:
-                xs.shape = (num_subdomains, num_out_groups, num_in_groups,
-                            xs.shape[-1])
+                xs.shape = (num_subdomains, num_out_groups, num_in_groups)
 
             # Get a sparse block diagonal matrix in CSR form
             xs = sps.block_diag(xs).tocsr()
@@ -5347,8 +5340,8 @@ class Chi(MGXS):
         # Reshape data based on desired representation
         if representation == 'matrix':
 
-            # Make sure sparse is set to true to return sparse matrix
-            self.sparse = True
+            # Make sure scipy.sparse module is loaded
+            import scipy.sparse as sps
 
             if num_nuclides != 1:
                 msg = 'Cannot get a matrix representation for {0} MGXS with '\
