@@ -117,6 +117,14 @@ class Solver(object):
         return self._mesh
 
     @property
+    def nxzy(self):
+        return np.prod(self.mesh.dimension)
+
+    @property
+    def ng(self):
+        return self.energy_groups.num_groups
+
+    @property
     def geometry(self):
         return self._geometry
 
@@ -235,10 +243,6 @@ class Solver(object):
 
     def run_openmc(self, time):
 
-        # Get the dimensions of the mesh
-        dx, dy, dz = self.mesh.width
-        dxyz = dx * dy * dz
-
         # Create a new random seed for the xml file
         if not self.constant_seed:
             self.settings_file.seed = np.random.randint(1, 1e6, 1)[0]
@@ -284,21 +288,21 @@ class Solver(object):
         self.create_state('START')
         self.run_openmc('START')
 
-        # Extract the destruction and production matrices
+        # Extract the flux from the first solve
         state = self.states['START']
         mgxs_lib = state.mgxs_lib
-        flux = mgxs_lib['absorption'].tallies['flux'].get_values().flatten()
+        flux = mgxs_lib['absorption'].tallies['flux'].get_values()
+        flux.shape = (self.nxyz, self.ng)
         state.flux = flux
-        A = state.get_destruction_matrix()
-        M = state.get_production_matrix()
 
         # Compute the initial eigenvalue
-        flux, self.k_crit = self.compute_eigenvalue(A, M, flux)
+        flux, self.k_crit = self.compute_eigenvalue(state.destruction_matrix,
+                                                    state.production_matrix,
+                                                    flux)
 
         # Normalize the initial flux
         state.flux = flux
-        initial_power = state.get_core_power_density()
-        norm_factor = self.initial_power / initial_power
+        norm_factor = self.initial_power / state.core_power_density
         state.flux *= norm_factor
         state.k_crit = self.k_crit
 
@@ -320,8 +324,7 @@ class Solver(object):
                 if time != time_from:
                     state_to = self.states[time]
                     state_to.flux = copy.deepcopy(state_from.flux)
-                    precursor_conc = state_from.precursor_conc
-                    state_to.precursor_conc = copy.deepcopy(precursor_conc)
+                    state_to.precursors = copy.deepcopy(state_from.precursors)
                     self.clock.times[time] = self.clock.times[time_from]
 
                     if copy_mgxs:
@@ -330,7 +333,7 @@ class Solver(object):
             state_from = self.states[time_from]
             state_to = self.states[time_to]
             state_to.flux = copy.deepcopy(state_from.flux)
-            state_to.precursor_conc = copy.deepcopy(state_from.precursor_conc)
+            state_to.precursors = copy.deepcopy(state_from.precursors)
             self.clock.times[time_to] = self.clock.times[time_from]
 
             if copy_mgxs:
@@ -354,8 +357,8 @@ class Solver(object):
         state_fwd_in_old = self.states['FORWARD_IN_OLD']
 
         # Get the forward and backward transient matrices
-        trans_matrix_fwd  = state_fwd_out.get_transient_matrix()
-        trans_matrix_prev = state_prev_out.get_transient_matrix()
+        matrix_fwd  = state_fwd_out.transient_matrix
+        matrix_prev = state_prev_out.transient_matrix
 
         while (times['FORWARD_IN'] < times['FORWARD_OUT'] - 1.e-8):
 
@@ -366,21 +369,20 @@ class Solver(object):
             # Get the weight for this time point
             wgt = clock.get_inner_weight()
 
-            # Get the transient matrix
-            trans_matrix = wgt * trans_matrix_fwd + (1 - wgt) * trans_matrix_prev
+            # Get the transient matrix and time source
+            matrix = wgt * matrix_fwd + (1 - wgt) * matrix_prev
+            time_source = state_prev_in.time_source_matrix * \
+                          state_prev_in.flux.flatten()
+            source = time_source - state_prev_in.decay_source.flatten()
 
             res = 1.e10
             while (res > 1.e-6):
 
-                # Get the source
-                source = state_prev_in.get_source()
-
                 # Solve for the flux at FORWARD_IN
-                state_fwd_in.flux = spsolve(trans_matrix, source)
+                state_fwd_in.flux = spsolve(matrix, source)
 
                 # Propagate the precursors
-                state_fwd_in.propagate_precursors(state_prev_in,
-                                                  clock.dt_inner)
+                state_fwd_in.propagate_precursors(state_prev_in)
 
                 # Compute the residual
                 flux_res = (state_fwd_in.flux - state_fwd_in_old.flux) / \
@@ -399,8 +401,8 @@ class Solver(object):
 
             # Save the core power at FORWARD_IN
             self.times.append(times['FORWARD_IN'])
-            self.core_powers.append(state_fwd_in.get_core_power_density())
-            self.mesh_powers.append(state_fwd_in.get_mesh_powers())
+            self.core_powers.append(state_fwd_in.core_power_density)
+            self.mesh_powers.append(state_fwd_in.mesh_powers)
             print('time: {0:1.4f} s, power: {1:1.4e} W/cm^3'.\
                   format(self.times[-1], self.core_powers[-1]))
 
@@ -409,6 +411,9 @@ class Solver(object):
         self.copy_states('FORWARD_OUT', 'PREVIOUS_OUT', True)
 
     def compute_eigenvalue(self, A, M, flux):
+
+        # Ensure flux is a 1D array
+        flux = flux.flatten()
 
         # Compute the initial source
         old_source = M * flux
@@ -445,8 +450,10 @@ class Solver(object):
             if residual < 1.e-8 and i > 10:
                 break
 
-        return flux, k_eff
+        # Reshape flux into 2D array
+        flux.shape = (self.nxyz, self.ng)
 
+        return flux, k_eff
 
     def generate_tallies_file(self, time):
 
