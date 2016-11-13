@@ -117,7 +117,7 @@ class Solver(object):
         return self._mesh
 
     @property
-    def nxzy(self):
+    def nxyz(self):
         return np.prod(self.mesh.dimension)
 
     @property

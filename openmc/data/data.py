@@ -1,5 +1,6 @@
 import itertools
 import os
+import re
 
 
 # Isotopic abundances from M. Berglund and M. E. Wieser, "Isotopic compositions
@@ -149,6 +150,7 @@ def atomic_mass(isotope):
 
     """
     if not _ATOMIC_MASS:
+
         # Load data from AME2012 file
         mass_file = os.path.join(os.path.dirname(__file__), 'mass.mas12')
         with open(mass_file, 'r') as ame:
@@ -159,13 +161,28 @@ def atomic_mass(isotope):
                     line[100:106] + '.' + line[107:112])
                 _ATOMIC_MASS[name.lower()] = mass
 
+        # For isotopes found in some libraries that represent all natural
+        # isotopes of their element (e.g. C0), calculate the atomic mass as
+        # the sum of the atomic mass times the natural abudance of the isotopes
+        # that make up the element.
+        for element in ['C', 'Zn', 'Pt', 'Os', 'Tl']:
+            isotope_zero = element.lower() + '0'
+            _ATOMIC_MASS[isotope_zero] = 0.
+            for iso, abundance in NATURAL_ABUNDANCE.items():
+                if re.match(r'{}\d+'.format(element), iso):
+                    _ATOMIC_MASS[isotope_zero] += abundance * \
+                                                  _ATOMIC_MASS[iso.lower()]
+
     # Get rid of metastable information
     if '_' in isotope:
         isotope = isotope[:isotope.find('_')]
 
     return _ATOMIC_MASS.get(isotope.lower())
 
-# The value of the Boltzman constant in units of MeV / K
+# The value of the Boltzman constant in units of eV / K
 # Values here are from the Committee on Data for Science and Technology
 # (CODATA) 2010 recommendation (doi:10.1103/RevModPhys.84.1527).
-K_BOLTZMANN = 8.6173324E-11
+K_BOLTZMANN = 8.6173324e-5
+
+# Used for converting units in ACE data
+EV_PER_MEV = 1.0e6
