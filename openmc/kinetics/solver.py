@@ -78,7 +78,7 @@ class Solver(object):
         self._one_group = None
         self._energy_groups = None
         self._fine_groups = None
-        self._k_crit = None
+        self._k_crit = 1.0
         self._num_delayed_groups = 6
         self._initial_power = 1.
         self._states = OrderedDict()
@@ -257,7 +257,7 @@ class Solver(object):
         self.generate_tallies_file(time)
 
         # Run OpenMC
-        openmc.run(mpi_procs=8)
+        openmc.run()
 
         # Load MGXS from statepoint
         os.rename('statepoint.{}.h5'.format(self.settings_file.batches),

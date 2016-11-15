@@ -155,15 +155,19 @@ class State(object):
         return self._num_delayed_groups
 
     @property
-    def nxzy(self):
+    def nxyz(self):
         return np.prod(self.mesh.dimension)
 
     @property
-    def dxzy(self):
+    def dxyz(self):
         return np.prod(self.mesh.width)
 
     @property
     def ng(self):
+        return self.energy_groups.num_groups
+
+    @property
+    def ngp(self):
         return self.energy_groups.num_groups
 
     @property
@@ -173,7 +177,6 @@ class State(object):
     @property
     def dt(self):
         return self.clock.dt_inner
-
 
     @core_volume.setter
     def core_volume(self, core_volume):
@@ -226,12 +229,12 @@ class State(object):
     @property
     def inscatter(self):
         inscatter = self.mgxs_lib['nu-scatter matrix'].get_xs(row_column='outin')
-        inscatter.shape = (self.nxyz, self.ng, self.ng)
+        inscatter.shape = (self.nxyz, self.ngp, self.ng)
         return inscatter
 
     @property
     def outscatter(self):
-        return inscatter.sum(axis=1)
+        return self.inscatter.sum(axis=1)
 
     @property
     def absorption(self):
@@ -252,7 +255,7 @@ class State(object):
     @property
     def chi_prompt(self):
         chi_prompt = self.mgxs_lib['chi-prompt'].get_xs()
-        chi_prompt.shape = (self.nxyz, self.ng)
+        chi_prompt.shape = (self.nxyz, self.ngp)
         return chi_prompt
 
     @property
@@ -262,17 +265,9 @@ class State(object):
         return prompt_nu_fission
 
     @property
-    def prompt_production(self):
-        chi_prompt = np.repeat(self.chi_prompt, self.ng)
-        chi_prompt.shape = (self.nxyz, self.ng, self.ng)
-        prompt_nu_fission = np.tile(self.prompt_nu_fission, self.ng)
-        prompt_nu_fission.shape = (self.nxyz, self.ng, self.ng)
-        return self.dxyz * chi_prompt * prompt_nu_fission / self.k_crit
-
-    @property
     def chi_delayed(self):
         chi_delayed = self.mgxs_lib['chi-delayed'].get_xs()
-        chi_delayed.shape = (self.nxyz, self.nd, self.ng)
+        chi_delayed.shape = (self.nxyz, self.nd, self.ngp)
         return chi_delayed
 
     @property
@@ -284,24 +279,36 @@ class State(object):
     @property
     def delayed_production(self):
         chi_delayed = np.repeat(self.chi_delayed, self.ng)
-        chi_delayed.shape = (self.nxyz, self.dg, self.ng, self.ng)
-        delayed_nu_fission = np.tile(self.delayed_nu_fission, self.ng)
-        delayed_nu_fission.shape = (self.nxyz, self.dg, self.ng, self.ng)
-        return self.dxyz * chi_delayed * delayed_nu_fission / self.k_crit
+        chi_delayed.shape = (self.nxyz, self.nd, self.ngp, self.ng)
+        delayed_nu_fission = np.tile(self.delayed_nu_fission, self.ngp)
+        delayed_nu_fission.shape = (self.nxyz, self.nd, self.ngp, self.ng)
+        return (chi_delayed * delayed_nu_fission)
+
+    @property
+    def delayed_production_matrix(self):
+        return self.dxyz * sps.block_diag(self.delayed_production.sum(axis=1)) / self.k_crit
 
     @property
     def production_matrix(self):
-        return sps.block_diag(self.prompt_production +
-                              self.delayed_production.sum(axis=1))
+        return self.prompt_production_matrix + self.delayed_production_matrix
+
+    @property
+    def prompt_production(self):
+        chi_prompt = np.repeat(self.chi_prompt, self.ng)
+        chi_prompt.shape = (self.nxyz, self.ngp, self.ng)
+        prompt_nu_fission = np.tile(self.prompt_nu_fission, self.ngp)
+        prompt_nu_fission.shape = (self.nxyz, self.ngp, self.ng)
+        return (chi_prompt * prompt_nu_fission)
 
     @property
     def prompt_production_matrix(self):
-        return sps.block_diag(self.prompt_production)
+        return self.dxyz * sps.block_diag(self.prompt_production) / self.k_crit
 
     @property
     def kappa_fission(self):
         kappa_fission = self.mgxs_lib['kappa-fission'].get_xs()
         kappa_fission.shape = (self.nxyz, self.ng)
+        return kappa_fission
 
     @property
     def core_power_density(self):
@@ -318,9 +325,10 @@ class State(object):
 
     @property
     def decay_source(self):
-        decay_source = self.decay_rate * self.precursors
-        decay_source = np.repeat(decay_source, self.ng)
-        decay_source.shape = (self.nxyz, self.nd, self.ng)
+        decay_source = self.decay_rate * self.precursors / \
+                       (1. + self.decay_rate * self.dt)
+        decay_source = np.repeat(decay_source, self.ngp)
+        decay_source.shape = (self.nxyz, self.nd, self.ngp)
         return self.dxyz * (self.chi_delayed * decay_source).sum(axis=1)
 
     @property
@@ -342,24 +350,24 @@ class State(object):
 
     @property
     def decay_production_matrix(self):
-        decay_term = self.decay_rate * self.dt / (1. + self.dt * self.decay_rate)
-        decay_term = np.repeat(decay_term, self.ng * self.ng)
-        decay_term.shape = (self.nxyz, self.nd, self.ng, self.ng)
-        return sps.block_diag((self.delayed_production * decay_term).sum(axis=1))
+        decay_term =  self.decay_rate * self.dt / \
+                      (1. + self.dt * self.decay_rate) / self.k_crit
+        decay_term = np.repeat(decay_term, self.ngp * self.ng)
+        decay_term.shape = (self.nxyz, self.nd, self.ngp, self.ng)
+        decay_term *= self.dxyz * self.delayed_production
+        return sps.block_diag(decay_term.sum(axis=1))
 
     @property
     def delayed_fission_rate(self):
-        flux = np.tile(self.flux, nd)
+        flux = np.tile(self.flux, self.nd)
         flux.shape = (self.nxyz, self.nd, self.ng)
         return (self.delayed_nu_fission * flux).sum(axis=2)
 
     def propagate_precursors(self, state):
 
         # Get the flux and repeat to cover all delayed groups
-        delayed_source = self.delayed_fission_rate * self.dt / \
-                         (1 + self.dt * self.decay_rate) / self.k_crit
-
-        self.precursors = delayed_source + state.precursors
+        self.precursors = (self.delayed_fission_rate * self.dt / self.k_crit
+                           + state.precursors) / (1 + self.dt * self.decay_rate)
 
     def compute_initial_precursor_concentration(self):
         self.precursors = self.delayed_fission_rate / self.decay_rate / self.k_crit
@@ -375,7 +383,7 @@ class State(object):
         # Create elements and ordered dicts and initialize to None
         self._mgxs_lib = OrderedDict()
 
-        mgxs_types = ['transport', 'absorption',
+        mgxs_types = ['transport', 'absorption', 'diffusion-coefficient',
                       'kappa-fission', 'nu-scatter matrix', 'chi-prompt',
                       'chi-delayed', 'inverse-velocity', 'prompt-nu-fission',
                       'current', 'delayed-nu-fission', 'decay-rate', 'total']
@@ -420,7 +428,7 @@ class State(object):
 
         # Compute the net current
         partial_current = self.mgxs_lib['current'].get_xs()
-        partial_current.shape = (partial_current.shape[0] / 12, 12)
+        partial_current = partial_current.reshape(np.prod(partial_current.shape) / 12, 12)
         net_current = partial_current[:, range(6)] - partial_current[:, range(6,12)]
         net_current[:, 0:6:2] = -net_current[:, 0:6:2]
         net_current.shape = (nz, ny, nx, ng, 6)
@@ -442,10 +450,8 @@ class State(object):
         flux_array[:-1, :  , :  , :, 5] = flux[1: , :  , :  , :]
 
         # Get the diffusion coefficients tally
-        #dc_mgxs = self.mgxs_lib['diffusion-coefficient']
-        #dc_mgxs = dc_mgxs.get_condensed_xs(self.energy_groups)
-        dc_mgxs = self.mgxs_lib['transport']
-        dc = 1.0 / (3.0 * dc_mgxs.get_xs())
+        dc_mgxs = self.mgxs_lib['diffusion-coefficient']
+        dc = dc_mgxs.get_condensed_xs(self.energy_groups).get_xs()
         dc.shape = (nz, ny, nx, ng)
         dc_array = np.zeros((nz, ny, nx, ng, 6))
 
