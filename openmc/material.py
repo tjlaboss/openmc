@@ -4,6 +4,7 @@ from numbers import Real, Integral
 import warnings
 from xml.etree import ElementTree as ET
 import sys
+import numpy as np
 
 from six import string_types
 
@@ -50,7 +51,7 @@ class Material(object):
         Unique identifier for the material
     temperature : float
         Temperature of the material in Kelvin.
-    density : float
+    density : float or np.ndarray
         Density of the material (units defined separately)
     density_units : str
         Units used for `density`. Can be one of 'g/cm3', 'g/cc', 'kg/cm3',
@@ -64,6 +65,8 @@ class Material(object):
         List in which each item is a 3-tuple consisting of an
         :class:`openmc.Nuclide` instance, the percent density, and the percent
         type ('ao' or 'wo').
+    time : float
+        The time at which the material properties are created.
     average_molar_mass : float
         The average molar mass of nuclides in the material in units of grams per
         mol.  For example, UO2 with 3 nuclides will have an average molar mass
@@ -78,6 +81,7 @@ class Material(object):
         self.temperature = temperature
         self._density = None
         self._density_units = ''
+        self._time = 0.0
 
         # A list of tuples (nuclide, percent, percent type)
         self._nuclides = []
@@ -129,11 +133,13 @@ class Material(object):
         string = 'Material\n'
         string += '{0: <16}{1}{2}\n'.format('\tID', '=\t', self._id)
         string += '{0: <16}{1}{2}\n'.format('\tName', '=\t', self._name)
-        string += '{0: <16}{1}{2}\n'.format('\Temperature', '=\t',
+        string += '{0: <16}{1}{2}\n'.format('\tTemperature', '=\t',
                                             self._temperature)
 
-        string += '{0: <16}{1}{2}'.format('\tDensity', '=\t', self._density)
+        string += '{0: <16}{1}{2}'.format('\tDensity', '=\t', self.density)
         string += ' [{0}]\n'.format(self._density_units)
+
+        string += '{0: <16}{1}{2}\n'.format('\tTime', '=\t', self.time)
 
         string += '{0: <16}\n'.format('\tS(a,b) Tables')
 
@@ -176,7 +182,10 @@ class Material(object):
 
     @property
     def density(self):
-        return self._density
+        if self._density is None or isinstance(self._density, Real):
+            return self._density
+        else:
+            return np.interp(self.time, self._density[0], self._density[1])
 
     @property
     def density_units(self):
@@ -197,6 +206,10 @@ class Material(object):
     @property
     def distrib_otf_file(self):
         return self._distrib_otf_file
+
+    @property
+    def time(self):
+        return self._time
 
     @property
     def average_molar_mass(self):
@@ -246,6 +259,12 @@ class Material(object):
                       temperature, (Real, type(None)))
         self._temperature = temperature
 
+    @time.setter
+    def time(self, time):
+        cv.check_type('Time for Material ID="{0}"'.format(self._id),
+                      time, (Real, type(None)))
+        self._time = time
+
     def set_density(self, units, density=None):
         """Set the density of the material
 
@@ -253,7 +272,7 @@ class Material(object):
         ----------
         units : {'g/cm3', 'g/cc', 'km/cm3', 'atom/b-cm', 'atom/cm3', 'sum', 'macro'}
             Physical units of density.
-        density : float, optional
+        density : float or np.ndarray, optional
             Value of the density. Must be specified unless units is given as
             'sum'.
 
@@ -275,7 +294,11 @@ class Material(object):
                 raise ValueError(msg)
 
             cv.check_type('the density for Material ID="{0}"'.format(self.id),
-                          density, Real)
+                          density, (Real, np.ndarray))
+
+            if isinstance(density, np.ndarray):
+                cv.check_value('density interpolation table', len(density.shape), [2])
+
             self._density = density
 
     @distrib_otf_file.setter
@@ -685,7 +708,7 @@ class Material(object):
         # Create density XML subelement
         subelement = ET.SubElement(element, "density")
         if self._density_units is not 'sum':
-            subelement.set("value", str(self._density))
+            subelement.set("value", str(self.density))
         subelement.set("units", self._density_units)
 
         if not self._convert_to_distrib_comps:
