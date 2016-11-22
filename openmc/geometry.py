@@ -26,18 +26,30 @@ class Geometry(object):
     ----------
     root_universe : openmc.Universe
         Root universe which contains all others
+    time : float
+        The current time at which the geometry is at
 
     """
 
     def __init__(self, root_universe=None):
         self._root_universe = None
         self._offsets = {}
+        self._time = 0.0
         if root_universe is not None:
             self.root_universe = root_universe
 
     @property
     def root_universe(self):
         return self._root_universe
+
+    @property
+    def time(self):
+        return self._time
+
+    @time.setter
+    def time(self, time):
+        cv.check_type('Time for Geometry', time, (Real, type(None)))
+        self._time = time
 
     @root_universe.setter
     def root_universe(self, root_universe):
@@ -75,6 +87,13 @@ class Geometry(object):
         """
         # Clear OpenMC written IDs used to optimize XML generation
         openmc.universe.WRITTEN_IDS = {}
+
+        # Set the time of all materials and cells
+        for cell in self.get_all_cells():
+            cell.time = self.time
+
+        for mat in self.get_all_materials():
+            mat.time = self.time
 
         # Create XML representation
         geometry_file = ET.Element("geometry")

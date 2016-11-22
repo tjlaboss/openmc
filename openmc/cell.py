@@ -76,7 +76,7 @@ class Cell(object):
     temperature : float or iterable of float
         Temperature of the cell in Kelvin.  Multiple temperatures can be given
         to give each distributed cell instance a unique temperature.
-    translation : Iterable of float
+    translation : Iterable of float or np.ndarray
         If the cell is filled with a universe, this array specifies a vector
         that is used to translate (shift) the universe.
     offsets : ndarray
@@ -90,6 +90,10 @@ class Cell(object):
         Estimate of the volume and total number of atoms of each nuclide from a
         stochastic volume calculation. This information is set with the
         :meth:`Cell.add_volume_information` method.
+    time : float
+        The time at which the material properties are created.
+    translation_times : np.ndarray
+        The times at which there are translation data points
 
     """
 
@@ -107,6 +111,8 @@ class Cell(object):
         self._distribcell_index = None
         self._distribcell_paths = None
         self._volume_information = None
+        self._time = 0.0
+        self._translation_times = None
 
     def __contains__(self, point):
         if self.region is None:
@@ -131,6 +137,10 @@ class Cell(object):
             return False
         elif self.translation != other.translation:
             return False
+        elif self.time != other.time:
+            return False
+        elif self.translation_times != other.translation_times:
+            return False
         else:
             return True
 
@@ -144,6 +154,8 @@ class Cell(object):
         string = 'Cell\n'
         string += '{: <16}=\t{}\n'.format('\tID', self.id)
         string += '{: <16}=\t{}\n'.format('\tName', self.name)
+
+        string += '{0: <16}{1}{2}\n'.format('\tTime', '=\t', self.time)
 
         if self.fill_type == 'material':
             string += '{: <16}=\tMaterial {}\n'.format('\tFill', self.fill.id)
@@ -209,7 +221,23 @@ class Cell(object):
 
     @property
     def translation(self):
-        return self._translation
+        if self._translation is not None:
+            if self._translation_times is not None:
+                cv.check_length('cell translation', self._translation,
+                                len(self._translation_times))
+                translation = []
+                translation.append(np.interp(self.time, self.translation_times,
+                                             self._translation[:,0]))
+                translation.append(np.interp(self.time, self.translation_times,
+                                             self._translation[:,1]))
+                translation.append(np.interp(self.time, self.translation_times,
+                                             self._translation[:,2]))
+                return translation
+            else:
+                cv.check_length('cell translation', len(self._translation.shape), 1)
+                return self._translation
+        else:
+            return self._translation
 
     @property
     def offsets(self):
@@ -226,6 +254,14 @@ class Cell(object):
     @property
     def volume_information(self):
         return self._volume_information
+
+    @property
+    def time(self):
+        return self._time
+
+    @property
+    def translation_times(self):
+        return self._translation_times
 
     @id.setter
     def id(self, cell_id):
@@ -291,8 +327,21 @@ class Cell(object):
 
     @translation.setter
     def translation(self, translation):
-        cv.check_type('cell translation', translation, Iterable, Real)
-        cv.check_length('cell translation', translation, 3)
+        cv.check_type('cell translation', translation, Iterable)
+        if isinstance(translation[0], Iterable):
+            cv.check_type('cell translation', translation[0], Iterable, Real)
+            cv.check_length('cell translation', translation[0], 3)
+        else:
+            cv.check_type('cell translation', translation, Iterable, Real)
+            cv.check_length('cell translation', translation, 3)
+
+        if self._translation_times is not None:
+            if len(translation) != len(self._translation_times):
+                msg = 'Unable to set translation for Cell ID="{0}" ' \
+                      'since the array is not the same length as the ' \
+                      'translation times array'.format(self._id)
+                raise ValueError(msg)
+
         self._translation = np.asarray(translation)
 
     @temperature.setter
@@ -336,6 +385,25 @@ class Cell(object):
         cv.check_iterable_type('distribcell_paths', distribcell_paths,
                                string_types)
         self._distribcell_paths = distribcell_paths
+
+    @time.setter
+    def time(self, time):
+        cv.check_type('Time for Cell ID="{0}"'.format(self._id),
+                      time, (Real, type(None)))
+        self._time = time
+
+    @translation_times.setter
+    def translation_times(self, translation_times):
+        cv.check_type('cell translation times', translation_times, Iterable, Real)
+
+        if self._translation is not None:
+            if len(self._translation) != len(translation_times):
+                msg = 'Unable to set translation times for Cell ID="{0}" ' \
+                      'since the array is not the same length as the ' \
+                      'translation array'.format(self._id)
+                raise ValueError(msg)
+
+        self._translation_times = np.asarray(translation_times)
 
     def add_surface(self, surface, halfspace):
         """Add a half-space to the list of half-spaces whose intersection defines the
