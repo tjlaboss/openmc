@@ -234,7 +234,6 @@ class Cell(object):
                                              self._translation[:,2]))
                 return translation
             else:
-                cv.check_length('cell translation', len(self._translation.shape), 1)
                 return self._translation
         else:
             return self._translation
