@@ -985,6 +985,50 @@ class MGXS(object):
         avg_xs.sparse = self.sparse
         return avg_xs
 
+    def get_homogenized_mgxs(self, other_mgxs):
+        """Construct a homogenized mgxs with other mgxs objects.
+
+        Parameters
+        ----------
+        other_mgxs : openmc.mgxs.MGXS or Iterable of openmc.mgxs.MGXS
+            The MGXS to homogenize with this one.
+
+        Returns
+        -------
+        openmc.mgxs.MGXS
+            A new homogenized MGXS
+
+        Raises
+        ------
+        ValueError
+            If the other_mgxs are of a different type.
+
+        """
+
+        # Construct a collection of the subdomain filter bins to average across
+        if isinstance(other_mgxs, openmc.mgxs.MGXS):
+            other_mgxs = [other_mgxs]
+
+        cv.check_iterable_type('other_mgxs', other_mgxs, openmc.mgxs.MGXS)
+        for mgxs in other_mgxs:
+            if mgxs.rxn_type != self.rxn_type:
+                msg = 'Not able to homogenize two MGXS with different rxn types'
+                raise ValueError(msg)
+
+        # Clone this MGXS to initialize the homogenized version
+        homogenized_mgxs = copy.deepcopy(self)
+        homogenized_mgxs.derived = True
+        name = '{} + '.format(self.domain.name)
+
+        # Average each of the tallies across subdomains
+        for mgxs in other_mgxs:
+            homogenized_mgxs._rxn_rate_tally += mgxs.rxn_rate_tally
+            homogenized_mgxs.tallies['flux'] += mgxs.tallies['flux']
+            name += '{} + '.format(mgxs.domain.name)
+
+        homogenized_mgxs._domain_type = name[:-3]
+        return homogenized_mgxs
+
     def get_slice(self, nuclides=[], groups=[]):
         """Build a sliced MGXS for the specified nuclides and energy groups.
 
