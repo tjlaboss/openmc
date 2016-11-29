@@ -708,7 +708,7 @@ class Tally(object):
 
         """
 
-        # Two tallys must have the same number of filters
+        # Two tallies must have the same number of filters
         if len(self.filters) != len(other.filters):
             return False
 
