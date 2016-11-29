@@ -61,6 +61,9 @@ _DOMAINS = (openmc.Cell,
             openmc.Material,
             openmc.Mesh)
 
+# Supported ScatterMatrixXS and NuScatterMatrixXS angular distribution types
+MU_TREATMENTS = ('legendre', 'histogram')
+
 
 @add_metaclass(ABCMeta)
 class MGXS(object):
@@ -991,6 +994,102 @@ class MGXS(object):
         avg_xs.sparse = self.sparse
         return avg_xs
 
+    def _get_homogenized_mgxs(self, other_mgxs, denom_score='flux'):
+        """Construct a homogenized mgxs with other mgxs objects.
+
+        Parameters
+        ----------
+        other_mgxs : openmc.mgxs.MGXS or Iterable of openmc.mgxs.MGXS
+            The MGXS to homogenize with this one.
+        denom_score : str
+            The denominator score in the denominator of computing the MGXS.
+
+        Returns
+        -------
+        openmc.mgxs.MGXS
+            A new homogenized MGXS
+
+        Raises
+        ------
+        ValueError
+            If the other_mgxs are of a different type.
+
+        """
+
+        # Check type of denom score
+        cv.check_type('denom_score', denom_score, str)
+
+        # Construct a collection of the subdomain filter bins to average across
+        if isinstance(other_mgxs, openmc.mgxs.MGXS):
+            other_mgxs = [other_mgxs]
+
+        cv.check_iterable_type('other_mgxs', other_mgxs, openmc.mgxs.MGXS)
+        for mgxs in other_mgxs:
+            if mgxs.rxn_type != self.rxn_type:
+                msg = 'Not able to homogenize two MGXS with different rxn types'
+                raise ValueError(msg)
+
+        # Clone this MGXS to initialize the homogenized version
+        homogenized_mgxs = copy.deepcopy(self)
+        homogenized_mgxs._derived = True
+        name = '{} + '.format(self.domain.name)
+
+        # Get the domain filter
+        filter_type = _DOMAIN_TO_FILTER[self.domain_type]
+        self_filter = self.rxn_rate_tally.find_filter(filter_type)
+
+        # Get the rxn rate and denom tallies
+        rxn_rate_tally = self.rxn_rate_tally
+        denom_tally = self.tallies[denom_score]
+
+        for mgxs in other_mgxs:
+
+            # Swap the domain filter bins for the other mgxs rxn rate tally
+            other_rxn_rate_tally = copy.deepcopy(mgxs.rxn_rate_tally)
+            other_filter = other_rxn_rate_tally.find_filter(filter_type)
+            other_filter._bins = self_filter._bins
+
+            # Swap the domain filter bins for the denom tally
+            other_denom_tally = copy.deepcopy(mgxs.tallies[denom_score])
+            other_filter = other_denom_tally.find_filter(filter_type)
+            other_filter._bins = self_filter._bins
+
+            # Add the rxn rate and denom tallies
+            rxn_rate_tally += other_rxn_rate_tally
+            denom_tally += other_denom_tally
+
+            # Update the name for the homogenzied MGXS
+            name += '{} + '.format(mgxs.domain.name)
+
+        # Set the properties of the homogenized MGXS
+        homogenized_mgxs._rxn_rate_tally = rxn_rate_tally
+        homogenized_mgxs.tallies[denom_score] = denom_tally
+        homogenized_mgxs._domain.name = name[:-3]
+
+        return homogenized_mgxs
+
+    def get_homogenized_mgxs(self, other_mgxs):
+        """Construct a homogenized mgxs with other mgxs objects.
+
+        Parameters
+        ----------
+        other_mgxs : openmc.mgxs.MGXS or Iterable of openmc.mgxs.MGXS
+            The MGXS to homogenize with this one.
+
+        Returns
+        -------
+        openmc.mgxs.MGXS
+            A new homogenized MGXS
+
+        Raises
+        ------
+        ValueError
+            If the other_mgxs are of a different type.
+
+        """
+
+        return self._get_homogenized_mgxs(other_mgxs, 'flux')
+
     def get_slice(self, nuclides=[], groups=[]):
         """Build a sliced MGXS for the specified nuclides and energy groups.
 
@@ -1532,9 +1631,19 @@ class MGXS(object):
         else:
             df = df.drop('score', axis=1)
 
+        # Determine if change-in-angle bins are included in the MGXS to
+        # properly tile the group boundaries
+        if 'mu low' in df:
+            # Find the length of the mu filters indirectly from the number
+            # of times the mu bins repeats.
+            num_mu = int(df.shape[0] /
+                         df[df['mu low'] == df['mu low'][0]].shape[0])
+        else:
+            num_mu = 1
+
         # Override energy groups bounds with indices
         all_groups = np.arange(self.num_groups, 0, -1, dtype=np.int)
-        all_groups = np.repeat(all_groups, len(query_nuclides))
+        all_groups = np.repeat(all_groups, len(query_nuclides) * num_mu)
         if 'energy low [eV]' in df and 'energyout low [eV]' in df:
             df.rename(columns={'energy low [eV]': 'group in'},
                       inplace=True)
@@ -3441,8 +3550,8 @@ class NuScatterXS(MGXS):
 
 
 class ScatterMatrixXS(MatrixMGXS):
-    r"""A scattering matrix multi-group cross section for one or more Legendre
-    moments.
+    r"""A scattering matrix multi-group cross section with the cosine of the
+    change-in-angle represented as one or more Legendre moments or a histogram.
 
     This class can be used for both OpenMC input generation and tally data
     post-processing to compute spatially-homogenized and energy-integrated
@@ -3460,7 +3569,7 @@ class ScatterMatrixXS(MatrixMGXS):
 
     For a spatial domain :math:`V`, incoming energy group
     :math:`[E_{g'},E_{g'-1}]`, and outgoing energy group :math:`[E_g,E_{g-1}]`,
-    the scattering moments are calculated as:
+    the Legendre scattering moments are calculated as:
 
     .. math::
 
@@ -3500,9 +3609,18 @@ class ScatterMatrixXS(MatrixMGXS):
     Attributes
     ----------
     correction : 'P0' or None
-        Apply the P0 correction to scattering matrices if set to 'P0'
+        Apply the P0 correction to scattering matrices if set to 'P0'; this is
+        used only if :attr:`ScatterMatrixXS.scatter_format` is 'legendre'
+    scatter_format : {'legendre', or 'histogram'}
+        Representation of the angular scattering distribution (default is
+        'legendre')
     legendre_order : int
-        The highest Legendre moment in the scattering matrix (default is 0)
+        The highest Legendre moment in the scattering matrix; this is used if
+        :attr:`ScatterMatrixXS.scatter_format` is 'legendre'. (default is 0)
+    histogram_bins : int
+        The number of equally-spaced bins for the histogram representation of
+        the angular scattering distribution; this is used if
+        :attr:`ScatterMatrixXS.scatter_format` is 'histogram'. (default is 16)
     name : str, optional
         Name of the multi-group cross section
     rxn_type : str
@@ -3569,7 +3687,9 @@ class ScatterMatrixXS(MatrixMGXS):
                                               groups, by_nuclide, name)
         self._rxn_type = 'scatter'
         self._correction = 'P0'
+        self._scatter_format = 'legendre'
         self._legendre_order = 0
+        self._histogram_bins = 16
         self._hdf5_key = 'scatter matrix'
         self._estimator = 'analog'
         self._valid_estimators = ['analog']
@@ -3577,7 +3697,9 @@ class ScatterMatrixXS(MatrixMGXS):
     def __deepcopy__(self, memo):
         clone = super(ScatterMatrixXS, self).__deepcopy__(memo)
         clone._correction = self.correction
+        clone._scatter_format = self.scatter_format
         clone._legendre_order = self.legendre_order
+        clone._histogram_bins = self.histogram_bins
         return clone
 
     @property
@@ -3585,18 +3707,29 @@ class ScatterMatrixXS(MatrixMGXS):
         return self._correction
 
     @property
+    def scatter_format(self):
+        return self._scatter_format
+
+    @property
     def legendre_order(self):
         return self._legendre_order
+
+    @property
+    def histogram_bins(self):
+        return self._histogram_bins
 
     @property
     def scores(self):
         scores = ['flux']
 
-        if self.correction == 'P0' and self.legendre_order == 0:
-            scores += ['{}-0'.format(self.rxn_type),
-                       '{}-1'.format(self.rxn_type)]
-        else:
-            scores += ['{}-P{}'.format(self.rxn_type, self.legendre_order)]
+        if self.scatter_format == 'legendre':
+            if self.correction == 'P0' and self.legendre_order == 0:
+                scores += ['{}-0'.format(self.rxn_type),
+                           '{}-1'.format(self.rxn_type)]
+            else:
+                scores += ['{}-P{}'.format(self.rxn_type, self.legendre_order)]
+        elif self.scatter_format == 'histogram':
+            scores += [self.rxn_type]
 
         return scores
 
@@ -3606,10 +3739,15 @@ class ScatterMatrixXS(MatrixMGXS):
         energy = openmc.EnergyFilter(group_edges)
         energyout = openmc.EnergyoutFilter(group_edges)
 
-        if self.correction == 'P0' and self.legendre_order == 0:
-            filters = [[energy], [energy, energyout], [energyout]]
-        else:
-            filters = [[energy], [energy, energyout]]
+        if self.scatter_format == 'legendre':
+            if self.correction == 'P0' and self.legendre_order == 0:
+                filters = [[energy], [energy, energyout], [energyout]]
+            else:
+                filters = [[energy], [energy, energyout]]
+        elif self.scatter_format == 'histogram':
+            bins = np.linspace(-1., 1., num=self.histogram_bins + 1,
+                               endpoint=True)
+            filters = [[energy], [energy, energyout, openmc.MuFilter(bins)]]
 
         return filters
 
@@ -3617,20 +3755,24 @@ class ScatterMatrixXS(MatrixMGXS):
     def rxn_rate_tally(self):
 
         if self._rxn_rate_tally is None:
+            if self.scatter_format == 'legendre':
+                # If using P0 correction subtract scatter-1 from the diagonal
+                if self.correction == 'P0' and self.legendre_order == 0:
+                    scatter_p0 = self.tallies['{}-0'.format(self.rxn_type)]
+                    scatter_p1 = self.tallies['{}-1'.format(self.rxn_type)]
+                    energy_filter = scatter_p0.find_filter(openmc.EnergyFilter)
+                    energy_filter = copy.deepcopy(energy_filter)
+                    scatter_p1 = scatter_p1.diagonalize_filter(energy_filter)
+                    self._rxn_rate_tally = scatter_p0 - scatter_p1
 
-            # If using P0 correction subtract scatter-1 from the diagonal
-            if self.correction == 'P0' and self.legendre_order == 0:
-                scatter_p0 = self.tallies['{}-0'.format(self.rxn_type)]
-                scatter_p1 = self.tallies['{}-1'.format(self.rxn_type)]
-                energy_filter = scatter_p0.find_filter(openmc.EnergyFilter)
-                energy_filter = copy.deepcopy(energy_filter)
-                scatter_p1 = scatter_p1.diagonalize_filter(energy_filter)
-                self._rxn_rate_tally = scatter_p0 - scatter_p1
-
-            # Extract scattering moment reaction rate Tally
-            else:
-                tally_key = '{}-P{}'.format(self.rxn_type, self.legendre_order)
-                self._rxn_rate_tally = self.tallies[tally_key]
+                # Extract scattering moment reaction rate Tally
+                else:
+                    tally_key = '{}-P{}'.format(self.rxn_type,
+                                                self.legendre_order)
+                    self._rxn_rate_tally = self.tallies[tally_key]
+            elif self.scatter_format == 'histogram':
+                # Extract scattering rate distribution tally
+                self._rxn_rate_tally = self.tallies[self.rxn_type]
 
             self._rxn_rate_tally.sparse = self.sparse
 
@@ -3640,26 +3782,51 @@ class ScatterMatrixXS(MatrixMGXS):
     def correction(self, correction):
         cv.check_value('correction', correction, ('P0', None))
 
-        if correction == 'P0' and self.legendre_order > 0:
-            msg = 'The P0 correction will be ignored since the scattering ' \
-                  'order {} is greater than zero'.format(self.legendre_order)
+        if self.scatter_format == 'legendre':
+            if correction == 'P0' and self.legendre_order > 0:
+                msg = 'The P0 correction will be ignored since the ' \
+                      'scattering order {} is greater than '\
+                      'zero'.format(self.legendre_order)
+                warnings.warn(msg)
+        elif self.scatter_format == 'histogram':
+            msg = 'The P0 correction will be ignored since the ' \
+                  'scatter format is set to histogram'
             warnings.warn(msg)
 
         self._correction = correction
 
+    @scatter_format.setter
+    def scatter_format(self, scatter_format):
+        cv.check_value('scatter_format', scatter_format, MU_TREATMENTS)
+        self._scatter_format = scatter_format
+
     @legendre_order.setter
     def legendre_order(self, legendre_order):
         cv.check_type('legendre_order', legendre_order, Integral)
-        cv.check_greater_than('legendre_order', legendre_order, 0, equality=True)
+        cv.check_greater_than('legendre_order', legendre_order, 0,
+                              equality=True)
         cv.check_less_than('legendre_order', legendre_order, 10, equality=True)
 
-        if self.correction == 'P0' and legendre_order > 0:
-            msg = 'The P0 correction will be ignored since the scattering ' \
-                  'order {} is greater than zero'.format(self.legendre_order)
-            warnings.warn(msg, RuntimeWarning)
-            self.correction = None
+        if self.scatter_format == 'legendre':
+            if self.correction == 'P0' and legendre_order > 0:
+                msg = 'The P0 correction will be ignored since the ' \
+                      'scattering order {} is greater than '\
+                      'zero'.format(self.legendre_order)
+                warnings.warn(msg, RuntimeWarning)
+                self.correction = None
+        elif self.scatter_format == 'histogram':
+            msg = 'The legendre order will be ignored since the ' \
+                  'scatter format is set to histogram'
+            warnings.warn(msg)
 
         self._legendre_order = legendre_order
+
+    @histogram_bins.setter
+    def histogram_bins(self, histogram_bins):
+        cv.check_type('histogram_bins', histogram_bins, Integral)
+        cv.check_greater_than('histogram_bins', histogram_bins, 0)
+
+        self._histogram_bins = histogram_bins
 
     def load_from_statepoint(self, statepoint):
         """Extracts tallies in an OpenMC StatePoint with the data needed to
@@ -3690,12 +3857,16 @@ class ScatterMatrixXS(MatrixMGXS):
             self._rxn_rate_tally = None
             self._loaded_sp = False
 
-        # Expand scores to match the format in the statepoint
-        # e.g., "scatter-P2" -> "scatter-0", "scatter-1", "scatter-2"
-        if self.correction != 'P0' or self.legendre_order != 0:
-            tally_key = '{}-P{}'.format(self.rxn_type, self.legendre_order)
-            self.tallies[tally_key].scores = \
-                [self.rxn_type + '-{}'.format(i) for i in range(self.legendre_order+1)]
+        if self.scatter_format == 'legendre':
+            # Expand scores to match the format in the statepoint
+            # e.g., "scatter-P2" -> "scatter-0", "scatter-1", "scatter-2"
+            if self.correction != 'P0' or self.legendre_order != 0:
+                tally_key = '{}-P{}'.format(self.rxn_type, self.legendre_order)
+                self.tallies[tally_key].scores = \
+                    [self.rxn_type + '-{}'.format(i)
+                     for i in range(self.legendre_order + 1)]
+        elif self.scatter_format == 'histogram':
+            self.tallies[self.rxn_type].scores = [self.rxn_type]
 
         super(ScatterMatrixXS, self).load_from_statepoint(statepoint)
 
@@ -3742,7 +3913,7 @@ class ScatterMatrixXS(MatrixMGXS):
         slice_xs._xs_tally = None
 
         # Slice the Legendre order if needed
-        if legendre_order != 'same':
+        if legendre_order != 'same' and self.scatter_format == 'legendre':
             cv.check_type('legendre_order', legendre_order, Integral)
             cv.check_less_than('legendre_order', legendre_order,
                                self.legendre_order, equality=True)
@@ -3751,7 +3922,8 @@ class ScatterMatrixXS(MatrixMGXS):
             # Slice the scattering tally
             tally_key = '{}-P{}'.format(self.rxn_type, self.legendre_order)
             expand_scores = \
-                [self.rxn_type + '-{}'.format(i) for i in range(self.legendre_order+1)]
+                [self.rxn_type + '-{}'.format(i)
+                 for i in range(self.legendre_order + 1)]
             slice_xs.tallies[tally_key] = \
                 slice_xs.tallies[tally_key].get_slice(scores=expand_scores)
 
@@ -3782,7 +3954,8 @@ class ScatterMatrixXS(MatrixMGXS):
         This method constructs a 5D NumPy array for the requested
         multi-group cross section data for one or more subdomains
         (1st dimension), energy groups in (2nd dimension), energy groups out
-        (3rd dimension), nuclides (4th dimension), and moments (5th dimension).
+        (3rd dimension), nuclides (4th dimension), and moments/histograms
+        (5th dimension).
 
         NOTE: The scattering moments are not multiplied by the :math:`(2l+1)/2`
         prefactor in the expansion of the scattering source into Legendre
@@ -3871,7 +4044,7 @@ class ScatterMatrixXS(MatrixMGXS):
                 filter_bins.append((self.energy_groups.get_group_bounds(group),))
 
         # Construct CrossScore for requested scattering moment
-        if moment != 'all':
+        if moment != 'all' and self.scatter_format == 'legendre':
             cv.check_type('moment', moment, Integral)
             cv.check_greater_than('moment', moment, 0, equality=True)
             cv.check_less_than(
@@ -3921,9 +4094,19 @@ class ScatterMatrixXS(MatrixMGXS):
         else:
             num_out_groups = len(out_groups)
 
+        if self.scatter_format == 'histogram':
+            num_mu_bins = self.histogram_bins
+        else:
+            num_mu_bins = 1
+
         # Reshape tally data array with separate axes for domain and energy
-        num_subdomains = int(xs.shape[0] / (num_in_groups * num_out_groups))
-        new_shape = (num_subdomains, num_in_groups, num_out_groups)
+        num_subdomains = int(xs.shape[0] /
+                             (num_mu_bins * num_in_groups * num_out_groups))
+        if self.scatter_format == 'histogram':
+            new_shape = (num_subdomains, num_in_groups, num_out_groups,
+                         num_mu_bins)
+        else:
+            new_shape = (num_subdomains, num_in_groups, num_out_groups)
         new_shape += xs.shape[1:]
         xs = np.reshape(xs, new_shape)
 
@@ -3934,11 +4117,22 @@ class ScatterMatrixXS(MatrixMGXS):
         # Reverse data if user requested increasing energy groups since
         # tally data is stored in order of increasing energies
         if order_groups == 'increasing':
-            xs = xs[:, ::-1, ::-1, :]
+            xs = xs[:, ::-1, ::-1, ...]
 
         if squeeze:
-            xs = np.squeeze(xs)
-            xs = np.atleast_2d(xs)
+            # We want to squeeze out everything but the in_groups, out_groups,
+            # and, if needed, num_mu_bins dimension. These must not be squeezed
+            # so 1-group problems have the correct shape.
+            if self.scatter_format == 'histogram':
+                axes = (5, 4, 0)
+            else:
+                axes = (4, 3, 0)
+            # Squeeze will return a ValueError if the axis has a size greater
+            # than 1, so try each axis in axes one at a time, catching the
+            # ValueError as needed.
+            for axis in axes:
+                if xs.shape[axis] == 1:
+                    xs = np.squeeze(xs, axis=axis)
 
         return xs
 
@@ -3989,28 +4183,41 @@ class ScatterMatrixXS(MatrixMGXS):
         df = super(ScatterMatrixXS, self).get_pandas_dataframe(
             groups, nuclides, xs_type, distribcell_paths)
 
-        # Add a moment column to dataframe
-        if self.legendre_order > 0:
-            # Insert a column corresponding to the Legendre moments
-            moments = ['P{}'.format(i) for i in range(self.legendre_order+1)]
-            moments = np.tile(moments, int(df.shape[0] / len(moments)))
-            df['moment'] = moments
+        if self.scatter_format == 'legendre':
+            # Add a moment column to dataframe
+            if self.legendre_order > 0:
+                # Insert a column corresponding to the Legendre moments
+                moments = ['P{}'.format(i)
+                           for i in range(self.legendre_order + 1)]
+                moments = np.tile(moments, int(df.shape[0] / len(moments)))
+                df['moment'] = moments
 
-            # Place the moment column before the mean column
-            columns = df.columns.tolist()
-            mean_index = [i for i, s in enumerate(columns) if 'mean' in s][0]
-            if self.domain_type == 'mesh':
-                df = df[columns[:mean_index] + [('moment', '')] + columns[mean_index:-1]]
-            else:
-                df = df[columns[:mean_index] + ['moment'] + columns[mean_index:-1]]
+                # Place the moment column before the mean column
+                columns = df.columns.tolist()
+                mean_index \
+                    = [i for i, s in enumerate(columns) if 'mean' in s][0]
+                if self.domain_type == 'mesh':
+                    df = df[columns[:mean_index] + [('moment', '')] +
+                            columns[mean_index:-1]]
+                else:
+                    df = df[columns[:mean_index] + ['moment'] +
+                            columns[mean_index:-1]]
 
-        # Select rows corresponding to requested scattering moment
-        if moment != 'all':
-            cv.check_type('moment', moment, Integral)
-            cv.check_greater_than('moment', moment, 0, equality=True)
-            cv.check_less_than(
-                'moment', moment, self.legendre_order, equality=True)
-            df = df[df['moment'] == 'P{}'.format(moment)]
+            # Select rows corresponding to requested scattering moment
+            if moment != 'all':
+                cv.check_type('moment', moment, Integral)
+                cv.check_greater_than('moment', moment, 0, equality=True)
+                cv.check_less_than(
+                    'moment', moment, self.legendre_order, equality=True)
+                df = df[df['moment'] == 'P{}'.format(moment)]
+
+        elif self.scatter_format == 'histogram':
+            # Replace the mu low and mu high columns with a single mu bin
+            del df['mu high']
+            df.rename(columns={'mu low': 'mu bins'}, inplace=True)
+            bins = [i + 1 for i in range(self.histogram_bins)]
+            bins = np.tile(bins, int(df.shape[0] / len(bins)))
+            df['mu bins'] = bins
 
         return df
 
@@ -4061,7 +4268,7 @@ class ScatterMatrixXS(MatrixMGXS):
 
         cv.check_value('xs_type', xs_type, ['macro', 'micro'])
 
-        if self.correction != 'P0':
+        if self.correction != 'P0' and self.scatter_format == 'legendre':
             rxn_type = '{0} (P{1})'.format(self.rxn_type, moment)
         else:
             rxn_type = self.rxn_type
@@ -4667,6 +4874,28 @@ class Chi(MGXS):
             nu_fission_in.filters.append(energy_filter)
 
         return self._xs_tally
+
+    def get_homogenized_mgxs(self, other_mgxs):
+        """Construct a homogenized mgxs with other mgxs objects.
+
+        Parameters
+        ----------
+        other_mgxs : openmc.mgxs.MGXS or Iterable of openmc.mgxs.MGXS
+            The MGXS to homogenize with this one.
+
+        Returns
+        -------
+        openmc.mgxs.MGXS
+            A new homogenized MGXS
+
+        Raises
+        ------
+        ValueError
+            If the other_mgxs are of a different type.
+
+        """
+
+        return self._get_homogenized_mgxs(other_mgxs, 'nu-fission-in')
 
     def get_slice(self, nuclides=[], groups=[]):
         """Build a sliced Chi for the specified nuclides and energy groups.

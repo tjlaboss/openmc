@@ -269,7 +269,7 @@ class Material(object):
 
         Parameters
         ----------
-        units : {'g/cm3', 'g/cc', 'km/cm3', 'atom/b-cm', 'atom/cm3', 'sum', 'macro'}
+        units : {'g/cm3', 'g/cc', 'kg/cm3', 'atom/b-cm', 'atom/cm3', 'sum', 'macro'}
             Physical units of density.
         density : float or np.ndarray, optional
             Value of the density. Must be specified unless units is given as
@@ -701,6 +701,95 @@ class Material(object):
             nuclides[nuc] = (nuc, nuc_densities[n])
 
         return nuclides
+
+    def homogenize(self, other_materials, other_volume_fractions):
+        """Homogenize this material with other materials.
+
+        This method homogenizes a material or list of materials with the current
+        material.
+
+        Parameters
+        ----------
+        other_materials : openmc.Material or Iterable of openmc.Material objects
+            Material or Materials to add
+        other_volume_fractions : float or Iterable of floats
+            Volume fractions of other materials to add. The volume fraction of
+            the current material is taken to be 1 - sum(other_volume_fractions).
+
+        Returns
+        -------
+        material : openmc.material
+            The homogenized material.
+
+        """
+
+        if isinstance(other_materials, openmc.Material):
+            other_materials = [other_materials]
+
+        if isinstance(other_volume_fractions, float):
+            other_volume_fractions = [other_volume_fractions]
+
+        cv.check_iterable_type('other_materials', other_materials,
+                               openmc.Material)
+        cv.check_iterable_type('other_volume_fractions',
+                               other_volume_fractions, float)
+
+        if len(other_materials) != len(other_volume_fractions):
+            msg = 'Unable to homogenize materials with different length'\
+                  ' "other_materials" and "other_volume_fractions" iterables'
+            raise ValueError(msg)
+
+        # Add the current material to the list of materials
+        other_materials.append(self)
+        other_volume_fractions.append(1. - sum(other_volume_fractions))
+
+        # Check that the materials are homgenizeable
+        for mat,frac in zip(other_materials, other_volume_fractions):
+            cv.check_greater_than('{} volume fraction'.format(mat.name),
+                                  frac, 0., equality=True)
+            cv.check_less_than('{} volume fraction'.format(mat.name),
+                               frac, 1., equality=True)
+
+            if mat._macroscopic is not None:
+                msg = 'Unable to homogenize Material ID="{0}" as a ' \
+                      'macroscopic data-set has already been added'\
+                      .format(mat._id)
+                raise ValueError(msg)
+
+            if mat.temperature != self.temperature:
+                msg = 'Unable to homogenize Material ID="{0}" with a '\
+                      'temperature of {1} with Material ID"{2}" with a ' \
+                      'temperature of {3}'.format(mat._id, mat.temperature,
+                                                  self._id, self.temperature)
+                raise ValueError(msg)
+
+        # Get the atom densities of all nuclides
+        nuclides = {}
+        name = ''
+        sabs = []
+        for mat,frac in zip(other_materials, other_volume_fractions):
+            new_nuclides = mat.get_nuclide_atom_densities()
+            name += '{} * ({}) + '.format(frac, mat.name)
+            for nuc,density in new_nuclides.items():
+                if nuc in nuclides.keys():
+                    nuclides[nuc] += density[1] * frac
+                else:
+                    nuclides[nuc] = density[1] * frac
+
+            for sab in mat._sab:
+                sabs.append(sab)
+
+        # Add all nuclides to the homogenized material
+        homogenized_material = openmc.Material(name=name[:-3])
+        homogenized_material.set_density('sum')
+        for nuc,density in nuclides.items():
+            homogenized_material.add_nuclide(nuc, density)
+
+        # Add the s(alpha, beta) tables
+        for sab in set(sabs):
+            homogenized_material.add_s_alpha_beta(sab)
+
+        return homogenized_material
 
     def _get_nuclide_xml(self, nuclide, distrib=False):
         xml_element = ET.Element("nuclide")
