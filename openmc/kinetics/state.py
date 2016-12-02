@@ -26,7 +26,10 @@ class State(object):
     mesh : openmc.mesh.Mesh
         Mesh which specifies the dimensions of coarse mesh.
 
-    one_groups : openmc.mgxs.groups.EnergyGroups
+    unity_mesh : openmc.mesh.Mesh
+        Mesh which specifies contains only one cell.
+
+    one_group : openmc.mgxs.groups.EnergyGroups
         EnergyGroups which specifies the a one-energy-group structure.
 
     energy_groups : openmc.mgxs.groups.EnergyGroups
@@ -40,6 +43,9 @@ class State(object):
     flux : OrderedDict of np.ndarray
         Numpy array used to store the flux.
 
+    adjoint_flux : OrderedDict of np.ndarray
+        Numpy array used to store the adjoint flux.
+
     precursors : OrderedDict of np.ndarray
         Numpy array used to store the precursor concentrations.
 
@@ -49,6 +55,12 @@ class State(object):
 
     k_crit : float
         The initial eigenvalue.
+
+    chi_delayed_by_delayed_group : bool
+        Whether to use delayed groups in representing chi-delayed.
+
+    chi_delayed_by_mesh : bool
+        Whether to use a mesh in representing chi-delayed.
 
     nxyz : int
         The number of mesh cells.
@@ -77,10 +89,12 @@ class State(object):
 
         # Initialize Solver class attributes
         self._mesh = None
+        self._unity_mesh = None
         self._one_group = None
         self._energy_groups = None
         self._fine_groups = None
         self._flux = None
+        self._adjoint_flux = None
         self._precursors = None
         self._mgxs_lib = None
         self._k_crit = 1.0
@@ -88,14 +102,18 @@ class State(object):
         self._time = None
         self._clock = None
         self._core_volume = 1.
+        self._chi_delayed_by_delayed_group = False
+        self._chi_delayed_by_mesh = False
 
     def __deepcopy__(self, memo):
 
         clone = type(self).__new__(type(self))
         clone._mesh = self.mesh
+        clone._unity_mesh = self.unity_mesh
         clone._one_group = self.one_group
         clone._energy_groups = self.energy_groups
         clone._flux = copy.deepcopy(self._flux)
+        clone._adjoint_flux = copy.deepcopy(self._adjoint_flux)
         clone._precursors = copy.deepcopy(self.precursors)
         clone._mgxs_lib = copy.deepcopy(self.mgxs_lib)
         clone._k_crit = self.k_crit
@@ -103,6 +121,8 @@ class State(object):
         clone._clock = self.clock
         clone._time = self.time
         clone._core_volume = self.core_volume
+        clone._chi_delayed_by_delayed_group = self._chi_delayed_by_delayed_group
+        clone._chi_delayed_by_mesh = self._chi_delayed_by_mesh
 
         return clone
 
@@ -123,6 +143,10 @@ class State(object):
         return self._mesh
 
     @property
+    def unity_mesh(self):
+        return self._unity_mesh
+
+    @property
     def one_group(self):
         return self._one_group
 
@@ -139,6 +163,10 @@ class State(object):
         return self._flux
 
     @property
+    def adjoint_flux(self):
+        return self._adjoint_flux
+
+    @property
     def precursors(self):
         return self._precursors
 
@@ -149,6 +177,14 @@ class State(object):
     @property
     def k_crit(self):
         return self._k_crit
+
+    @property
+    def chi_delayed_by_delayed_group(self):
+        return self._chi_delayed_by_delayed_group
+
+    @property
+    def chi_delayed_by_mesh(self):
+        return self._chi_delayed_by_mesh
 
     @property
     def num_delayed_groups(self):
@@ -194,6 +230,10 @@ class State(object):
     def mesh(self, mesh):
         self._mesh = mesh
 
+    @unity_mesh.setter
+    def unity_mesh(self, unity_mesh):
+        self._unity_mesh = unity_mesh
+
     @one_group.setter
     def one_group(self, one_group):
         self._one_group = one_group
@@ -208,7 +248,13 @@ class State(object):
 
     @flux.setter
     def flux(self, flux):
-        self._flux = flux
+        self._flux = copy.deepcopy(flux)
+        self._flux.shape = (self.nxyz, self.ng)
+
+    @adjoint_flux.setter
+    def adjoint_flux(self, adjoint_flux):
+        self._adjoint_flux = copy.deepcopy(adjoint_flux)
+        self._adjoint_flux.shape = (self.nxyz, self.ng)
 
     @precursors.setter
     def precursors(self, precursors):
@@ -221,6 +267,14 @@ class State(object):
     @k_crit.setter
     def k_crit(self, k_crit):
         self._k_crit = k_crit
+
+    @chi_delayed_by_delayed_group.setter
+    def chi_delayed_by_delayed_group(self, chi_delayed_by_delayed_group):
+        self._chi_delayed_by_delayed_group = chi_delayed_by_delayed_group
+
+    @chi_delayed_by_mesh.setter
+    def chi_delayed_by_mesh(self, chi_delayed_by_mesh):
+        self._chi_delayed_by_mesh = chi_delayed_by_mesh
 
     @num_delayed_groups.setter
     def num_delayed_groups(self, num_delayed_groups):
@@ -253,6 +307,16 @@ class State(object):
             stream + stream_corr
 
     @property
+    def adjoint_destruction_matrix(self):
+        stream, stream_corr = self.compute_surface_dif_coefs(False)
+        inscatter = sps.block_diag(self.inscatter)
+        outscatter = sps.diags(self.outscatter.flatten())
+        absorb = sps.diags(self.absorption.flatten())
+        matrix = self.dxyz * (absorb + outscatter - inscatter)
+
+        return matrix.transpose() + stream
+
+    @property
     def chi_prompt(self):
         chi_prompt = self.mgxs_lib['chi-prompt'].get_xs()
         chi_prompt.shape = (self.nxyz, self.ngp)
@@ -267,6 +331,10 @@ class State(object):
     @property
     def chi_delayed(self):
         chi_delayed = self.mgxs_lib['chi-delayed'].get_xs()
+        if not self.chi_delayed_by_mesh:
+            chi_delayed = np.tile(chi_delayed, self.nxyz)
+        if not self.chi_delayed_by_delayed_group:
+            chi_delayed = np.tile(chi_delayed, self.nd)
         chi_delayed.shape = (self.nxyz, self.nd, self.ngp)
         return chi_delayed
 
@@ -371,6 +439,7 @@ class State(object):
 
     def compute_initial_precursor_concentration(self):
         self.precursors = self.delayed_fission_rate / self.decay_rate / self.k_crit
+        self.precursors[self.precursors == np.inf] = 0.
 
     def initialize_mgxs(self):
         """Initialize all the tallies for the problem.
@@ -412,6 +481,31 @@ class State(object):
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.energy_groups, by_nuclide=False,
                     name= self.time + ' - ' + mgxs_type)
+            elif mgxs_type == 'chi-delayed':
+                if self.chi_delayed_by_delayed_group:
+                    if self.chi_delayed_by_mesh:
+                        self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
+                            mgxs_type, domain=self.mesh, domain_type='mesh',
+                            energy_groups=self.energy_groups,
+                            delayed_groups=delayed_groups, by_nuclide=False,
+                            name= self.time + ' - ' + mgxs_type)
+                    else:
+                        self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
+                            mgxs_type, domain=self.unity_mesh, domain_type='mesh',
+                            energy_groups=self.energy_groups,
+                            delayed_groups=delayed_groups, by_nuclide=False,
+                            name= self.time + ' - ' + mgxs_type)
+                else:
+                    if self.chi_delayed_by_mesh:
+                        self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
+                            mgxs_type, domain=self.mesh, domain_type='mesh',
+                            energy_groups=self.energy_groups, by_nuclide=False,
+                            name= self.time + ' - ' + mgxs_type)
+                    else:
+                        self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
+                            mgxs_type, domain=self.unity_mesh, domain_type='mesh',
+                            energy_groups=self.energy_groups, by_nuclide=False,
+                            name= self.time + ' - ' + mgxs_type)
             elif mgxs_type in openmc.mgxs.MDGXS_TYPES:
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
@@ -419,7 +513,7 @@ class State(object):
                     delayed_groups=delayed_groups, by_nuclide=False,
                     name= self.time + ' - ' + mgxs_type)
 
-    def compute_surface_dif_coefs(self):
+    def compute_surface_dif_coefs(self, check_for_diag_dominance=True):
 
         # Get the dimensions of the mesh
         nx, ny, nz = self.mesh.dimension
@@ -437,8 +531,9 @@ class State(object):
         net_current[..., 4:6] /= (dx * dy)
 
         # Get the flux
-        flux = copy.deepcopy(self.flux)
+        flux = self.mgxs_lib['absorption'].tallies['flux'].get_values()
         flux.shape = (nz, ny, nx, ng)
+        flux = flux[:, :, :, ::-1]
         flux_array = np.zeros((nz, ny, nx, ng, 6))
 
         # Create a 2D array of the diffusion coefficients
@@ -491,21 +586,22 @@ class State(object):
         sdc_corr_od[:-1,:  ,:  ,:,5] = sdc_corr[:-1,:  ,:  ,:,5]
 
         # Check for diagonal dominance
-        dd_mask = (np.abs(sdc_corr_od) > sdc)
-        nd_mask = (dd_mask == False)
-        pos = (sdc_corr_od > 0.)
-        neg = (sdc_corr_od < 0.)
+        if check_for_diag_dominance:
+            dd_mask = (np.abs(sdc_corr_od) > sdc)
+            nd_mask = (dd_mask == False)
+            pos = (sdc_corr_od > 0.)
+            neg = (sdc_corr_od < 0.)
 
-        # Correct sdc for diagonal dominance
-        sdc[:  ,:  ,1: ,:,0] = nd_mask[:  ,:  ,1: ,:,0] * sdc[:  ,:  ,1: ,:,0] + dd_mask[:  ,:  ,1: ,:,0] * (neg[:  ,:  ,1: ,:,0] * np.abs(net_current[:  ,:  ,1: ,:,0] / (2 * flux_array[:  ,:  ,1: ,:,0])) + pos[:  ,:  ,1: ,:,0] * np.abs(net_current[:  ,:  ,1: ,:,0] / (2 * flux[:  ,:  ,1: ,:])))
-        sdc[:  ,:  ,:-1,:,1] = nd_mask[:  ,:  ,:-1,:,1] * sdc[:  ,:  ,:-1,:,1] + dd_mask[:  ,:  ,:-1,:,1] * (pos[:  ,:  ,:-1,:,1] * np.abs(net_current[:  ,:  ,:-1,:,1] / (2 * flux_array[:  ,:  ,:-1,:,1])) + neg[:  ,:  ,:-1,:,1] * np.abs(net_current[:  ,:  ,:-1,:,1] / (2 * flux[:  ,:  ,:-1,:])))
-        sdc[:  ,1: ,:  ,:,2] = nd_mask[:  ,1: ,:  ,:,2] * sdc[:  ,1: ,:  ,:,2] + dd_mask[:  ,1: ,:  ,:,2] * (neg[:  ,1: ,:  ,:,2] * np.abs(net_current[:  ,1: ,:  ,:,2] / (2 * flux_array[:  ,1: ,:  ,:,2])) + pos[:  ,1: ,:  ,:,2] * np.abs(net_current[:  ,1: ,:  ,:,2] / (2 * flux[:  ,1: ,:  ,:])))
-        sdc[:  ,:-1,:  ,:,3] = nd_mask[:  ,:-1,:  ,:,3] * sdc[:  ,:-1,:  ,:,3] + dd_mask[:  ,:-1,:  ,:,3] * (pos[:  ,:-1,:  ,:,3] * np.abs(net_current[:  ,:-1,:  ,:,3] / (2 * flux_array[:  ,:-1,:  ,:,3])) + neg[:  ,:-1,:  ,:,3] * np.abs(net_current[:  ,:-1,:  ,:,3] / (2 * flux[:  ,:-1,:  ,:])))
-        sdc[1: ,:  ,:  ,:,4] = nd_mask[1: ,:  ,:  ,:,4] * sdc[1: ,:  ,:  ,:,4] + dd_mask[1: ,:  ,:  ,:,4] * (neg[1: ,:  ,:  ,:,4] * np.abs(net_current[1: ,:  ,:  ,:,4] / (2 * flux_array[1: ,:  ,:  ,:,4])) + pos[1: ,:  ,:  ,:,4] * np.abs(net_current[1: ,:  ,:  ,:,4] / (2 * flux[1: ,:  ,:  ,:])))
-        sdc[:-1,:  ,:  ,:,5] = nd_mask[:-1,:  ,:  ,:,5] * sdc[:-1,:  ,:  ,:,5] + dd_mask[:-1,:  ,:  ,:,5] * (pos[:-1,:  ,:  ,:,5] * np.abs(net_current[:-1,:  ,:  ,:,5] / (2 * flux_array[:-1,:  ,:  ,:,5])) + neg[:-1,:  ,:  ,:,5] * np.abs(net_current[:-1,:  ,:  ,:,5] / (2 * flux[:-1,:  ,:  ,:])))
+            # Correct sdc for diagonal dominance
+            sdc[:  ,:  ,1: ,:,0] = nd_mask[:  ,:  ,1: ,:,0] * sdc[:  ,:  ,1: ,:,0] + dd_mask[:  ,:  ,1: ,:,0] * (neg[:  ,:  ,1: ,:,0] * np.abs(net_current[:  ,:  ,1: ,:,0] / (2 * flux_array[:  ,:  ,1: ,:,0])) + pos[:  ,:  ,1: ,:,0] * np.abs(net_current[:  ,:  ,1: ,:,0] / (2 * flux[:  ,:  ,1: ,:])))
+            sdc[:  ,:  ,:-1,:,1] = nd_mask[:  ,:  ,:-1,:,1] * sdc[:  ,:  ,:-1,:,1] + dd_mask[:  ,:  ,:-1,:,1] * (pos[:  ,:  ,:-1,:,1] * np.abs(net_current[:  ,:  ,:-1,:,1] / (2 * flux_array[:  ,:  ,:-1,:,1])) + neg[:  ,:  ,:-1,:,1] * np.abs(net_current[:  ,:  ,:-1,:,1] / (2 * flux[:  ,:  ,:-1,:])))
+            sdc[:  ,1: ,:  ,:,2] = nd_mask[:  ,1: ,:  ,:,2] * sdc[:  ,1: ,:  ,:,2] + dd_mask[:  ,1: ,:  ,:,2] * (neg[:  ,1: ,:  ,:,2] * np.abs(net_current[:  ,1: ,:  ,:,2] / (2 * flux_array[:  ,1: ,:  ,:,2])) + pos[:  ,1: ,:  ,:,2] * np.abs(net_current[:  ,1: ,:  ,:,2] / (2 * flux[:  ,1: ,:  ,:])))
+            sdc[:  ,:-1,:  ,:,3] = nd_mask[:  ,:-1,:  ,:,3] * sdc[:  ,:-1,:  ,:,3] + dd_mask[:  ,:-1,:  ,:,3] * (pos[:  ,:-1,:  ,:,3] * np.abs(net_current[:  ,:-1,:  ,:,3] / (2 * flux_array[:  ,:-1,:  ,:,3])) + neg[:  ,:-1,:  ,:,3] * np.abs(net_current[:  ,:-1,:  ,:,3] / (2 * flux[:  ,:-1,:  ,:])))
+            sdc[1: ,:  ,:  ,:,4] = nd_mask[1: ,:  ,:  ,:,4] * sdc[1: ,:  ,:  ,:,4] + dd_mask[1: ,:  ,:  ,:,4] * (neg[1: ,:  ,:  ,:,4] * np.abs(net_current[1: ,:  ,:  ,:,4] / (2 * flux_array[1: ,:  ,:  ,:,4])) + pos[1: ,:  ,:  ,:,4] * np.abs(net_current[1: ,:  ,:  ,:,4] / (2 * flux[1: ,:  ,:  ,:])))
+            sdc[:-1,:  ,:  ,:,5] = nd_mask[:-1,:  ,:  ,:,5] * sdc[:-1,:  ,:  ,:,5] + dd_mask[:-1,:  ,:  ,:,5] * (pos[:-1,:  ,:  ,:,5] * np.abs(net_current[:-1,:  ,:  ,:,5] / (2 * flux_array[:-1,:  ,:  ,:,5])) + neg[:-1,:  ,:  ,:,5] * np.abs(net_current[:-1,:  ,:  ,:,5] / (2 * flux[:-1,:  ,:  ,:])))
 
-        # Correct sdc correct for diagonal dominance
-        sdc_corr_od = nd_mask * sdc_corr_od + dd_mask * (pos * sdc - neg * sdc)
+            # Correct sdc correct for diagonal dominance
+            sdc_corr_od = nd_mask * sdc_corr_od + dd_mask * (pos * sdc - neg * sdc)
 
         # Multiply by the surface area
         sdc[..., 0:2] *= dy * dz
@@ -516,43 +612,303 @@ class State(object):
         sdc_corr[..., 4:6] *= dx * dy
 
         # Reshape the diffusion coefficient array
-        flux.shape = (nx*ny*nz*ng)
-        sdc.shape = (nx*ny*nz*ng, 6)
-        sdc_corr.shape = (nx*ny*nz*ng, 6)
+        flux.shape        = (nx*ny*nz, ng)
+        sdc.shape         = (nx*ny*nz*ng, 6)
+        sdc_corr.shape    = (nx*ny*nz*ng, 6)
         sdc_corr_od.shape = (nx*ny*nz*ng, 6)
 
         # Set the diagonal
-        sdc_diag = sdc.sum(axis=1)
+        sdc_diag      = sdc.sum(axis=1)
         sdc_corr_diag = sdc_corr[:, 0:6:2].sum(axis=1) - sdc_corr[:, 1:6:2].sum(axis=1)
-        sdc_data  = [sdc_diag]
-        sdc_corr_data  = [sdc_corr_diag]
-        diags = [0]
+        sdc_data      = [sdc_diag]
+        sdc_corr_data = [sdc_corr_diag]
+        diags         = [0]
 
         # Set the off-diagonals
         if nx > 1:
-            sdc_data.append(-sdc[ng:, 0])
+            sdc_data.append(-sdc[ng: , 0])
             sdc_data.append(-sdc[:-ng, 1])
-            sdc_corr_data.append( sdc_corr_od[ng:, 0])
+            sdc_corr_data.append( sdc_corr_od[ng: , 0])
             sdc_corr_data.append(-sdc_corr_od[:-ng, 1])
             diags.append(-ng)
             diags.append(ng)
         if ny > 1:
-            sdc_data.append(-sdc[nx*ng:, 2])
-            sdc_data.append(-sdc[:-nx*ng   , 3])
-            sdc_corr_data.append( sdc_corr_od[nx*ng:, 2])
-            sdc_corr_data.append(-sdc_corr_od[:-nx*ng   , 3])
+            sdc_data.append(-sdc[nx*ng: , 2])
+            sdc_data.append(-sdc[:-nx*ng, 3])
+            sdc_corr_data.append( sdc_corr_od[nx*ng: , 2])
+            sdc_corr_data.append(-sdc_corr_od[:-nx*ng, 3])
             diags.append(-nx*ng)
             diags.append(nx*ng)
         if nz > 1:
-            sdc_data.append(-sdc[nx*ny*ng:, 4])
+            sdc_data.append(-sdc[nx*ny*ng: , 4])
             sdc_data.append(-sdc[:-nx*ny*ng, 5])
-            sdc_corr_data.append( sdc_corr_od[nx*ny*ng:, 4])
+            sdc_corr_data.append( sdc_corr_od[nx*ny*ng: , 4])
             sdc_corr_data.append(-sdc_corr_od[:-nx*ny*ng, 5])
             diags.append(-nx*ny*ng)
             diags.append(nx*ny*ng)
 
+
         # Form a matrix of the surface diffusion coefficients corrections
+        sdc_data = np.nan_to_num(sdc_data)
+        sdc_corr_data = np.nan_to_num(sdc_corr_data)
         sdc_matrix = sps.diags(sdc_data, diags)
         sdc_corr_matrix = sps.diags(sdc_corr_data, diags)
 
         return sdc_matrix, sdc_corr_matrix
+
+
+class DerivedState(State):
+    """State to store all the variables that describe a specific state of the system.
+
+    Attributes
+    ----------
+    mesh : openmc.mesh.Mesh
+        Mesh which specifies the dimensions of coarse mesh.
+
+    unity_mesh : openmc.mesh.Mesh
+        Mesh which specifies contains only one cell.
+
+    one_group : openmc.mgxs.groups.EnergyGroups
+        EnergyGroups which specifies the a one-energy-group structure.
+
+    energy_groups : openmc.mgxs.groups.EnergyGroups
+        EnergyGroups which specifies the energy groups structure.
+
+    fine_groups : openmc.mgxs.groups.EnergyGroups
+        EnergyGroups used to tally the transport cross section that will be
+        condensed to get the diffusion coefficients in the coarse group
+        structure.
+
+    flux : OrderedDict of np.ndarray
+        Numpy array used to store the flux.
+
+    adjoint_flux : OrderedDict of np.ndarray
+        Numpy array used to store the adjoint flux.
+
+    precursors : OrderedDict of np.ndarray
+        Numpy array used to store the precursor concentrations.
+
+    mgxs_lib : OrderedDict of OrderedDict of openmc.tallies
+        Dict of Dict of tallies. The first Dict is indexed by time point
+        and the second Dict is indexed by rxn type.
+
+    k_crit : float
+        The initial eigenvalue.
+
+    chi_delayed_by_delayed_group : bool
+        Whether to use delayed groups in representing chi-delayed.
+
+    chi_delayed_by_mesh : bool
+        Whether to use a mesh in representing chi-delayed.
+
+    nxyz : int
+        The number of mesh cells.
+
+    dxyz : float
+        The volume of a mesh cell.
+
+    num_delayed_groups : int
+        The number of delayed neutron precursor groups.
+
+    nd : int
+        The number of delayed neutron precursor groups.
+
+    ng : int
+        The number of energy groups.
+
+    time : str
+        The time point of this state.
+
+    clock : openmc.kinetics.Clock
+        A clock object to indicate the current simulation time.
+
+    states : dict of openmc.kinetics.State
+        A dictionary of all states.
+
+    forward_state : str
+        The forward state to interpolate with.
+
+    previous_state : str
+        The previous state to interpolate with.
+
+    """
+
+    def __init__(self, states):
+        super(DerivedState, self).__init__()
+
+        # Initialize Solver class attributes
+        self.states = states
+        self.forward_state = 'FORWARD_OUT'
+        self.previous_state = 'PREVIOUS_OUT'
+
+    def __deepcopy__(self, memo):
+        clone = type(self).__new__(type(self))
+        clone._mesh = self.mesh
+        clone._unity_mesh = self.unity_mesh
+        clone._one_group = self.one_group
+        clone._energy_groups = self.energy_groups
+        clone._flux = copy.deepcopy(self._flux)
+        clone._adjoint_flux = copy.deepcopy(self._adjoint_flux)
+        clone._precursors = copy.deepcopy(self.precursors)
+        clone._k_crit = self.k_crit
+        clone._num_delayed_groups = self.num_delayed_groups
+        clone._clock = self.clock
+        clone._time = self.time
+        clone._core_volume = self.core_volume
+        clone._chi_delayed_by_delayed_group = self._chi_delayed_by_delayed_group
+        clone._chi_delayed_by_mesh = self._chi_delayed_by_mesh
+        clone._states = self.states
+        clone._forward_state = self.forward_state
+        clone._previous_state = self.previous_state
+
+        return clone
+
+    @property
+    def states(self):
+        return self._states
+
+    @property
+    def forward_state(self):
+        return self._forward_state
+
+    @property
+    def previous_state(self):
+        return self._previous_state
+
+    @states.setter
+    def states(self, states):
+        self._states = states
+
+    @forward_state.setter
+    def forward_state(self, forward_state):
+        self._forward_state = forward_state
+
+    @previous_state.setter
+    def previous_state(self, previous_state):
+        self._previous_state = previous_state
+
+    @property
+    def weight(self):
+        time = self.clock.times[self.time]
+        fwd_time = self.clock.times[self.forward_state]
+        prev_time = self.clock.times[self.previous_state]
+        weight = (time - prev_time) / (fwd_time - prev_time)
+        return weight
+
+    @property
+    def inscatter(self):
+        wgt = self.weight
+        inscatter_fwd  = self.states[self.forward_state].inscatter
+        inscatter_prev = self.states[self.previous_state].inscatter
+        inscatter = inscatter_fwd * wgt + inscatter_prev * (1 - wgt)
+        return inscatter
+
+    @property
+    def absorption(self):
+        wgt = self.weight
+        absorption_fwd  = self.states[self.forward_state].absorption
+        absorption_prev = self.states[self.previous_state].absorption
+        absorption = absorption_fwd * wgt + absorption_prev * (1 - wgt)
+        return absorption
+
+    @property
+    def destruction_matrix(self):
+        wgt = self.weight
+        state_fwd = self.states[self.forward_state]
+        state_prev = self.states[self.previous_state]
+        stream_fwd,  stream_corr_fwd  = state_fwd.compute_surface_dif_coefs()
+        stream_prev, stream_corr_prev = state_prev.compute_surface_dif_coefs()
+        stream = stream_fwd * wgt + stream_prev * (1 - wgt)
+        stream_corr = stream_corr_prev * wgt + stream_corr_prev * (1 - wgt)
+        inscatter = sps.block_diag(self.inscatter)
+        outscatter = sps.diags(self.outscatter.flatten())
+        absorb = sps.diags(self.absorption.flatten())
+
+        return self.dxyz * (absorb + outscatter - inscatter) + \
+            stream + stream_corr
+
+    @property
+    def adjoint_destruction_matrix(self):
+        wgt = self.weight
+        state_fwd = self.states[self.forward_state]
+        state_prev = self.states[self.previous_state]
+        stream_fwd,  stream_corr_fwd  = state_fwd.compute_surface_dif_coefs(False)
+        stream_prev, stream_corr_prev = state_prev.compute_surface_dif_coefs(False)
+        stream = stream_fwd * wgt + stream_prev * (1 - wgt)
+        stream_corr = stream_corr_prev * wgt + stream_corr_prev * (1 - wgt)
+        inscatter = sps.block_diag(self.inscatter)
+        outscatter = sps.diags(self.outscatter.flatten())
+        absorb = sps.diags(self.absorption.flatten())
+        matrix = self.dxyz * (absorb + outscatter - inscatter)
+
+        return matrix.transpose() + stream
+
+    @property
+    def chi_prompt(self):
+        wgt = self.weight
+        chi_prompt_fwd  = self.states[self.forward_state].chi_prompt
+        chi_prompt_prev = self.states[self.previous_state].chi_prompt
+        chi_prompt = chi_prompt_fwd * wgt + chi_prompt_prev * (1 - wgt)
+        return chi_prompt
+
+    @property
+    def prompt_nu_fission(self):
+        wgt = self.weight
+        prompt_nu_fission_fwd  = self.states[self.forward_state].prompt_nu_fission
+        prompt_nu_fission_prev = self.states[self.previous_state].prompt_nu_fission
+        prompt_nu_fission = prompt_nu_fission_fwd * wgt + prompt_nu_fission_prev * (1 - wgt)
+        return prompt_nu_fission
+
+    @property
+    def chi_delayed(self):
+        wgt = self.weight
+        chi_delayed_fwd  = self.states[self.forward_state].chi_delayed
+        chi_delayed_prev = self.states[self.previous_state].chi_delayed
+        chi_delayed = chi_delayed_fwd * wgt + chi_delayed_prev * (1 - wgt)
+        return chi_delayed
+
+    @property
+    def delayed_nu_fission(self):
+        wgt = self.weight
+        delayed_nu_fission_fwd  = self.states[self.forward_state].delayed_nu_fission
+        delayed_nu_fission_prev = self.states[self.previous_state].delayed_nu_fission
+        delayed_nu_fission = delayed_nu_fission_fwd * wgt + delayed_nu_fission_prev * (1 - wgt)
+        return delayed_nu_fission
+
+    @property
+    def kappa_fission(self):
+        wgt = self.weight
+        kappa_fission_fwd  = self.states[self.forward_state].kappa_fission
+        kappa_fission_prev = self.states[self.previous_state].kappa_fission
+        kappa_fission = kappa_fission_fwd * wgt + kappa_fission_prev * (1 - wgt)
+        return kappa_fission
+
+    @property
+    def decay_rate(self):
+        wgt = self.weight
+        decay_rate_fwd  = self.states[self.forward_state].decay_rate
+        decay_rate_prev = self.states[self.previous_state].decay_rate
+        decay_rate = decay_rate_fwd * wgt + decay_rate_prev * (1 - wgt)
+        return decay_rate
+
+    @property
+    def inverse_velocity(self):
+        wgt = self.weight
+        inverse_velocity_fwd  = self.states[self.forward_state].inverse_velocity
+        inverse_velocity_prev = self.states[self.previous_state].inverse_velocity
+        inverse_velocity = inverse_velocity_fwd * wgt + inverse_velocity_prev * (1 - wgt)
+        return inverse_velocity
+
+    def initialize_mgxs(self):
+        """Initialize all the tallies for the problem.
+
+        """
+
+        # Create elements and ordered dicts and initialize to None
+        self._mgxs_lib = None
+
+    def compute_surface_dif_coefs(self, check_for_diag_dominance=True):
+
+        msg = 'Cannot compute the surface diffusion coefficients ' \
+              'for a DerivedState'
+        raise ValueError(msg)

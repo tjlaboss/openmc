@@ -30,6 +30,9 @@ class Solver(object):
     mesh : openmc.mesh.Mesh
         Mesh which specifies the dimensions of coarse mesh.
 
+    unity_mesh : openmc.mesh.Mesh
+        Mesh which specifies contains only one cell.
+
     geometry : openmc.geometry.Geometry
         Geometry which describes the problem being solved.
 
@@ -59,6 +62,12 @@ class Solver(object):
     k_crit : float
         The initial eigenvalue.
 
+    chi_delayed_by_delayed_group : bool
+        Whether to use delayed groups in representing chi-delayed.
+
+    chi_delayed_by_mesh : bool
+        Whether to use a mesh in representing chi-delayed.
+
     num_delayed_groups : int
         The number of delayed neutron precursor groups.
 
@@ -71,6 +80,7 @@ class Solver(object):
 
         # Initialize Solver class attributes
         self._mesh = None
+        self._unity_mesh = None
         self._geometry = None
         self._settings_file = None
         self._materials_file = None
@@ -87,6 +97,8 @@ class Solver(object):
         self._core_powers = []
         self._mesh_powers = []
         self._core_volume = 1.
+        self._chi_delayed_by_delayed_group = False
+        self._chi_delayed_by_mesh = False
 
     @property
     def core_volume(self):
@@ -115,6 +127,10 @@ class Solver(object):
     @property
     def mesh(self):
         return self._mesh
+
+    @property
+    def unity_mesh(self):
+        return self._unity_mesh
 
     @property
     def nxyz(self):
@@ -161,6 +177,14 @@ class Solver(object):
         return self._k_crit
 
     @property
+    def chi_delayed_by_delayed_group(self):
+        return self._chi_delayed_by_delayed_group
+
+    @property
+    def chi_delayed_by_mesh(self):
+        return self._chi_delayed_by_mesh
+
+    @property
     def num_delayed_groups(self):
         return self._num_delayed_groups
 
@@ -191,6 +215,12 @@ class Solver(object):
     @mesh.setter
     def mesh(self, mesh):
         self._mesh = mesh
+
+        self._unity_mesh = openmc.Mesh()
+        self._unity_mesh.type = mesh.type
+        self._unity_mesh.dimension = [1,1,1]
+        self._unity_mesh.lower_left  = mesh.lower_left
+        self._unity_mesh.width = [i*j for i,j in zip(mesh.dimension, mesh.width)]
 
     @geometry.setter
     def geometry(self, geometry):
@@ -228,6 +258,14 @@ class Solver(object):
     def k_crit(self, k_crit):
         self._k_crit = k_crit
 
+    @chi_delayed_by_delayed_group.setter
+    def chi_delayed_by_delayed_group(self, chi_delayed_by_delayed_group):
+        self._chi_delayed_by_delayed_group = chi_delayed_by_delayed_group
+
+    @chi_delayed_by_mesh.setter
+    def chi_delayed_by_mesh(self, chi_delayed_by_mesh):
+        self._chi_delayed_by_mesh = chi_delayed_by_mesh
+
     @num_delayed_groups.setter
     def num_delayed_groups(self, num_delayed_groups):
         self._num_delayed_groups = num_delayed_groups
@@ -238,8 +276,10 @@ class Solver(object):
             for time in TIME_POINTS:
                 if time != time_from:
                     self.states[time] = copy.deepcopy(self.states[time_from])
+                    self.states[time].time = time
         else:
             self.states[time_to] = copy.deepcopy(self.states[time_from])
+            self.states[time_to].time = time
 
     def run_openmc(self, time):
 
@@ -251,13 +291,14 @@ class Solver(object):
         self.states[time].initialize_mgxs()
 
         # Create the xml files
+        self.geometry.time = self.clock.times[time]
         self.geometry.export_to_xml()
         self.materials_file.export_to_xml()
         self.settings_file.export_to_xml()
         self.generate_tallies_file(time)
 
         # Run OpenMC
-        openmc.run()
+        openmc.run(mpi_procs=4)
 
         # Load MGXS from statepoint
         os.rename('statepoint.{}.h5'.format(self.settings_file.batches),
@@ -268,10 +309,14 @@ class Solver(object):
         for mgxs in self.states[time].mgxs_lib.values():
             mgxs.load_from_statepoint(statepoint_file)
 
-    def create_state(self, time):
+    def create_state(self, time, derived=False):
 
-        state = openmc.kinetics.State()
+        if derived:
+            state = openmc.kinetics.DerivedState(self.states)
+        else:
+            state = openmc.kinetics.State()
         state.mesh = self.mesh
+        state.unity_mesh = self.unity_mesh
         state.energy_groups = self.energy_groups
         state.fine_groups = self.fine_groups
         state.one_group = self.one_group
@@ -280,6 +325,8 @@ class Solver(object):
         state.clock = self.clock
         state.k_crit = self.k_crit
         state.core_volume = self.core_volume
+        state.chi_delayed_by_delayed_group = self.chi_delayed_by_delayed_group
+        state.chi_delayed_by_mesh = self.chi_delayed_by_mesh
         self.states[time] = state
 
     def compute_initial_flux(self):
@@ -293,6 +340,7 @@ class Solver(object):
         mgxs_lib = state.mgxs_lib
         flux = mgxs_lib['absorption'].tallies['flux'].get_values()
         flux.shape = (self.nxyz, self.ng)
+        flux = flux[:, ::-1]
         state.flux = flux
 
         # Compute the initial eigenvalue
@@ -300,10 +348,19 @@ class Solver(object):
                                                     state.production_matrix,
                                                     flux)
 
+        # Compute the initial adjoint eigenvalue
+        adjoint_flux = np.ones(self.nxyz * self.ng)
+        adjoint_flux, k_adjoint = self.compute_eigenvalue\
+                                  (state.adjoint_destruction_matrix,
+                                   state.production_matrix.transpose(),
+                                   adjoint_flux)
+
         # Normalize the initial flux
         state.flux = flux
+        state.adjoint_flux = adjoint_flux
         norm_factor = self.initial_power / state.core_power_density
         state.flux *= norm_factor
+        state.adjoint_flux *= norm_factor
         state.k_crit = self.k_crit
 
         # Compute the initial precursor concentration
@@ -312,8 +369,12 @@ class Solver(object):
         # Copy data to all other states
         for time in TIME_POINTS:
             if time != 'START':
-                self.create_state(time)
-                self.copy_states('START', time, True)
+                if time in ['PREVIOUS_IN', 'FORWARD_IN']:
+                    self.create_state(time, True)
+                    self.copy_states('START', time)
+                else:
+                    self.create_state(time, False)
+                    self.copy_states('START', time, True)
 
     def copy_states(self, time_from, time_to='ALL', copy_mgxs=False):
 
@@ -349,65 +410,37 @@ class Solver(object):
         # Run OpenMC on forward out state
         self.run_openmc('FORWARD_OUT')
 
-        # Get the relevant states
-        state_fwd_out    = self.states['FORWARD_OUT']
-        state_prev_out   = self.states['PREVIOUS_OUT']
-        state_fwd_in     = self.states['FORWARD_IN']
-        state_prev_in    = self.states['PREVIOUS_IN']
-        state_fwd_in_old = self.states['FORWARD_IN_OLD']
-
-        # Get the forward and backward transient matrices
-        matrix_fwd  = state_fwd_out.transient_matrix
-        matrix_prev = state_prev_out.transient_matrix
-
         while (times['FORWARD_IN'] < times['FORWARD_OUT'] - 1.e-8):
 
             # Increment forward in time
             times['FORWARD_IN'] += clock.dt_inner
-            times['FORWARD_IN_OLD'] = times['FORWARD_IN']
-
-            # Get the weight for this time point
-            wgt = clock.get_inner_weight()
 
             # Get the transient matrix and time source
-            matrix = wgt * matrix_fwd + (1 - wgt) * matrix_prev
-            time_source = state_prev_in.time_source_matrix * \
-                          state_prev_in.flux.flatten()
-            source = time_source - state_prev_in.decay_source.flatten()
+            time_source = self.states['PREVIOUS_IN'].time_source_matrix * \
+                          self.states['PREVIOUS_IN'].flux.flatten()
+            source = time_source - self.states['PREVIOUS_IN'].decay_source.flatten()
 
-            res = 1.e10
-            while (res > 1.e-6):
+            # Solve for the flux at FORWARD_IN
+            self.states['FORWARD_IN'].flux \
+                = spsolve(self.states['FORWARD_IN'].transient_matrix, source)
 
-                # Solve for the flux at FORWARD_IN
-                state_fwd_in.flux = spsolve(matrix, source)
-
-                # Propagate the precursors
-                state_fwd_in.propagate_precursors(state_prev_in)
-
-                # Compute the residual
-                flux_res = (state_fwd_in.flux - state_fwd_in_old.flux) / \
-                           state_fwd_in.flux
-                flux_res = np.nan_to_num(flux_res)
-                res = np.linalg.norm(flux_res)
-
-                # Copy to FORWARD_IN_OLD
-                self.copy_states('FORWARD_IN', 'FORWARD_IN_OLD')
-
-                #print('time: {0:1.4f} s, res: {1:1.4e} RMSE'.\
-                #      format(times['FORWARD_IN'], res))
+            # Propagate the precursors
+            self.states['FORWARD_IN'].propagate_precursors(self.states['PREVIOUS_IN'])
 
             # Update the values for the time step
             self.copy_states('FORWARD_IN', 'PREVIOUS_IN')
 
             # Save the core power at FORWARD_IN
             self.times.append(times['FORWARD_IN'])
-            self.core_powers.append(state_fwd_in.core_power_density)
-            self.mesh_powers.append(state_fwd_in.mesh_powers)
+            self.core_powers.append(self.states['FORWARD_IN'].core_power_density)
+            self.mesh_powers.append(self.states['FORWARD_IN'].mesh_powers)
             print('time: {0:1.4f} s, power: {1:1.4e} W/cm^3'.\
                   format(self.times[-1], self.core_powers[-1]))
 
-        # Propagate times
-        self.copy_states('FORWARD_IN')
+        # Copy the flux, precursors, and time from FORWARD_IN to FORWARD_OUT
+        self.copy_states('FORWARD_IN', 'FORWARD_OUT')
+
+        # Copy the flux, precursors, time, and MGXS from FORWARD_OUT to PREVIOUS_OUT
         self.copy_states('FORWARD_OUT', 'PREVIOUS_OUT', True)
 
     def compute_eigenvalue(self, A, M, flux):
@@ -449,9 +482,6 @@ class Solver(object):
 
             if residual < 1.e-8 and i > 10:
                 break
-
-        # Reshape flux into 2D array
-        flux.shape = (self.nxyz, self.ng)
 
         return flux, k_eff
 

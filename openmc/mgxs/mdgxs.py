@@ -966,6 +966,7 @@ class ChiDelayed(MDGXS):
         super(ChiDelayed, self).__init__(domain, domain_type, energy_groups,
                                          delayed_groups, by_nuclide, name)
         self._rxn_type = 'chi-delayed'
+        self._estimator = 'analog'
 
     @property
     def scores(self):
@@ -986,10 +987,6 @@ class ChiDelayed(MDGXS):
     @property
     def tally_keys(self):
         return ['delayed-nu-fission-in', 'delayed-nu-fission-out']
-
-    @property
-    def estimator(self):
-        return 'analog'
 
     @property
     def rxn_rate_tally(self):
@@ -1746,7 +1743,6 @@ class DecayRate(MDGXS):
         super(DecayRate, self).__init__(domain, domain_type, energy_groups,
                                    delayed_groups, by_nuclide, name)
         self._rxn_type = 'decay-rate'
-        self._estimator = 'analog'
 
     @property
     def scores(self):

@@ -1,5 +1,6 @@
 from collections import OrderedDict
 from xml.etree import ElementTree as ET
+from numbers import Real
 
 import openmc
 from openmc.clean_xml import sort_xml_elements, clean_xml_indentation
@@ -48,7 +49,7 @@ class Geometry(object):
 
     @time.setter
     def time(self, time):
-        cv.check_type('Time for Geometry', time, (Real, type(None)))
+        check_type('Time for Geometry', time, (Real, type(None)))
         self._time = time
 
     @root_universe.setter

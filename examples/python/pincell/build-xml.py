@@ -5,7 +5,7 @@ import openmc
 ###############################################################################
 
 # OpenMC simulation parameters
-batches = 100
+batches = 20
 inactive = 10
 particles = 1000
 
@@ -176,19 +176,26 @@ settings_file.export_to_xml()
 # Instantiate a tally mesh
 mesh = openmc.Mesh(mesh_id=1)
 mesh.type = 'regular'
-mesh.dimension = [100, 100, 1]
+mesh.dimension = [1, 1, 1]
 mesh.lower_left = [-0.62992, -0.62992, -1.e50]
 mesh.upper_right = [0.62992, 0.62992, 1.e50]
 
 # Instantiate some tally Filters
 energy_filter = openmc.EnergyFilter([0., 4., 20.e6])
 mesh_filter = openmc.MeshFilter(mesh)
+delayedgroup_filter = openmc.DelayedGroupFilter(range(1,7))
 
 # Instantiate the Tally
-tally = openmc.Tally(tally_id=1, name='tally 1')
-tally.filters = [energy_filter, mesh_filter]
-tally.scores = ['flux', 'fission', 'nu-fission']
+tally1 = openmc.Tally(tally_id=1, name='tally 1')
+tally1.filters = [energy_filter, mesh_filter]
+tally1.scores = ['flux', 'fission', 'nu-fission']
+tally1.estimator = 'tracklength'
+
+tally2 = openmc.Tally(tally_id=2, name='tally 2')
+tally2.filters = [mesh_filter, delayedgroup_filter]
+tally2.scores = ['decay-rate']
+tally2.estimator = 'tracklength'
 
 # Instantiate a Tallies collection and export to XML
-tallies_file = openmc.Tallies([tally])
+tallies_file = openmc.Tallies([tally1, tally2])
 tallies_file.export_to_xml()

@@ -7,8 +7,6 @@ TIME_POINTS = ['START',
                'PREVIOUS_IN',
                'FORWARD_OUT',
                'FORWARD_IN',
-               'FORWARD_OUT_OLD',
-               'FORWARD_IN_OLD',
                'END']
 
 class Clock(object):
