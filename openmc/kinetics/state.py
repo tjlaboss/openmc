@@ -29,6 +29,12 @@ class State(object):
     unity_mesh : openmc.mesh.Mesh
         Mesh which specifies contains only one cell.
 
+    pin_cell_mesh : openmc.mesh.Mesh
+        Mesh over the pin cells.
+
+    assembly_mesh : openmc.mesh.Mesh
+        Mesh over the assemblies.
+
     one_group : openmc.mgxs.groups.EnergyGroups
         EnergyGroups which specifies the a one-energy-group structure.
 
@@ -90,6 +96,8 @@ class State(object):
         # Initialize Solver class attributes
         self._mesh = None
         self._unity_mesh = None
+        self._pin_cell_mesh = None
+        self._assembly_mesh = None
         self._one_group = None
         self._energy_groups = None
         self._fine_groups = None
@@ -110,6 +118,8 @@ class State(object):
         clone = type(self).__new__(type(self))
         clone._mesh = self.mesh
         clone._unity_mesh = self.unity_mesh
+        clone._pin_cell_mesh = self.pin_cell_mesh
+        clone._assembly_mesh = self.assembly_mesh
         clone._one_group = self.one_group
         clone._energy_groups = self.energy_groups
         clone._flux = copy.deepcopy(self._flux)
@@ -145,6 +155,14 @@ class State(object):
     @property
     def unity_mesh(self):
         return self._unity_mesh
+
+    @property
+    def pin_cell_mesh(self):
+        return self._pin_cell_mesh
+
+    @property
+    def assembly_mesh(self):
+        return self._assembly_mesh
 
     @property
     def one_group(self):
@@ -233,6 +251,14 @@ class State(object):
     @unity_mesh.setter
     def unity_mesh(self, unity_mesh):
         self._unity_mesh = unity_mesh
+
+    @pin_cell_mesh.setter
+    def pin_cell_mesh(self, pin_cell_mesh):
+        self._pin_cell_mesh = pin_cell_mesh
+
+    @assembly_mesh.setter
+    def assembly_mesh(self, assembly_mesh):
+        self._assembly_mesh = assembly_mesh
 
     @one_group.setter
     def one_group(self, one_group):
@@ -379,6 +405,32 @@ class State(object):
         return kappa_fission
 
     @property
+    def pin_cell_kappa_fission(self):
+        kappa_fission = self.mgxs_lib['PIN-CELL kappa-fission'].get_xs()
+        kappa_fission.shape = (np.prod(self.pin_cell_mesh.dimension), self.ng)
+        return kappa_fission
+
+    @property
+    def assembly_kappa_fission(self):
+        kappa_fission = self.mgxs_lib['ASSEMBLY kappa-fission'].get_xs()
+        kappa_fission.shape = (np.prod(self.assembly_mesh.dimension), self.ng)
+        return kappa_fission
+
+    @property
+    def pin_cell_shape(self):
+        shape = self.mgxs_lib['PIN-CELL kappa-fission'].tallies['flux'].get_values()
+        shape.shape = (np.prod(self.pin_cell_mesh.dimension), self.ng)
+        shape = shape[:, ::-1]
+        return shape
+
+    @property
+    def assembly_shape(self):
+        shape = self.mgxs_lib['ASSEMBLY kappa-fission'].tallies['flux'].get_values()
+        shape.shape = (np.prod(self.assembly_mesh.dimension), self.ng)
+        shape = shape[:, ::-1]
+        return shape
+
+    @property
     def core_power_density(self):
         return self.mesh_powers.sum() / self.core_volume
 
@@ -387,13 +439,62 @@ class State(object):
         return self.dxyz * (self.kappa_fission * self.flux).sum(axis=1)
 
     @property
+    def pin_powers(self):
+        pin_powers = np.prod(self.pin_cell_mesh.width) * \
+                     (self.pin_cell_kappa_fission * self.pin_cell_shape).sum(axis=1)
+        pin_powers.shape = self.pin_cell_mesh.dimension[::-1]
+
+        # Sum the pin powers over the coarse mesh
+        summed_mesh_powers = np.zeros(self.mesh.dimension[::-1])
+        nxyz = [i/j for i,j in zip(self.pin_cell_mesh.dimension, self.mesh.dimension)]
+        for i in range(self.mesh.dimension[0]):
+            for j in range(self.mesh.dimension[1]):
+                for k in range(self.mesh.dimension[2]):
+                    summed_mesh_powers[k,j,i] \
+                        = np.sum(pin_powers[k*nxyz[2]:(k+1)*nxyz[2],
+                                            j*nxyz[1]:(j+1)*nxyz[1],
+                                            i*nxyz[0]:(i+1)*nxyz[0]])
+
+        # Get the coarse mesh powers
+        mesh_powers = self.mesh_powers
+        mesh_powers.shape = self.mesh.dimension[::-1]
+
+        # Compute the ratio of the mesh powers to the pin powers summed over the
+        # coarse mesh
+        power_ratios = mesh_powers / summed_mesh_powers
+
+        for i in range(self.pin_cell_mesh.dimension[0]):
+            for j in range(self.pin_cell_mesh.dimension[1]):
+                for k in range(self.pin_cell_mesh.dimension[2]):
+                    pin_powers[k,j,i] *= power_ratios[k/nxyz[2], j/nxyz[1], i/nxyz[0]]
+
+        return pin_powers
+
+    @property
+    def assembly_powers(self):
+        pin_powers = self.pin_powers
+
+        # Sum the pin powers over the assembly mesh
+        assembly_powers = np.zeros(self.assembly_mesh.dimension[::-1])
+        nxyz = [i/j for i,j in zip(self.pin_cell_mesh.dimension,
+                                   self.assembly_mesh.dimension)]
+        for i in range(self.assembly_mesh.dimension[0]):
+            for j in range(self.assembly_mesh.dimension[1]):
+                for k in range(self.assembly_mesh.dimension[2]):
+                    assembly_powers[k,j,i] \
+                        = np.sum(pin_powers[k*nxyz[2]:(k+1)*nxyz[2],
+                                            j*nxyz[1]:(j+1)*nxyz[1],
+                                            i*nxyz[0]:(i+1)*nxyz[0]])
+
+        return assembly_powers
+
+    @property
     def time_source_matrix(self):
         time_source = self.dxyz * self.inverse_velocity / self.dt
         return sps.diags(time_source.flatten())
 
-    @property
-    def decay_source(self):
-        decay_source = self.decay_rate * self.precursors / \
+    def decay_source(self, state):
+        decay_source = self.decay_rate * state.precursors / \
                        (1. + self.decay_rate * self.dt)
         decay_source = np.repeat(decay_source, self.ngp)
         decay_source.shape = (self.nxyz, self.nd, self.ngp)
@@ -451,6 +552,17 @@ class State(object):
 
         # Create elements and ordered dicts and initialize to None
         self._mgxs_lib = OrderedDict()
+
+        # Create kappa-fission MGXS objects for the pin cell and assembly meshes
+        self._mgxs_lib['PIN-CELL kappa-fission'] = openmc.mgxs.MGXS.get_mgxs(
+            'kappa-fission', domain=self.pin_cell_mesh, domain_type='mesh',
+            energy_groups=self.energy_groups, by_nuclide=False,
+            name= self.time + ' - PIN-CELL - kappa-fission')
+
+        self._mgxs_lib['ASSEMBLY kappa-fission'] = openmc.mgxs.MGXS.get_mgxs(
+            'kappa-fission', domain=self.assembly_mesh, domain_type='mesh',
+            energy_groups=self.energy_groups, by_nuclide=False,
+            name= self.time + ' - ASSEMBLY - kappa-fission')
 
         mgxs_types = ['transport', 'absorption', 'diffusion-coefficient',
                       'kappa-fission', 'nu-scatter matrix', 'chi-prompt',
@@ -882,6 +994,38 @@ class DerivedState(State):
         kappa_fission_prev = self.states[self.previous_state].kappa_fission
         kappa_fission = kappa_fission_fwd * wgt + kappa_fission_prev * (1 - wgt)
         return kappa_fission
+
+    @property
+    def pin_cell_kappa_fission(self):
+        wgt = self.weight
+        kappa_fission_fwd  = self.states[self.forward_state].pin_cell_kappa_fission
+        kappa_fission_prev = self.states[self.previous_state].pin_cell_kappa_fission
+        kappa_fission = kappa_fission_fwd * wgt + kappa_fission_prev * (1 - wgt)
+        return kappa_fission
+
+    @property
+    def assembly_kappa_fission(self):
+        wgt = self.weight
+        kappa_fission_fwd  = self.states[self.forward_state].assembly_kappa_fission
+        kappa_fission_prev = self.states[self.previous_state].assembly_kappa_fission
+        kappa_fission = kappa_fission_fwd * wgt + kappa_fission_prev * (1 - wgt)
+        return kappa_fission
+
+    @property
+    def pin_cell_shape(self):
+        wgt = self.weight
+        shape_fwd  = self.states[self.forward_state].pin_cell_shape
+        shape_prev = self.states[self.previous_state].pin_cell_shape
+        shape = shape_fwd * wgt + shape_prev * (1 - wgt)
+        return shape
+
+    @property
+    def assembly_shape(self):
+        wgt = self.weight
+        shape_fwd  = self.states[self.forward_state].assembly_shape
+        shape_prev = self.states[self.previous_state].assembly_shape
+        shape = shape_fwd * wgt + shape_prev * (1 - wgt)
+        return shape
 
     @property
     def decay_rate(self):
