@@ -532,6 +532,7 @@ class Solver(object):
                 if time != time_from:
                     state_to = self.states[time]
                     state_to.flux = copy.deepcopy(state_from.flux)
+                    state_to.adjoint_flux = copy.deepcopy(state_from.adjoint_flux)
                     state_to.precursors = copy.deepcopy(state_from.precursors)
                     self.clock.times[time] = self.clock.times[time_from]
 
@@ -541,6 +542,7 @@ class Solver(object):
             state_from = self.states[time_from]
             state_to = self.states[time_to]
             state_to.flux = copy.deepcopy(state_from.flux)
+            state_to.adjoint_flux = copy.deepcopy(state_from.adjoint_flux)
             state_to.precursors = copy.deepcopy(state_from.precursors)
             self.clock.times[time_to] = self.clock.times[time_from]
 
@@ -584,8 +586,9 @@ class Solver(object):
             self.mesh_powers.append(state_fwd.mesh_powers)
             self.pin_powers.append(state_fwd.pin_powers)
             self.assembly_powers.append(state_fwd.assembly_powers)
-            print('time: {0:1.4f} s, power: {1:1.4e} W/cm^3'.\
-                  format(self.times[-1], self.core_powers[-1]))
+            print('t: {0:1.3f} s, P: {1:1.3e} W/cm^3, rho: {2:1.3f} pcm, beta_eff: {3:1.5f}, pnl: {4:1.3e} s'.\
+                  format(self.times[-1], self.core_powers[-1], state_fwd.reactivity * 1.e5,
+                         state_fwd.beta_eff, state_fwd.pnl))
 
         # Copy the flux, precursors, and time from FORWARD_IN to FORWARD_OUT
         self.copy_states('FORWARD_IN', 'FORWARD_OUT')

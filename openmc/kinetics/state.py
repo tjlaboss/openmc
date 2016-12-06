@@ -307,6 +307,42 @@ class State(object):
         self._num_delayed_groups = num_delayed_groups
 
     @property
+    def reactivity(self):
+        production = self.production_matrix * self.flux.flatten()
+        destruction = self.destruction_matrix * self.flux.flatten()
+        balance = production - destruction
+        balance = balance * self.adjoint_flux.flatten()
+        production = production * self.adjoint_flux.flatten()
+        return balance.sum() / production.sum()
+
+    @property
+    def beta_eff(self):
+        flux = np.tile(self.flux.flatten(), self.nd)
+        adjoint_flux = np.tile(self.adjoint_flux.flatten(), self.nd)
+        delayed_production = self.delayed_production
+        delayed_production.shape = (self.nxyz * self.nd, self.ng, self.ng)
+        delayed_production = self.dxyz * sps.block_diag(delayed_production) / self.k_crit
+        delayed_production = delayed_production * flux
+        delayed_production = delayed_production * adjoint_flux
+        delayed_production.shape = (self.nxyz, self.nd, self.ng)
+        delayed_production = delayed_production.sum(axis=2).sum(axis=0)
+
+        production = self.production_matrix * self.flux.flatten()
+        production = production * self.adjoint_flux.flatten()
+        production = np.tile(production, self.nd)
+        production.shape = (self.nxyz, self.nd, self.ng)
+        production = production.sum(axis=2).sum(axis=0)
+
+        return (delayed_production / production).sum()
+
+    @property
+    def pnl(self):
+        inv_velocity = self.dxyz * self.adjoint_flux * self.inverse_velocity * self.flux
+        production = self.production_matrix * self.flux.flatten()
+        production = production * self.adjoint_flux.flatten()
+        return inv_velocity.sum() / production.sum()
+
+    @property
     def inscatter(self):
         inscatter = self.mgxs_lib['nu-scatter matrix'].get_xs(row_column='outin')
         inscatter.shape = (self.nxyz, self.ngp, self.ng)
