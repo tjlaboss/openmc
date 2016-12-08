@@ -586,7 +586,7 @@ class Solver(object):
             self.mesh_powers.append(state_fwd.mesh_powers)
             self.pin_powers.append(state_fwd.pin_powers)
             self.assembly_powers.append(state_fwd.assembly_powers)
-            print('t: {0:1.3f} s, P: {1:1.3e} W/cm^3, rho: {2:1.3f} pcm, beta_eff: {3:1.5f}, pnl: {4:1.3e} s'.\
+            print('t: {0:1.3f} s, P: {1:1.3e} W/cm^3, rho: {2:+1.3f} pcm, beta_eff: {3:1.5f}, pnl: {4:1.3e} s'.\
                   format(self.times[-1], self.core_powers[-1], state_fwd.reactivity * 1.e5,
                          state_fwd.beta_eff, state_fwd.pnl))
 

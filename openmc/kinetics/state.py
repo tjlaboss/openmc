@@ -362,8 +362,8 @@ class State(object):
     def destruction_matrix(self):
         stream, stream_corr = self.compute_surface_dif_coefs()
         inscatter = sps.block_diag(self.inscatter)
-        outscatter = sps.diags(self.outscatter.flatten())
-        absorb = sps.diags(self.absorption.flatten())
+        outscatter = sps.diags(self.outscatter.flatten(), 0)
+        absorb = sps.diags(self.absorption.flatten(), 0)
 
         return self.dxyz * (absorb + outscatter - inscatter) + \
             stream + stream_corr
@@ -372,8 +372,8 @@ class State(object):
     def adjoint_destruction_matrix(self):
         stream, stream_corr = self.compute_surface_dif_coefs(False)
         inscatter = sps.block_diag(self.inscatter)
-        outscatter = sps.diags(self.outscatter.flatten())
-        absorb = sps.diags(self.absorption.flatten())
+        outscatter = sps.diags(self.outscatter.flatten(), 0)
+        absorb = sps.diags(self.absorption.flatten(), 0)
         matrix = self.dxyz * (absorb + outscatter - inscatter)
 
         return matrix.transpose() + stream
@@ -527,7 +527,7 @@ class State(object):
     @property
     def time_source_matrix(self):
         time_source = self.dxyz * self.inverse_velocity / self.dt
-        return sps.diags(time_source.flatten())
+        return sps.diags(time_source.flatten(), 0)
 
     def decay_source(self, state):
         decay_source = self.decay_rate * state.precursors / \
@@ -969,8 +969,8 @@ class DerivedState(State):
         stream = stream_fwd * wgt + stream_prev * (1 - wgt)
         stream_corr = stream_corr_prev * wgt + stream_corr_prev * (1 - wgt)
         inscatter = sps.block_diag(self.inscatter)
-        outscatter = sps.diags(self.outscatter.flatten())
-        absorb = sps.diags(self.absorption.flatten())
+        outscatter = sps.diags(self.outscatter.flatten(), 0)
+        absorb = sps.diags(self.absorption.flatten(), 0)
 
         return self.dxyz * (absorb + outscatter - inscatter) + \
             stream + stream_corr
@@ -985,8 +985,8 @@ class DerivedState(State):
         stream = stream_fwd * wgt + stream_prev * (1 - wgt)
         stream_corr = stream_corr_prev * wgt + stream_corr_prev * (1 - wgt)
         inscatter = sps.block_diag(self.inscatter)
-        outscatter = sps.diags(self.outscatter.flatten())
-        absorb = sps.diags(self.absorption.flatten())
+        outscatter = sps.diags(self.outscatter.flatten(), 0)
+        absorb = sps.diags(self.absorption.flatten(), 0)
         matrix = self.dxyz * (absorb + outscatter - inscatter)
 
         return matrix.transpose() + stream
