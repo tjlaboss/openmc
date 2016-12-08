@@ -1,4 +1,5 @@
 import openmc
+import copy
 
 ###############################################################################
 #                 Exporting to OpenMC materials.xml File
@@ -80,3 +81,7 @@ materials['Fission Chamber'].add_element('H'   , 2*3.3500E-2, 'ao')
 materials['Fission Chamber'].add_element('O'   ,   3.3500E-2, 'ao')
 materials['Fission Chamber'].add_element('B'   ,   2.7800E-5, 'ao')
 #materials['Fission Chamber'].add_nuclide('U235',   1.0000E-8, 'ao')
+
+for bank in range(0,5):
+    materials['Moderator Bank {}'.format(bank)] = copy.deepcopy(materials['Moderator'])
+    materials['Moderator Bank {}'.format(bank)].id = None

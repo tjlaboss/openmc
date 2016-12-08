@@ -32,7 +32,7 @@ for mat in ['UO2']:
         cells['{} {} Bank {}'.format(mat, 'Inner Clad', bank)].fill = materials['Zr Clad']
         cells['{} {} Bank {}'.format(mat, 'Outer Void', bank)].fill = materials['Void']
         cells['{} {} Bank {}'.format(mat, 'Outer Clad', bank)].fill = materials['Al Clad']
-        cells['{} {} Bank {}'.format(mat, 'Moderator', bank)].fill  = materials['Moderator']
+        cells['{} {} Bank {}'.format(mat, 'Moderator', bank)].fill  = materials['Moderator Bank {}'.format(bank)]
 
 
 for mat in ['MOX 4.3%', 'MOX 7.0%', 'MOX 8.7%']:
@@ -55,7 +55,7 @@ for mat in ['MOX 4.3%', 'MOX 7.0%', 'MOX 8.7%']:
         cells['{} {} Bank {}'.format(mat, 'Inner Clad', bank)].fill = materials['Zr Clad']
         cells['{} {} Bank {}'.format(mat, 'Outer Void', bank)].fill = materials['Void']
         cells['{} {} Bank {}'.format(mat, 'Outer Clad', bank)].fill = materials['Al Clad']
-        cells['{} {} Bank {}'.format(mat, 'Moderator', bank)].fill  = materials['Moderator']
+        cells['{} {} Bank {}'.format(mat, 'Moderator', bank)].fill  = materials['Moderator Bank {}'.format(bank)]
 
 rings = ['Base', 'Clad', 'Moderator']
 mats = ['Guide Tube']
@@ -71,25 +71,26 @@ for mat in mats:
 
         cells['{} {} Bank {}'.format(mat, 'Base', bank)].fill      = materials['Moderator']
         cells['{} {} Bank {}'.format(mat, 'Clad', bank)].fill      = materials['Al Clad']
-        cells['{} {} Bank {}'.format(mat, 'Moderator', bank)].fill = materials['Moderator']
+        cells['{} {} Bank {}'.format(mat, 'Moderator', bank)].fill = materials['Moderator Bank {}'.format(bank)]
 
 rings = ['Base', 'Clad', 'Moderator']
 mats = ['Fission Chamber']
 for mat in mats:
-    univ_name = '{}'.format(mat)
-    universes[univ_name] = openmc.Universe(name=univ_name)
-    for ring in rings:
-        name = '{} {}'.format(mat, ring)
-        cells[name] = openmc.Cell(name=name)
-        universes[univ_name].add_cell(cells[name])
+    for bank in range(0,5):
+        univ_name = '{} Bank {}'.format(mat, bank)
+        universes[univ_name] = openmc.Universe(name=univ_name)
+        for ring in rings:
+            name = '{} {} Bank {}'.format(mat, ring, bank)
+            cells[name] = openmc.Cell(name=name)
+            universes[univ_name].add_cell(cells[name])
 
-    cells['{} {}'.format(mat, 'Base')].region      = -surfaces['Guide Tube IR']
-    cells['{} {}'.format(mat, 'Clad')].region      = +surfaces['Guide Tube IR'] & -surfaces['Guide Tube OR']
-    cells['{} {}'.format(mat, 'Moderator')].region = +surfaces['Guide Tube OR']
+        cells['{} {} Bank {}'.format(mat, 'Base', bank)].region      = -surfaces['Guide Tube IR']
+        cells['{} {} Bank {}'.format(mat, 'Clad', bank)].region      = +surfaces['Guide Tube IR'] & -surfaces['Guide Tube OR']
+        cells['{} {} Bank {}'.format(mat, 'Moderator', bank)].region = +surfaces['Guide Tube OR']
 
-    cells['{} {}'.format(mat, 'Base')].fill      = materials[mat]
-    cells['{} {}'.format(mat, 'Clad')].fill      = materials['Al Clad']
-    cells['{} {}'.format(mat, 'Moderator')].fill = materials['Moderator']
+        cells['{} {} Bank {}'.format(mat, 'Base', bank)].fill      = materials[mat]
+        cells['{} {} Bank {}'.format(mat, 'Clad', bank)].fill      = materials['Al Clad']
+        cells['{} {} Bank {}'.format(mat, 'Moderator', bank)].fill = materials['Moderator Bank {}'.format(bank)]
 
 rings = ['Base', 'Core', 'Core Clad', 'Core Moderator']
 mats = ['Control Rod']
@@ -113,7 +114,7 @@ for mat in mats:
 
         cells['{} {} Bank {}'.format(mat, 'Core', bank)].fill           = materials[mat]
         cells['{} {} Bank {}'.format(mat, 'Core Clad', bank)].fill      = materials['Al Clad']
-        cells['{} {} Bank {}'.format(mat, 'Core Moderator', bank)].fill = materials['Moderator']
+        cells['{} {} Bank {}'.format(mat, 'Core Moderator', bank)].fill = materials['Moderator Bank {}'.format(bank)]
 
         cells['{} {} Bank {}'.format(mat, 'Base', bank)].fill = universes['{} {} Bank {}'.format(mat, 'Core', bank)]
         univ_name = '{} {} Bank {}'.format(mat, 'Base', bank)

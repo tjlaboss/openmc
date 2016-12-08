@@ -14,7 +14,7 @@ lattices = {}
 for bank in [1,4]:
     uo = universes['UO2 Bank {}'.format(bank)]
     cc = universes['Control Rod Base Bank {}'.format(bank)]
-    fc = universes['Fission Chamber']
+    fc = universes['Fission Chamber Bank {}'.format(bank)]
     name = 'UO2 Lattice {}'.format(bank)
     lattices[name] = openmc.RectLattice(name=name)
     lat = lattices[name]
@@ -48,7 +48,7 @@ for bank in [2,3]:
     m7 = universes['MOX 7.0% Bank {}'.format(bank)]
     m8 = universes['MOX 8.7% Bank {}'.format(bank)]
     cc = universes['Control Rod Base Bank {}'.format(bank)]
-    fc = universes['Fission Chamber']
+    fc = universes['Fission Chamber Bank {}'.format(bank)]
     name = 'MOX Lattice {}'.format(bank)
     lattices[name] = openmc.RectLattice(name=name)
     lat = lattices[name]
@@ -78,7 +78,7 @@ for bank in [2,3]:
     universes[name].add_cell(cells[name])
 
 
-fc = universes['Fission Chamber']
+fc = universes['Fission Chamber Bank 0']
 cr = universes['Control Rod Reflector']
 rf = universes['Moderator']
 
