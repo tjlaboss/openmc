@@ -370,13 +370,13 @@ class State(object):
 
     @property
     def adjoint_destruction_matrix(self):
-        stream, stream_corr = self.compute_surface_dif_coefs(False)
+        stream, stream_corr = self.compute_surface_dif_coefs()#False)
         inscatter = sps.block_diag(self.inscatter)
         outscatter = sps.diags(self.outscatter.flatten(), 0)
         absorb = sps.diags(self.absorption.flatten(), 0)
         matrix = self.dxyz * (absorb + outscatter - inscatter)
 
-        return matrix.transpose() + stream
+        return matrix.transpose() + stream + stream_corr
 
     @property
     def chi_prompt(self):
@@ -498,6 +498,7 @@ class State(object):
         # Compute the ratio of the mesh powers to the pin powers summed over the
         # coarse mesh
         power_ratios = mesh_powers / summed_mesh_powers
+        power_ratios = np.nan_to_num(power_ratios)
 
         for i in range(self.pin_cell_mesh.dimension[0]):
             for j in range(self.pin_cell_mesh.dimension[1]):
@@ -576,6 +577,7 @@ class State(object):
 
     def compute_initial_precursor_concentration(self):
         self.precursors = self.delayed_fission_rate / self.decay_rate / self.k_crit
+        self.precursors = np.nan_to_num(self.precursors)
         self.precursors[self.precursors == np.inf] = 0.
 
     def initialize_mgxs(self):
