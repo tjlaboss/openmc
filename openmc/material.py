@@ -364,6 +364,85 @@ class Material(object):
 
         self._nuclides.append((nuclide, percent, percent_type))
 
+    def add_material(self, material, percent, percent_type='ao'):
+        """Add a material to the material
+
+        Parameters
+        ----------
+        material : openmc.Material
+            Material to add
+        percent : float
+            Atom or weight percent
+        percent_type : {'ao', 'wo'}
+            'ao' for atom percent and 'wo' for weight percent
+
+        """
+
+        if self._macroscopic is not None:
+            msg = 'Unable to add a Material to Material ID="{0}" as a ' \
+                  'macroscopic data-set has already been added'.format(self._id)
+            raise ValueError(msg)
+
+        if not isinstance(material, openmc.Material):
+            msg = 'Unable to add a Material to Material ID="{0}" with a ' \
+                  'non-Material value "{1}"'.format(self._id, material)
+            raise ValueError(msg)
+
+        elif not isinstance(percent, Real):
+            msg = 'Unable to add a Material to Material ID="{0}" with a ' \
+                  'non-floating point value "{1}"'.format(self._id, percent)
+            raise ValueError(msg)
+
+        elif percent_type not in ['ao', 'wo']:
+            msg = 'Unable to add a Material to Material ID="{0}" with a ' \
+                  'percent type "{1}"'.format(self._id, percent_type)
+            raise ValueError(msg)
+
+        # Get the atom densities in the given material
+        nuclides_densities = material.get_nuclide_atom_densities()
+        nuclides = nuclides_densities.keys()
+        densities = nuclides_densities.values()
+
+        sum_densities = 0.
+        for nuclide,density in zip(nuclides,densities):
+            density = density[1]
+
+            # Convert to weight percent, if requested
+            if percent_type == 'wo':
+                if isinstance(nuclide, openmc.Nuclide):
+                    awr = openmc.data.atomic_mass(nuclide.name)
+                else:
+                    awr = openmc.data.atomic_mass(nuclide)
+
+                amm = material.average_molar_mass
+                density *= awr / amm
+
+            sum_densities += density
+
+        # Add the nuclides of the given material to this material
+        for nuclide,density in zip(nuclides,densities):
+
+            density = density[1]
+
+            # Convert to weight percent, if requested
+            if percent_type == 'wo':
+                if isinstance(nuclide, openmc.Nuclide):
+                    awr = openmc.data.atomic_mass(nuclide.name)
+                else:
+                    awr = openmc.data.atomic_mass(nuclide)
+
+                amm = material.average_molar_mass
+                density *= awr / amm
+
+            # Normalize the density to sum to 1.0
+            density /= sum_densities
+
+            self.add_nuclide(nuclide, density*percent, percent_type)
+
+        # Add the s(a,b)
+        for sab in material._sab:
+            self.add_s_alpha_beta(sab)
+
     def remove_nuclide(self, nuclide):
         """Remove a nuclide from the material
 
@@ -663,133 +742,52 @@ class Material(object):
         nucs = []
         nuc_densities = []
         nuc_density_types = []
+
         for nuclide in nuclides.items():
             nuc, nuc_density, nuc_density_type = nuclide[1]
             nucs.append(nuc)
             nuc_densities.append(nuc_density)
             nuc_density_types.append(nuc_density_type)
 
+        nucs = np.array(nucs)
+        nuc_densities = np.array(nuc_densities)
+        nuc_density_types = np.array(nuc_density_types)
+
         if sum_density:
             density = np.sum(nuc_densities)
+
         percent_in_atom = np.all(nuc_density_types == 'ao')
         density_in_atom = density > 0.
         sum_percent = 0.
 
         awrs = []
-        for n, nuclide in enumerate(nuclides.items()):
+        for nuclide in nuclides.items():
             awr = openmc.data.atomic_mass(nuclide[0])
             if awr is not None:
-                awrs.append(awr / openmc.data.NEUTRON_MASS)
+                awrs.append(awr)
             else:
                 raise ValueError(nuclide[0] + " is invalid")
 
+        # Convert the weight amounts to atomic amounts
+        if not percent_in_atom:
+            for n, nuc in enumerate(nucs):
+                nuc_densities[n] *= self.average_molar_mass / awrs[n]
+
         # Now that we have the awr, lets finish calculating densities
         sum_percent = np.sum(nuc_densities)
-        nuc_densities = nuc_densities / sum_percent
+        nuc_densities = [i / sum_percent for i in nuc_densities]
+
         if not density_in_atom:
-            sum_percent = 0.
-            for n, nuc in enumerate(nucs):
-                x = nuc_densities[n]
-                sum_percent += x * awrs[n]
-            sum_percent = 1. / sum_percent
-            density = -density * sum_percent * \
-                openmc.data.AVOGADRO / openmc.data.NEUTRON_MASS * 1.E-24
-        nuc_densities = density * nuc_densities
+            density = -density / self.average_molar_mass * openmc.data.AVOGADRO \
+                      * 1.E-24
+
+        nuc_densities = [density * i for i in nuc_densities]
 
         nuclides = OrderedDict()
         for n, nuc in enumerate(nucs):
             nuclides[nuc] = (nuc, nuc_densities[n])
 
         return nuclides
-
-    def homogenize(self, other_materials, other_volume_fractions):
-        """Homogenize this material with other materials.
-
-        This method homogenizes a material or list of materials with the current
-        material.
-
-        Parameters
-        ----------
-        other_materials : openmc.Material or Iterable of openmc.Material objects
-            Material or Materials to add
-        other_volume_fractions : float or Iterable of floats
-            Volume fractions of other materials to add. The volume fraction of
-            the current material is taken to be 1 - sum(other_volume_fractions).
-
-        Returns
-        -------
-        material : openmc.material
-            The homogenized material.
-
-        """
-
-        if isinstance(other_materials, openmc.Material):
-            other_materials = [other_materials]
-
-        if isinstance(other_volume_fractions, float):
-            other_volume_fractions = [other_volume_fractions]
-
-        cv.check_iterable_type('other_materials', other_materials,
-                               openmc.Material)
-        cv.check_iterable_type('other_volume_fractions',
-                               other_volume_fractions, float)
-
-        if len(other_materials) != len(other_volume_fractions):
-            msg = 'Unable to homogenize materials with different length'\
-                  ' "other_materials" and "other_volume_fractions" iterables'
-            raise ValueError(msg)
-
-        # Add the current material to the list of materials
-        other_materials.append(self)
-        other_volume_fractions.append(1. - sum(other_volume_fractions))
-
-        # Check that the materials are homgenizeable
-        for mat,frac in zip(other_materials, other_volume_fractions):
-            cv.check_greater_than('{} volume fraction'.format(mat.name),
-                                  frac, 0., equality=True)
-            cv.check_less_than('{} volume fraction'.format(mat.name),
-                               frac, 1., equality=True)
-
-            if mat._macroscopic is not None:
-                msg = 'Unable to homogenize Material ID="{0}" as a ' \
-                      'macroscopic data-set has already been added'\
-                      .format(mat._id)
-                raise ValueError(msg)
-
-            if mat.temperature != self.temperature:
-                msg = 'Unable to homogenize Material ID="{0}" with a '\
-                      'temperature of {1} with Material ID"{2}" with a ' \
-                      'temperature of {3}'.format(mat._id, mat.temperature,
-                                                  self._id, self.temperature)
-                raise ValueError(msg)
-
-        # Get the atom densities of all nuclides
-        nuclides = {}
-        name = ''
-        sabs = []
-        for mat,frac in zip(other_materials, other_volume_fractions):
-            new_nuclides = mat.get_nuclide_atom_densities()
-            name += '{} * ({}) + '.format(frac, mat.name)
-            for nuc,density in new_nuclides.items():
-                if nuc in nuclides.keys():
-                    nuclides[nuc] += density[1] * frac
-                else:
-                    nuclides[nuc] = density[1] * frac
-
-            for sab in mat._sab:
-                sabs.append(sab)
-
-        # Add all nuclides to the homogenized material
-        homogenized_material = openmc.Material(name=name[:-3])
-        homogenized_material.set_density('sum')
-        for nuc,density in nuclides.items():
-            homogenized_material.add_nuclide(nuc, density)
-
-        # Add the s(alpha, beta) tables
-        for sab in set(sabs):
-            homogenized_material.add_s_alpha_beta(sab)
-
-        return homogenized_material
 
     def _get_nuclide_xml(self, nuclide, distrib=False):
         xml_element = ET.Element("nuclide")
