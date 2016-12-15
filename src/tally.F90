@@ -2750,7 +2750,8 @@ contains
 
         if (t % all_nuclides) then
           if (p % material /= MATERIAL_VOID) then
-            call score_all_nuclides(p, i_tally, flux, filter_index)
+            call score_all_nuclides(p, i_tally, flux * filter_weight, &
+                 filter_index)
           end if
         else
 
@@ -2904,7 +2905,8 @@ contains
 
         if (t % all_nuclides) then
           if (p % material /= MATERIAL_VOID) then
-            call score_all_nuclides(p, i_tally, flux, filter_index)
+            call score_all_nuclides(p, i_tally, flux * filter_weight, &
+                 filter_index)
           end if
         else
 

@@ -605,13 +605,6 @@ following attributes/sub-elements:
 
     *Default*: Last batch only
 
-  :interval:
-    A single integer :math:`n` indicating that a state point should be written
-    every :math:`n` batches. This option can be given in lieu of listing
-    batches explicitly.
-
-    *Default*: None
-
 ``<source_point>`` Element
 --------------------------
 
@@ -627,15 +620,6 @@ attributes/sub-elements:
     batches.
 
     *Default*: Last batch only
-
-  :interval:
-    A single integer :math:`n` indicating that a state point should be written
-    every :math:`n` batches. This option can be given in lieu of listing batches
-    explicitly. It should be noted that if the ``separate`` attribute is not set
-    to "true", this value should produce a list of batches that is a subset of
-    state point batches.
-
-    *Default*: None
 
   :separate:
     If this element is set to "true", a separate binary source point file will
@@ -1481,9 +1465,12 @@ The ``<tally>`` element accepts the following sub-elements:
     *Default*: ""
 
   :filter:
-    Specify a filter that restricts contributions to the tally to particles
-    within certain regions of phase space. This element and its
-    attributes/sub-elements are described below.
+    Specify a filter that modifies tally behavior. Most tallies (e.g. ``cell``,
+    ``energy``, and ``material``) restrict the tally so that only particles
+    within certain regions of phase space contribute to the tally.  Others
+    (e.g. ``delayedgroup`` and ``energyfunction``) can apply some other function
+    to the scored values. This element and its attributes/sub-elements are
+    described below.
 
     .. note::
         You may specify zero, one, or multiple filters to apply to the tally. To
@@ -1494,7 +1481,7 @@ The ``<tally>`` element accepts the following sub-elements:
       :type:
         The type of the filter. Accepted options are "cell", "cellborn",
         "material", "universe", "energy", "energyout", "mesh", "distribcell",
-        and "delayedgroup".
+        "delayedgroup", and "energyfunction".
 
       :bins:
         For each filter type, the corresponding ``bins`` entry is given as
@@ -1628,6 +1615,23 @@ The ``<tally>`` element accepts the following sub-elements:
           .. code-block:: xml
 
               <filter type="delayedgroup" bins="1 2 3 4 5 6" />
+
+        :energyfunction:
+          ``energyfunction`` filters do not use the ``bins`` entry.  Instead
+          they use ``energy`` and ``y``.
+
+      :energy:
+        ``energyfunction`` filters multiply tally scores by an arbitrary
+        function. The function is described by a piecewise linear-linear set of
+        (energy, y) values. This entry specifies the energy values. The function
+        will be evaluated as zero outside of the bounds of this energy grid.
+        (Only used for ``energyfunction`` filters)
+
+      :y:
+        ``energyfunction`` filters multiply tally scores by an arbitrary
+        function. The function is described by a piecewise linear-linear set of
+        (energy, y) values. This entry specifies the y values. (Only used
+        for ``energyfunction`` filters)
 
   :nuclides:
     If specified, the scores listed will be for particular nuclides, not the

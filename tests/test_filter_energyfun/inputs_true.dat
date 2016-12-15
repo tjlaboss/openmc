@@ -204,6 +204,7 @@
         <nuclide ao="0.1715" name="Zr92" />
         <nuclide ao="0.1738" name="Zr94" />
         <nuclide ao="0.028" name="Zr96" />
+        <nuclide ao="1e-07" name="Am241" />
     </material>
     <material id="3" name="Cold borated water">
         <density units="atom/b-cm" value="0.07416" />
@@ -299,141 +300,24 @@
 <settings>
     <eigenvalue>
         <particles>100</particles>
-        <batches>3</batches>
-        <inactive>0</inactive>
+        <batches>10</batches>
+        <inactive>5</inactive>
     </eigenvalue>
     <source strength="1.0">
         <space type="box">
             <parameters>-160 -160 -183 160 160 183</parameters>
         </space>
     </source>
-    <temperature_multipole>True</temperature_multipole>
 </settings>
 <?xml version='1.0' encoding='utf-8'?>
 <tallies>
     <tally id="10000">
-        <filter bins="1 3" type="material" />
-        <scores>flux</scores>
-        <derivative>1</derivative>
+        <nuclides>Am241</nuclides>
+        <scores>(n,gamma)</scores>
     </tally>
     <tally id="10001">
-        <filter bins="1 3" type="material" />
-        <scores>flux</scores>
-        <derivative>2</derivative>
+        <filter energy="1e-05 0.369 1000.0 100000.0 600000.0 1000000.0 2000000.0 4000000.0 30000000.0" type="energyfunction" y="0.1 0.1 0.1333 0.158 0.18467 0.25618 0.4297 0.48 0.48" />
+        <nuclides>Am241</nuclides>
+        <scores>(n,gamma)</scores>
     </tally>
-    <tally id="10002">
-        <filter bins="1 3" type="material" />
-        <scores>flux</scores>
-        <derivative>3</derivative>
-    </tally>
-    <tally id="10003">
-        <filter bins="1 3" type="material" />
-        <scores>flux</scores>
-        <derivative>4</derivative>
-    </tally>
-    <tally id="10004">
-        <filter bins="1 3" type="material" />
-        <scores>flux</scores>
-        <derivative>5</derivative>
-    </tally>
-    <tally id="10005">
-        <filter bins="1 3" type="material" />
-        <nuclides>total U235</nuclides>
-        <scores>total absorption scatter fission nu-fission</scores>
-        <derivative>1</derivative>
-    </tally>
-    <tally id="10006">
-        <filter bins="1 3" type="material" />
-        <nuclides>total U235</nuclides>
-        <scores>total absorption scatter fission nu-fission</scores>
-        <derivative>2</derivative>
-    </tally>
-    <tally id="10007">
-        <filter bins="1 3" type="material" />
-        <nuclides>total U235</nuclides>
-        <scores>total absorption scatter fission nu-fission</scores>
-        <derivative>3</derivative>
-    </tally>
-    <tally id="10008">
-        <filter bins="1 3" type="material" />
-        <nuclides>total U235</nuclides>
-        <scores>total absorption scatter fission nu-fission</scores>
-        <derivative>4</derivative>
-    </tally>
-    <tally id="10009">
-        <filter bins="1 3" type="material" />
-        <nuclides>total U235</nuclides>
-        <scores>total absorption scatter fission nu-fission</scores>
-        <derivative>5</derivative>
-    </tally>
-    <tally id="10010">
-        <filter bins="1 3" type="material" />
-        <scores>absorption</scores>
-        <estimator>analog</estimator>
-        <derivative>1</derivative>
-    </tally>
-    <tally id="10011">
-        <filter bins="1 3" type="material" />
-        <scores>absorption</scores>
-        <estimator>analog</estimator>
-        <derivative>2</derivative>
-    </tally>
-    <tally id="10012">
-        <filter bins="1 3" type="material" />
-        <scores>absorption</scores>
-        <estimator>analog</estimator>
-        <derivative>3</derivative>
-    </tally>
-    <tally id="10013">
-        <filter bins="1 3" type="material" />
-        <scores>absorption</scores>
-        <estimator>analog</estimator>
-        <derivative>4</derivative>
-    </tally>
-    <tally id="10014">
-        <filter bins="1 3" type="material" />
-        <scores>absorption</scores>
-        <estimator>analog</estimator>
-        <derivative>5</derivative>
-    </tally>
-    <tally id="10015">
-        <filter bins="1 3" type="material" />
-        <filter bins="0.0 0.625 20000000.0" type="energyout" />
-        <nuclides>total U235</nuclides>
-        <scores>nu-fission scatter</scores>
-        <derivative>1</derivative>
-    </tally>
-    <tally id="10016">
-        <filter bins="1 3" type="material" />
-        <filter bins="0.0 0.625 20000000.0" type="energyout" />
-        <nuclides>total U235</nuclides>
-        <scores>nu-fission scatter</scores>
-        <derivative>2</derivative>
-    </tally>
-    <tally id="10017">
-        <filter bins="1 3" type="material" />
-        <filter bins="0.0 0.625 20000000.0" type="energyout" />
-        <nuclides>U235</nuclides>
-        <scores>nu-fission scatter</scores>
-        <derivative>3</derivative>
-    </tally>
-    <tally id="10018">
-        <filter bins="1 3" type="material" />
-        <filter bins="0.0 0.625 20000000.0" type="energyout" />
-        <nuclides>U235</nuclides>
-        <scores>nu-fission scatter</scores>
-        <derivative>4</derivative>
-    </tally>
-    <tally id="10019">
-        <filter bins="1 3" type="material" />
-        <filter bins="0.0 0.625 20000000.0" type="energyout" />
-        <nuclides>U235</nuclides>
-        <scores>nu-fission scatter</scores>
-        <derivative>5</derivative>
-    </tally>
-    <derivative id="1" material="3" variable="density" />
-    <derivative id="2" material="1" variable="density" />
-    <derivative id="3" material="1" nuclide="O16" variable="nuclide_density" />
-    <derivative id="4" material="1" nuclide="U235" variable="nuclide_density" />
-    <derivative id="5" material="1" variable="temperature" />
 </tallies>

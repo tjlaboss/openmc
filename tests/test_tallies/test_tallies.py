@@ -149,13 +149,16 @@ class TalliesTestHarness(PyAPITestHarness):
         total_tallies[2].estimator = 'analog'
         total_tallies[3].estimator = 'collision'
 
-        all_nuclide_tallies = [Tally(), Tally()]
+        all_nuclide_tallies = [Tally() for i in range(4)]
         for t in all_nuclide_tallies:
             t.filters = [cell_filter]
+            t.estimator = 'tracklength'
             t.nuclides = ['all']
             t.scores = ['total']
-        all_nuclide_tallies[0].estimator = 'tracklength'
-        all_nuclide_tallies[0].estimator = 'collision'
+        all_nuclide_tallies[1].estimator = 'collision'
+        all_nuclide_tallies[2].filters = [mesh_filter]
+        all_nuclide_tallies[3].filters = [mesh_filter]
+        all_nuclide_tallies[3].nuclides = ['U235']
 
         self._input_set.tallies = Tallies()
         self._input_set.tallies += (
@@ -174,12 +177,7 @@ class TalliesTestHarness(PyAPITestHarness):
     def _get_results(self):
         return super(TalliesTestHarness, self)._get_results(hash_output=True)
 
-    def _cleanup(self):
-        super(TalliesTestHarness, self)._cleanup()
-        f = os.path.join(os.getcwd(), 'tallies.xml')
-        if os.path.exists(f): os.remove(f)
-
 
 if __name__ == '__main__':
-    harness = TalliesTestHarness('statepoint.5.*', True)
+    harness = TalliesTestHarness('statepoint.5.h5', True)
     harness.main()
