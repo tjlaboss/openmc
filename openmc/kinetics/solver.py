@@ -62,6 +62,9 @@ class Solver(object):
     materials_file : openmc.materials.MaterialsFile
         Materials file containing the materials info for each simulation.
 
+    mgxs_lib_file : openmc.materials.MGXSLibrary
+        MGXS Library file containing the multi-group xs for mg Monte Carlo.
+
     clock : openmc.kinetics.Clock
         Clock object.
 
@@ -132,6 +135,7 @@ class Solver(object):
         self._geometry = None
         self._settings_file = None
         self._materials_file = None
+        self._mgxs_lib_file = None
         self._clock = None
         self._one_group = None
         self._energy_groups = None
@@ -231,6 +235,10 @@ class Solver(object):
     @property
     def materials_file(self):
         return self._materials_file
+
+    @property
+    def mgxs_lib_file(self):
+        return self._mgxs_lib_file
 
     @property
     def clock(self):
@@ -350,6 +358,10 @@ class Solver(object):
     def materials_file(self, materials_file):
         self._materials_file = materials_file
 
+    @mgxs_lib_file.setter
+    def mgxs_lib_file(self, mgxs_lib_file):
+        self._mgxs_lib_file = mgxs_lib_file
+
     @clock.setter
     def clock(self, clock):
         self._clock = clock
@@ -406,6 +418,11 @@ class Solver(object):
         # Create a new random seed for the xml file
         if not self.constant_seed:
             self.settings_file.seed = np.random.randint(1, 1e6, 1)[0]
+
+        if self.mgxs_lib_file:
+            self.materials_file.cross_sections = './mgxs.h5'
+            self.mgxs_lib_file.export_to_hdf5(self.run_directory + '/mgxs.h5')
+            self.settings_file.energy_mode = 'multi-group'
 
         # Create MGXS
         self.states[time].initialize_mgxs()
@@ -495,6 +512,9 @@ class Solver(object):
                                    state.production_matrix.transpose(),
                                    adjoint_flux)
 
+        flux[flux < 0.] = 0.
+        adjoint_flux[adjoint_flux < 0.] = 0.
+
         # Normalize the initial flux
         state.flux = flux
         state.adjoint_flux = adjoint_flux
@@ -573,6 +593,7 @@ class Solver(object):
 
             # Solve for the flux at FORWARD_IN
             state_fwd.flux = spsolve(state_fwd.transient_matrix, source)
+            state_fwd.flux[state_fwd.flux < 0.] = 0.
 
             # Propagate the precursors
             state_fwd.propagate_precursors(state_pre)
@@ -586,7 +607,7 @@ class Solver(object):
             self.mesh_powers.append(state_fwd.mesh_powers)
             self.pin_powers.append(state_fwd.pin_powers)
             self.assembly_powers.append(state_fwd.assembly_powers)
-            print('t: {0:1.3f} s, P: {1:1.3e} W/cm^3, rho: {2:1.3f} pcm, beta_eff: {3:1.5f}, pnl: {4:1.3e} s'.\
+            print('t: {0:1.3f} s, P: {1:1.3e} W/cm^3, rho: {2:+1.3f} pcm, beta_eff: {3:1.5f}, pnl: {4:1.3e} s'.\
                   format(self.times[-1], self.core_powers[-1], state_fwd.reactivity * 1.e5,
                          state_fwd.beta_eff, state_fwd.pnl))
 
