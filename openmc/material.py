@@ -871,13 +871,16 @@ class Material(object):
             subelement.text = str(self.temperature)
 
         # Create density XML subelement
-        if self._density is not None:
+        if self._density_units is not '':
             subelement = ET.SubElement(element, "density")
             if self._density_units is not 'sum':
+                if self._density is None:
+                    raise ValueError('Density has not been set for material {}!'
+                                     .format(self.id))
                 subelement.set("value", str(self._density))
             subelement.set("units", self._density_units)
         else:
-            raise ValueError('Density has not been set for material {}!'
+            raise ValueError('Density units has not been set for material {}!'
                              .format(self.id))
 
         if not self._convert_to_distrib_comps:

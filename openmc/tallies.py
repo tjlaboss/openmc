@@ -3505,6 +3505,6 @@ class Tallies(cv.CheckedList):
         clean_xml_indentation(root_element)
 
         # Write the XML Tree to the tallies.xml file
-        tree = ET.ElementTree(self._tallies_file)
+        tree = ET.ElementTree(root_element)
         tree.write(path, xml_declaration=True,
                    encoding='utf-8', method="xml")
