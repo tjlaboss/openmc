@@ -1261,7 +1261,6 @@ contains
     class(Mgxs), pointer :: nucxs
 
     ! Set the direction and group to use with get_xs
-    ! this only depends on if we
     if (t % estimator == ESTIMATOR_ANALOG .or. &
          t % estimator == ESTIMATOR_COLLISION) then
 
@@ -1517,13 +1516,6 @@ contains
 
       case (SCORE_FISSION)
 
-        ! make sure the correct energy is used
-        if (t % estimator == ESTIMATOR_TRACKLENGTH) then
-          p_g = p % g
-        else
-          p_g = p % last_g
-        end if
-
         if (t % estimator == ESTIMATOR_ANALOG) then
           if (survival_biasing) then
             ! No fission events occur if survival biasing is on -- need to
@@ -1558,13 +1550,6 @@ contains
 
 
       case (SCORE_NU_FISSION)
-
-        ! make sure the correct energy is used
-        if (t % estimator == ESTIMATOR_TRACKLENGTH) then
-          p_g = p % g
-        else
-          p_g = p % last_g
-        end if
 
         if (t % estimator == ESTIMATOR_ANALOG) then
           if (survival_biasing .or. p % fission) then
@@ -1620,13 +1605,6 @@ contains
 
       case (SCORE_PROMPT_NU_FISSION)
 
-        ! make sure the correct energy is used
-        if (t % estimator == ESTIMATOR_TRACKLENGTH) then
-          p_g = p % g
-        else
-          p_g = p % last_g
-        end if
-
         if (t % estimator == ESTIMATOR_ANALOG) then
           if (survival_biasing .or. p % fission) then
             if (t % find_filter(FILTER_ENERGYOUT) > 0) then
@@ -1681,13 +1659,6 @@ contains
 
 
       case (SCORE_DELAYED_NU_FISSION)
-
-        ! make sure the correct energy is used
-        if (t % estimator == ESTIMATOR_TRACKLENGTH) then
-          p_g = p % g
-        else
-          p_g = p % last_g
-        end if
 
         ! Set the delayedgroup filter index and the number of delayed group bins
         dg_filter = t % find_filter(FILTER_DELAYEDGROUP)
@@ -1828,13 +1799,6 @@ contains
         end if
 
       case (SCORE_DECAY_RATE)
-
-        ! make sure the correct energy is used
-        if (t % estimator == ESTIMATOR_TRACKLENGTH) then
-          p_g = p % g
-        else
-          p_g = p % last_g
-        end if
 
         ! Set the delayedgroup filter index and the number of delayed group bins
         dg_filter = t % find_filter(FILTER_DELAYEDGROUP)
@@ -2017,13 +1981,6 @@ contains
 
 
       case (SCORE_KAPPA_FISSION)
-
-        ! make sure the correct energy is used
-        if (t % estimator == ESTIMATOR_TRACKLENGTH) then
-          p_g = p % g
-        else
-          p_g = p % last_g
-        end if
 
         if (t % estimator == ESTIMATOR_ANALOG) then
           if (survival_biasing) then

@@ -923,7 +923,7 @@ class ChiDelayed(MDGXS):
     tally_keys : list of str
         The keys into the tallies dictionary for each tally used to compute
         the multi-group cross section
-    estimator : {'tracklength', 'analog'}
+    estimator : 'analog'
         The tally estimator used to compute the multi-group cross section
     tallies : collections.OrderedDict
         OpenMC tallies needed to compute the multi-group cross section. The keys
@@ -1016,7 +1016,12 @@ class ChiDelayed(MDGXS):
         return self._xs_tally
 
     def get_homogenized_mgxs(self, other_mgxs):
-        """Construct a homogenized mgxs with other mgxs objects.
+        """Construct a homogenized MGXS with other MGXS objects.
+
+        This method constructs a new MGXS object that is the flux-weighted
+        combination of two MGXS objects. It is equivalent to what one would
+        obtain if the tally spatial domain were designed to encompass the
+        individual domains for both MGXS objects.
 
         Parameters
         ----------
@@ -1606,7 +1611,12 @@ class Beta(MDGXS):
         return self._xs_tally
 
     def get_homogenized_mgxs(self, other_mgxs):
-        """Construct a homogenized mgxs with other mgxs objects.
+        """Construct a homogenized MGXS with other MGXS objects.
+
+        This method constructs a new MGXS object that is the flux-weighted
+        combination of two MGXS objects. It is equivalent to what one would
+        obtain if the tally spatial domain were designed to encompass the
+        individual domains for both MGXS objects.
 
         Parameters
         ----------
@@ -1626,6 +1636,7 @@ class Beta(MDGXS):
         """
 
         return self._get_homogenized_mgxs(other_mgxs, 'nu-fission')
+
 
 class DecayRate(MDGXS):
     r"""The decay rate for delayed neutron precursors.
@@ -1778,7 +1789,12 @@ class DecayRate(MDGXS):
         return self._xs_tally
 
     def get_homogenized_mgxs(self, other_mgxs):
-        """Construct a homogenized mgxs with other mgxs objects.
+        """Construct a homogenized MGXS with other MGXS objects.
+
+        This method constructs a new MGXS object that is the flux-weighted
+        combination of two MGXS objects. It is equivalent to what one would
+        obtain if the tally spatial domain were designed to encompass the
+        individual domains for both MGXS objects.
 
         Parameters
         ----------
@@ -2356,7 +2372,7 @@ class DelayedNuFissionMatrixXS(MatrixMDGXS):
     tally_keys : list of str
         The keys into the tallies dictionary for each tally used to compute
         the multi-group cross section
-    estimator : {'tracklength', 'analog'}
+    estimator : 'analog'
         The tally estimator used to compute the multi-group cross section
     tallies : collections.OrderedDict
         OpenMC tallies needed to compute the multi-group cross section. The keys
