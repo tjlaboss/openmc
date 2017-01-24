@@ -17,6 +17,7 @@ import openmc.checkvalue as cv
 import openmc.mgxs
 import openmc.kinetics
 from openmc.kinetics.clock import TIME_POINTS
+import h5py
 
 if sys.version_info[0] >= 3:
     basestring = str
@@ -106,18 +107,6 @@ class Solver(object):
     constant_seed : bool
         Whether to use a constant seed in the OpenMC solve.
 
-    times : np.array
-        The times at which the powers are saved.
-
-    core_powers : np.array
-        The core powers at different time points during the solve.
-
-    pin_powers : np.array
-        The pin powers at different time points during the solve.
-
-    assembly_powers : np.array
-        The assembly powers at different time points during the solve.
-
     core_volume : float
         The core volume used to normalize the initial power.
 
@@ -145,16 +134,19 @@ class Solver(object):
         self._initial_power = 1.
         self._states = OrderedDict()
         self._constant_seed = True
-        self._times = []
-        self._core_powers = []
-        self._mesh_powers = []
-        self._pin_powers = []
-        self._assembly_powers = []
         self._core_volume = 1.
         self._chi_delayed_by_delayed_group = False
         self._chi_delayed_by_mesh = False
         self._mpi_procs = 4
         self._use_pregenerated_sps = False
+        self._log_file = None
+
+    @property
+    def log_file(self):
+        log_file = os.path.join(self.directory,
+                                     self.name + '/log_file.h5')
+        log_file = log_file.replace(' ', '-')
+        return log_file
 
     @property
     def name(self):
@@ -171,26 +163,6 @@ class Solver(object):
     @property
     def core_volume(self):
         return self._core_volume
-
-    @property
-    def core_powers(self):
-        return self._core_powers
-
-    @property
-    def mesh_powers(self):
-        return self._mesh_powers
-
-    @property
-    def pin_powers(self):
-        return self._pin_powers
-
-    @property
-    def assembly_powers(self):
-        return self._assembly_powers
-
-    @property
-    def times(self):
-        return self._times
 
     @property
     def constant_seed(self):
@@ -300,26 +272,6 @@ class Solver(object):
     def core_volume(self, core_volume):
         self._core_volume = core_volume
 
-    @core_powers.setter
-    def core_powers(self, core_powers):
-        self._core_powers = core_powers
-
-    @mesh_powers.setter
-    def mesh_powers(self, mesh_powers):
-        self._mesh_powers = mesh_powers
-
-    @pin_powers.setter
-    def pin_powers(self, pin_powers):
-        self._pin_powers = pin_powers
-
-    @assembly_powers.setter
-    def assembly_powers(self, assembly_powers):
-        self._assembly_powers = assembly_powers
-
-    @times.setter
-    def times(self, times):
-        self._times = times
-
     @constant_seed.setter
     def constant_seed(self, constant_seed):
         self._constant_seed = constant_seed
@@ -402,6 +354,42 @@ class Solver(object):
     def mpi_procs(self, mpi_procs):
         self._mpi_procs = mpi_procs
 
+    def create_log_file(self):
+
+        f = h5py.File(self.log_file, 'w')
+        for mesh,name in \
+            zip([self.mesh, self.unity_mesh, self.pin_cell_mesh, self.assembly_mesh],
+                ['mesh', 'unity_mesh', 'pin_cell_mesh', 'assembly_mesh']):
+            f.require_group(name)
+            f[name].attrs['id'] = mesh.id
+            f[name].attrs['name'] = mesh.name
+            f[name].attrs['type'] = mesh.type
+            f[name].attrs['dimension'] = mesh.dimension
+            f[name].attrs['lower_left'] = mesh.lower_left
+            f[name].attrs['width'] = mesh.width
+
+        for groups,name in \
+            zip([self.one_group, self.energy_groups, self.fine_groups],
+                ['one_group', 'energy_groups', 'fine_groups']):
+            f.require_group(name)
+            f[name].attrs['group_edges'] = groups.group_edges
+            f[name].attrs['num_groups'] = groups.num_groups
+
+        f.attrs['name'] = self.name
+        f.attrs['num_delayed_groups'] = self.num_delayed_groups
+        f.attrs['chi_delayed_by_delayed_group'] \
+            = self.chi_delayed_by_delayed_group
+        f.attrs['chi_delayed_by_mesh'] = self.chi_delayed_by_mesh
+        f.attrs['num_delayed_groups'] = self.num_delayed_groups
+        f.attrs['use_pregenerated_sps'] = self.use_pregenerated_sps
+        f.attrs['constant_seed'] = self.constant_seed
+        f.attrs['core_volume'] = self.core_volume
+        f.attrs['k_crit'] = self.k_crit
+        f.require_group('clock')
+        f['clock'].attrs['dt_outer'] = self.clock.dt_outer
+        f['clock'].attrs['dt_inner'] = self.clock.dt_inner
+        f.close()
+
     def transfer_states(self, time_from, time_to='all'):
 
         if time_to == 'all':
@@ -457,6 +445,7 @@ class Solver(object):
         statepoint_file = openmc.StatePoint(sp_new_name, False)
         statepoint_file.link_with_summary(summary_file)
 
+        # Load mgxs library
         for mgxs in self.states[time].mgxs_lib.values():
             mgxs.load_from_statepoint(statepoint_file)
 
@@ -480,6 +469,7 @@ class Solver(object):
         state.core_volume = self.core_volume
         state.chi_delayed_by_delayed_group = self.chi_delayed_by_delayed_group
         state.chi_delayed_by_mesh = self.chi_delayed_by_mesh
+        state.log_file = self.log_file
         self.states[time] = state
 
     def compute_initial_flux(self):
@@ -526,13 +516,6 @@ class Solver(object):
         # Compute the initial precursor concentration
         state.compute_initial_precursor_concentration()
 
-        # Create the arrays with the data
-        self.times.append(self.clock.times['START'])
-        self.core_powers.append(state.core_power_density)
-        self.mesh_powers.append(state.mesh_powers)
-        self.pin_powers.append(state.pin_powers)
-        self.assembly_powers.append(state.assembly_powers)
-
         # Copy data to all other states
         for time in TIME_POINTS:
             if time != 'START':
@@ -542,6 +525,10 @@ class Solver(object):
                 else:
                     self.create_state(time, False)
                     self.copy_states('START', time, True)
+
+        # Create hdf5 log file
+        self.create_log_file()
+        self.states['START'].dump_to_log_file()
 
     def copy_states(self, time_from, time_to='ALL', copy_mgxs=False):
 
@@ -602,19 +589,21 @@ class Solver(object):
             self.copy_states('FORWARD_IN', 'PREVIOUS_IN')
 
             # Save the core power at FORWARD_IN
-            self.times.append(times['FORWARD_IN'])
-            self.core_powers.append(state_fwd.core_power_density)
-            self.mesh_powers.append(state_fwd.mesh_powers)
-            self.pin_powers.append(state_fwd.pin_powers)
-            self.assembly_powers.append(state_fwd.assembly_powers)
-            print('t: {0:1.3f} s, P: {1:1.3e} W/cm^3, rho: {2:+1.3f} pcm, beta_eff: {3:1.5f}, pnl: {4:1.3e} s'.\
-                  format(self.times[-1], self.core_powers[-1], state_fwd.reactivity * 1.e5,
+            print('t: {0:1.3f} s, P: {1:1.3e} W/cm^3, rho: {2:+1.3f} pcm'
+                  ', beta_eff: {3:1.5f}, pnl: {4:1.3e} s'.\
+                  format(times['FORWARD_IN'], state_fwd.core_power_density,
+                         state_fwd.reactivity * 1.e5,
                          state_fwd.beta_eff, state_fwd.pnl))
 
-        # Copy the flux, precursors, and time from FORWARD_IN to FORWARD_OUT
+            # Dump data at FORWARD_IN state to log file
+            self.states['FORWARD_IN'].dump_to_log_file()
+
+        # Copy the flux, precursors, and time from FORWARD_IN to
+        # FORWARD_OUT
         self.copy_states('FORWARD_IN', 'FORWARD_OUT')
 
-        # Copy the flux, precursors, time, and MGXS from FORWARD_OUT to PREVIOUS_OUT
+        # Copy the flux, precursors, time, and MGXS from FORWARD_OUT to
+        # PREVIOUS_OUT
         self.copy_states('FORWARD_OUT', 'PREVIOUS_OUT', True)
 
     def compute_eigenvalue(self, A, M, flux):
@@ -669,7 +658,9 @@ class Solver(object):
 
         # Add the tallies to the file
         for mgxs in mgxs_lib.values():
-            tallies_file += mgxs.tallies.values()
+            tallies = mgxs.tallies.values()
+            for tally in tallies:
+                tallies_file.append(tally, True)
 
         # Export the tallies file to xml
         tallies_file.export_to_xml(self.run_directory + '/tallies.xml')

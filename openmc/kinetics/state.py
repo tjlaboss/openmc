@@ -13,6 +13,7 @@ import openmc.checkvalue as cv
 import openmc.mgxs
 import openmc.kinetics
 from openmc.kinetics.clock import TIME_POINTS
+import h5py
 
 if sys.version_info[0] >= 3:
     basestring = str
@@ -112,6 +113,7 @@ class State(object):
         self._core_volume = 1.
         self._chi_delayed_by_delayed_group = False
         self._chi_delayed_by_mesh = False
+        self._log_file = None
 
     def __deepcopy__(self, memo):
 
@@ -133,8 +135,13 @@ class State(object):
         clone._core_volume = self.core_volume
         clone._chi_delayed_by_delayed_group = self._chi_delayed_by_delayed_group
         clone._chi_delayed_by_mesh = self._chi_delayed_by_mesh
+        clone._log_file = self._log_file
 
         return clone
+
+    @property
+    def log_file(self):
+        return self._log_file
 
     @property
     def core_volume(self):
@@ -231,6 +238,10 @@ class State(object):
     @property
     def dt(self):
         return self.clock.dt_inner
+
+    @log_file.setter
+    def log_file(self, log_file):
+        self._log_file = log_file
 
     @core_volume.setter
     def core_volume(self, core_volume):
@@ -568,6 +579,27 @@ class State(object):
         flux = np.tile(self.flux, self.nd)
         flux.shape = (self.nxyz, self.nd, self.ng)
         return (self.delayed_nu_fission * flux).sum(axis=2)
+
+    def dump_to_log_file(self):
+
+        time = str(self.clock.times[self.time])
+        f = h5py.File(self._log_file, 'a')
+        f.require_group(time)
+        f[time]['flux'] = self.flux
+        f[time]['adjoint_flux'] = self.adjoint_flux
+        f[time]['precursors'] = self.precursors
+        f[time].attrs['reactivity'] = self.reactivity
+        f[time].attrs['beta_eff'] = self.beta_eff
+        f[time].attrs['pnl'] = self.pnl
+        f[time].attrs['core_power_density'] = self.core_power_density
+        f[time]['kappa_fission'] = self.kappa_fission
+        f[time]['pin_cell_kappa_fission'] = self.pin_cell_kappa_fission
+        f[time]['assembly_kappa_fission'] = self.assembly_kappa_fission
+        f[time]['pin_cell_shape'] = self.pin_cell_shape
+        f[time]['assembly_shape'] = self.assembly_shape
+        f[time]['pin_powers'] = self.pin_powers
+        f[time]['assembly_powers'] = self.assembly_powers
+        f.close()
 
     def propagate_precursors(self, state):
 

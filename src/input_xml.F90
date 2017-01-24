@@ -2293,7 +2293,7 @@ contains
         case ('atom/cm3', 'atom/cc')
           mat % density = 1.0e-24_8 * val
         case default
-          call fatal_error("Unkwown units '" // trim(units) &
+          call fatal_error("Unknown units '" // trim(units) &
                // "' specified on material " // trim(to_str(mat % id)))
         end select
       end if
@@ -2350,7 +2350,7 @@ contains
 
         ! Set density for macroscopic data
         if (units == 'macro') then
-          call densities % push_back(ONE)
+          call densities % push_back(mat % density)
         else
           call fatal_error("Units can only be macro for macroscopic data " &
                // trim(name))
@@ -2398,7 +2398,7 @@ contains
           ! Check if no atom/weight percents were specified or if both atom and
           ! weight percents were specified
           if (units == 'macro') then
-            call densities % push_back(ONE)
+            call densities % push_back(mat % density)
           else
             if (.not. check_for_node(node_nuc, "ao") .and. &
                  .not. check_for_node(node_nuc, "wo")) then

@@ -298,8 +298,8 @@ class XSdata(object):
             self._xs_shapes["[DG]"] = (self.num_delayed_groups,)
             self._xs_shapes["[DG][G]"] = (self.num_delayed_groups,
                                           self.energy_groups.num_groups)
-            self._xs_shapes["[DG'][G']"] = (self.num_delayed_groups,
-                                            self.energy_groups.num_groups)
+            self._xs_shapes["[DG][G']"] = (self.num_delayed_groups,
+                                           self.energy_groups.num_groups)
             self._xs_shapes["[DG][G][G']"] = (self.num_delayed_groups,
                                               self.energy_groups.num_groups,
                                               self.energy_groups.num_groups)
@@ -634,7 +634,7 @@ class XSdata(object):
         """
 
         # Get the accepted shapes for this xs
-        shapes = [self.xs_shapes["[G']"], self.xs_shapes["[DG][G']"]]
+        shapes = [self.xs_shapes["[G]"], self.xs_shapes["[DG][G']"]]
 
         # Convert to a numpy array so we can easily get the shape for checking
         chi_delayed = np.asarray(chi_delayed)

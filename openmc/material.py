@@ -187,6 +187,24 @@ class Material(object):
             return np.interp(self.time, self._density[0], self._density[1])
 
     @property
+    def mass_density(self):
+
+        nuclides_densities = self.get_nuclide_atom_densities()
+        nuclides = nuclides_densities.keys()
+        densities = nuclides_densities.values()
+
+        mass_density = 0.
+        for nuclide,density in zip(nuclides,densities):
+            if isinstance(nuclide, openmc.Nuclide):
+                awr = openmc.data.atomic_mass(nuclide.name)
+            else:
+                awr = openmc.data.atomic_mass(nuclide)
+
+            mass_density += awr * density[1] * 1.e24 / openmc.data.AVOGADRO
+
+        return mass_density
+
+    @property
     def density_units(self):
         return self._density_units
 
@@ -877,7 +895,7 @@ class Material(object):
                 if self._density is None:
                     raise ValueError('Density has not been set for material {}!'
                                      .format(self.id))
-                subelement.set("value", str(self._density))
+                subelement.set("value", str(self.density))
             subelement.set("units", self._density_units)
         else:
             raise ValueError('Density units has not been set for material {}!'
