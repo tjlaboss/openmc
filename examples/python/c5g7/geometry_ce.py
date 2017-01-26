@@ -1,5 +1,4 @@
 import openmc
-import numpy as np
 from assemblies_ce import materials, surfaces, universes, cells, lattices
 
 u1 = universes['UO2 Assembly 1']

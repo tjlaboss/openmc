@@ -584,21 +584,21 @@ class State(object):
 
         time = str(self.clock.times[self.time])
         f = h5py.File(self._log_file, 'a')
-        f.require_group(time)
-        f[time]['flux'] = self.flux
-        f[time]['adjoint_flux'] = self.adjoint_flux
-        f[time]['precursors'] = self.precursors
-        f[time].attrs['reactivity'] = self.reactivity
-        f[time].attrs['beta_eff'] = self.beta_eff
-        f[time].attrs['pnl'] = self.pnl
-        f[time].attrs['core_power_density'] = self.core_power_density
-        f[time]['kappa_fission'] = self.kappa_fission
-        f[time]['pin_cell_kappa_fission'] = self.pin_cell_kappa_fission
-        f[time]['assembly_kappa_fission'] = self.assembly_kappa_fission
-        f[time]['pin_cell_shape'] = self.pin_cell_shape
-        f[time]['assembly_shape'] = self.assembly_shape
-        f[time]['pin_powers'] = self.pin_powers
-        f[time]['assembly_powers'] = self.assembly_powers
+        f['time_steps'].require_group(time)
+        f['time_steps'][time]['flux'] = self.flux
+        f['time_steps'][time]['adjoint_flux'] = self.adjoint_flux
+        f['time_steps'][time]['precursors'] = self.precursors
+        f['time_steps'][time].attrs['reactivity'] = self.reactivity
+        f['time_steps'][time].attrs['beta_eff'] = self.beta_eff
+        f['time_steps'][time].attrs['pnl'] = self.pnl
+        f['time_steps'][time].attrs['core_power_density'] = self.core_power_density
+        f['time_steps'][time]['kappa_fission'] = self.kappa_fission
+        f['time_steps'][time]['pin_cell_kappa_fission'] = self.pin_cell_kappa_fission
+        f['time_steps'][time]['assembly_kappa_fission'] = self.assembly_kappa_fission
+        f['time_steps'][time]['pin_cell_shape'] = self.pin_cell_shape
+        f['time_steps'][time]['assembly_shape'] = self.assembly_shape
+        f['time_steps'][time]['pin_powers'] = self.pin_powers
+        f['time_steps'][time]['assembly_powers'] = self.assembly_powers
         f.close()
 
     def propagate_precursors(self, state):

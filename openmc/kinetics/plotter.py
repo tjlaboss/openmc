@@ -58,7 +58,7 @@ def spatial_plot(variable, log_file, directory='.', plane='xy', plane_num=0,
     f = h5py.File(log_file, 'r')
 
     # Retrieve time steps
-    time_steps = f.keys()
+    time_steps = f['time_steps'].keys()
 
     # Retrieve mesh domain size and number of groups
     if variable in ['pin_powers', 'pin_cell_kappa_fission',
@@ -82,7 +82,7 @@ def spatial_plot(variable, log_file, directory='.', plane='xy', plane_num=0,
     spatial_data = np.zeros((len(time_steps), domains[2], domains[1],
                              domains[0], num_groups))
     for i,step in enumerate(time_steps):
-        data = f[step][variable][:]
+        data = f['time_steps'][step][variable][:]
         data.shape = (domains[2], domains[1], domains[0], num_groups)
         spatial_data[i] = data
 
@@ -102,7 +102,7 @@ def spatial_plot(variable, log_file, directory='.', plane='xy', plane_num=0,
     # Plot the spatial data
     for i,step in enumerate(time_steps):
         fig = plt.Figure()
-        ax = plt.gca()
+        ax = fig.gca()
         if plane == 'xy':
             cax = ax.imshow(spatial_data[i, plane_num, :, :, group],
                             vmin=data_lim[0], vmax=data_lim[1], interpolation='nearest')
@@ -154,23 +154,23 @@ def scalar_plot(variable, log_file, variable_twin=None, directory='.',
     f = h5py.File(log_file, 'r')
 
     # Retrieve time steps
-    time_steps = f.keys()
+    time_steps = f['time_steps'].keys()
 
     # Retrieve the spatial data
     scalar_data = np.zeros((len(time_steps), 3))
     for i,step in enumerate(time_steps):
-        data = f[step].attrs[variable]
+        data = f['time_steps'][step].attrs[variable]
         scalar_data[i,0] = float(step)
         scalar_data[i,1] = data
 
         if variable_twin is not None:
-            data = f[step].attrs[variable_twin]
+            data = f['time_steps'][step].attrs[variable_twin]
             scalar_data[i,2] = data
 
     # Plot the spatial data
     if axis == None:
         fig = plt.Figure()
-        ax = plt.gca()
+        ax = fig.gca()
     else:
         fig = None
         ax = axis

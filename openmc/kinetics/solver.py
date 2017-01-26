@@ -388,6 +388,7 @@ class Solver(object):
         f.require_group('clock')
         f['clock'].attrs['dt_outer'] = self.clock.dt_outer
         f['clock'].attrs['dt_inner'] = self.clock.dt_inner
+        f.require_group('time_steps')
         f.close()
 
     def transfer_states(self, time_from, time_to='all'):

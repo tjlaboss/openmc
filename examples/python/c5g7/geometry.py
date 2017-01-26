@@ -1,5 +1,4 @@
 import openmc
-import numpy as np
 from assemblies import materials, surfaces, universes, cells, lattices, mgxs_lib_file
 
 u1 = universes['UO2 Assembly 1']
