@@ -84,7 +84,7 @@ class State(object):
     ng : int
         The number of energy groups.
 
-    time : str
+    time_point : str
         The time point of this state.
 
     clock : openmc.kinetics.Clock
@@ -108,7 +108,7 @@ class State(object):
         self._mgxs_lib = None
         self._k_crit = 1.0
         self._num_delayed_groups = 6
-        self._time = None
+        self._time_point = None
         self._clock = None
         self._core_volume = 1.
         self._chi_delayed_by_delayed_group = False
@@ -131,7 +131,7 @@ class State(object):
         clone._k_crit = self.k_crit
         clone._num_delayed_groups = self.num_delayed_groups
         clone._clock = self.clock
-        clone._time = self.time
+        clone._time_point = self.time_point
         clone._core_volume = self.core_volume
         clone._chi_delayed_by_delayed_group = self._chi_delayed_by_delayed_group
         clone._chi_delayed_by_mesh = self._chi_delayed_by_mesh
@@ -148,8 +148,8 @@ class State(object):
         return self._core_volume
 
     @property
-    def time(self):
-        return self._time
+    def time_point(self):
+        return self._time_point
 
     @property
     def clock(self):
@@ -247,9 +247,9 @@ class State(object):
     def core_volume(self, core_volume):
         self._core_volume = core_volume
 
-    @time.setter
-    def time(self, time):
-        self._time = time
+    @time_point.setter
+    def time_point(self, time_point):
+        self._time_point = time_point
 
     @clock.setter
     def clock(self, clock):
@@ -332,7 +332,12 @@ class State(object):
         adjoint_flux = np.tile(self.adjoint_flux.flatten(), self.nd)
         delayed_production = self.delayed_production
         delayed_production.shape = (self.nxyz * self.nd, self.ng, self.ng)
-        delayed_production = self.dxyz * sps.block_diag(delayed_production) / self.k_crit
+
+        if self.ng > 1:
+            delayed_production = self.dxyz * sps.block_diag(delayed_production) / self.k_crit
+        else:
+            delayed_production = self.dxyz * sps.diags(delayed_production.flatten()) / self.k_crit
+
         delayed_production = delayed_production * flux
         delayed_production = delayed_production * adjoint_flux
         delayed_production.shape = (self.nxyz, self.nd, self.ng)
@@ -372,7 +377,12 @@ class State(object):
     @property
     def destruction_matrix(self):
         stream, stream_corr = self.compute_surface_dif_coefs()
-        inscatter = sps.block_diag(self.inscatter)
+
+        if self.ng > 1:
+            inscatter = sps.block_diag(self.inscatter)
+        else:
+            inscatter = sps.diags(self.inscatter.flatten())
+
         outscatter = sps.diags(self.outscatter.flatten(), 0)
         absorb = sps.diags(self.absorption.flatten(), 0)
 
@@ -382,12 +392,17 @@ class State(object):
     @property
     def adjoint_destruction_matrix(self):
         stream, stream_corr = self.compute_surface_dif_coefs()#False)
-        inscatter = sps.block_diag(self.inscatter)
+
+        if self.ng > 1:
+            inscatter = sps.block_diag(self.inscatter)
+        else:
+            inscatter = sps.diags(self.inscatter.flatten())
+
         outscatter = sps.diags(self.outscatter.flatten(), 0)
         absorb = sps.diags(self.absorption.flatten(), 0)
         matrix = self.dxyz * (absorb + outscatter - inscatter)
 
-        return matrix.transpose() + stream + stream_corr
+        return matrix.transpose() + stream.transpose() + stream_corr.transpose()
 
     @property
     def chi_prompt(self):
@@ -427,7 +442,10 @@ class State(object):
 
     @property
     def delayed_production_matrix(self):
-        return self.dxyz * sps.block_diag(self.delayed_production.sum(axis=1)) / self.k_crit
+        if self.ng > 1:
+            return self.dxyz * sps.block_diag(self.delayed_production.sum(axis=1)) / self.k_crit
+        else:
+            return self.dxyz * sps.diags(self.delayed_production.sum(axis=1).flatten()) / self.k_crit
 
     @property
     def production_matrix(self):
@@ -443,7 +461,10 @@ class State(object):
 
     @property
     def prompt_production_matrix(self):
-        return self.dxyz * sps.block_diag(self.prompt_production) / self.k_crit
+        if self.ng > 1:
+            return self.dxyz * sps.block_diag(self.prompt_production) / self.k_crit
+        else:
+            return self.dxyz * sps.diags(self.prompt_production.flatten()) / self.k_crit
 
     @property
     def kappa_fission(self):
@@ -572,7 +593,10 @@ class State(object):
         decay_term = np.repeat(decay_term, self.ngp * self.ng)
         decay_term.shape = (self.nxyz, self.nd, self.ngp, self.ng)
         decay_term *= self.dxyz * self.delayed_production
-        return sps.block_diag(decay_term.sum(axis=1))
+        if self.ng > 1:
+            return sps.block_diag(decay_term.sum(axis=1))
+        else:
+            return sps.diags(decay_term.sum(axis=1).flatten())
 
     @property
     def delayed_fission_rate(self):
@@ -582,23 +606,23 @@ class State(object):
 
     def dump_to_log_file(self):
 
-        time = str(self.clock.times[self.time])
+        time_point = str(self.clock.times[self.time_point])
         f = h5py.File(self._log_file, 'a')
-        f['time_steps'].require_group(time)
-        f['time_steps'][time]['flux'] = self.flux
-        f['time_steps'][time]['adjoint_flux'] = self.adjoint_flux
-        f['time_steps'][time]['precursors'] = self.precursors
-        f['time_steps'][time].attrs['reactivity'] = self.reactivity
-        f['time_steps'][time].attrs['beta_eff'] = self.beta_eff
-        f['time_steps'][time].attrs['pnl'] = self.pnl
-        f['time_steps'][time].attrs['core_power_density'] = self.core_power_density
-        f['time_steps'][time]['kappa_fission'] = self.kappa_fission
-        f['time_steps'][time]['pin_cell_kappa_fission'] = self.pin_cell_kappa_fission
-        f['time_steps'][time]['assembly_kappa_fission'] = self.assembly_kappa_fission
-        f['time_steps'][time]['pin_cell_shape'] = self.pin_cell_shape
-        f['time_steps'][time]['assembly_shape'] = self.assembly_shape
-        f['time_steps'][time]['pin_powers'] = self.pin_powers
-        f['time_steps'][time]['assembly_powers'] = self.assembly_powers
+        f['time_steps'].require_group(time_point)
+        f['time_steps'][time_point]['flux'] = self.flux
+        f['time_steps'][time_point]['adjoint_flux'] = self.adjoint_flux
+        f['time_steps'][time_point]['precursors'] = self.precursors
+        f['time_steps'][time_point].attrs['reactivity'] = self.reactivity
+        f['time_steps'][time_point].attrs['beta_eff'] = self.beta_eff
+        f['time_steps'][time_point].attrs['pnl'] = self.pnl
+        f['time_steps'][time_point].attrs['core_power_density'] = self.core_power_density
+        f['time_steps'][time_point]['kappa_fission'] = self.kappa_fission
+        f['time_steps'][time_point]['pin_cell_kappa_fission'] = self.pin_cell_kappa_fission
+        f['time_steps'][time_point]['assembly_kappa_fission'] = self.assembly_kappa_fission
+        f['time_steps'][time_point]['pin_cell_shape'] = self.pin_cell_shape
+        f['time_steps'][time_point]['assembly_shape'] = self.assembly_shape
+        f['time_steps'][time_point]['pin_powers'] = self.pin_powers
+        f['time_steps'][time_point]['assembly_powers'] = self.assembly_powers
         f.close()
 
     def propagate_precursors(self, state):
@@ -627,12 +651,12 @@ class State(object):
         self._mgxs_lib['PIN-CELL kappa-fission'] = openmc.mgxs.MGXS.get_mgxs(
             'kappa-fission', domain=self.pin_cell_mesh, domain_type='mesh',
             energy_groups=self.energy_groups, by_nuclide=False,
-            name= self.time + ' - PIN-CELL - kappa-fission')
+            name= self.time_point + ' - PIN-CELL - kappa-fission')
 
         self._mgxs_lib['ASSEMBLY kappa-fission'] = openmc.mgxs.MGXS.get_mgxs(
             'kappa-fission', domain=self.assembly_mesh, domain_type='mesh',
             energy_groups=self.energy_groups, by_nuclide=False,
-            name= self.time + ' - ASSEMBLY - kappa-fission')
+            name= self.time_point + ' - ASSEMBLY - kappa-fission')
 
         mgxs_types = ['transport', 'absorption', 'diffusion-coefficient',
                       'kappa-fission', 'nu-scatter matrix', 'chi-prompt',
@@ -645,24 +669,24 @@ class State(object):
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.fine_groups, by_nuclide=False,
-                    name= self.time + ' - ' + mgxs_type)
+                    name= self.time_point + ' - ' + mgxs_type)
             elif mgxs_type == 'nu-scatter matrix':
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.energy_groups, by_nuclide=False,
-                    name= self.time + ' - ' + mgxs_type)
+                    name= self.time_point + ' - ' + mgxs_type)
                 self._mgxs_lib[mgxs_type].correction = None
             elif mgxs_type == 'decay-rate':
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.one_group,
                     delayed_groups=delayed_groups, by_nuclide=False,
-                    name= self.time + ' - ' + mgxs_type)
+                    name= self.time_point + ' - ' + mgxs_type)
             elif mgxs_type in openmc.mgxs.MGXS_TYPES:
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.energy_groups, by_nuclide=False,
-                    name= self.time + ' - ' + mgxs_type)
+                    name= self.time_point + ' - ' + mgxs_type)
             elif mgxs_type == 'chi-delayed':
                 if self.chi_delayed_by_delayed_group:
                     if self.chi_delayed_by_mesh:
@@ -670,30 +694,30 @@ class State(object):
                             mgxs_type, domain=self.mesh, domain_type='mesh',
                             energy_groups=self.energy_groups,
                             delayed_groups=delayed_groups, by_nuclide=False,
-                            name= self.time + ' - ' + mgxs_type)
+                            name= self.time_point + ' - ' + mgxs_type)
                     else:
                         self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                             mgxs_type, domain=self.unity_mesh, domain_type='mesh',
                             energy_groups=self.energy_groups,
                             delayed_groups=delayed_groups, by_nuclide=False,
-                            name= self.time + ' - ' + mgxs_type)
+                            name= self.time_point + ' - ' + mgxs_type)
                 else:
                     if self.chi_delayed_by_mesh:
                         self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                             mgxs_type, domain=self.mesh, domain_type='mesh',
                             energy_groups=self.energy_groups, by_nuclide=False,
-                            name= self.time + ' - ' + mgxs_type)
+                            name= self.time_point + ' - ' + mgxs_type)
                     else:
                         self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                             mgxs_type, domain=self.unity_mesh, domain_type='mesh',
                             energy_groups=self.energy_groups, by_nuclide=False,
-                            name= self.time + ' - ' + mgxs_type)
+                            name= self.time_point + ' - ' + mgxs_type)
             elif mgxs_type in openmc.mgxs.MDGXS_TYPES:
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.energy_groups,
                     delayed_groups=delayed_groups, by_nuclide=False,
-                    name= self.time + ' - ' + mgxs_type)
+                    name= self.time_point + ' - ' + mgxs_type)
 
     def compute_surface_dif_coefs(self, check_for_diag_dominance=True):
 
@@ -898,7 +922,7 @@ class DerivedState(State):
     ng : int
         The number of energy groups.
 
-    time : str
+    time_point : str
         The time point of this state.
 
     clock : openmc.kinetics.Clock
@@ -935,7 +959,7 @@ class DerivedState(State):
         clone._k_crit = self.k_crit
         clone._num_delayed_groups = self.num_delayed_groups
         clone._clock = self.clock
-        clone._time = self.time
+        clone._time_point = self.time_point
         clone._core_volume = self.core_volume
         clone._chi_delayed_by_delayed_group = self._chi_delayed_by_delayed_group
         clone._chi_delayed_by_mesh = self._chi_delayed_by_mesh
@@ -971,10 +995,10 @@ class DerivedState(State):
 
     @property
     def weight(self):
-        time = self.clock.times[self.time]
+        time_point = self.clock.times[self.time_point]
         fwd_time = self.clock.times[self.forward_state]
         prev_time = self.clock.times[self.previous_state]
-        weight = (time - prev_time) / (fwd_time - prev_time)
+        weight = (time_point - prev_time) / (fwd_time - prev_time)
         return weight
 
     @property
@@ -1002,7 +1026,12 @@ class DerivedState(State):
         stream_prev, stream_corr_prev = state_prev.compute_surface_dif_coefs()
         stream = stream_fwd * wgt + stream_prev * (1 - wgt)
         stream_corr = stream_corr_prev * wgt + stream_corr_prev * (1 - wgt)
-        inscatter = sps.block_diag(self.inscatter)
+
+        if self.ng > 1:
+            inscatter = sps.block_diag(self.inscatter)
+        else:
+            inscatter = sps.diags(self.inscatter.flatten())
+
         outscatter = sps.diags(self.outscatter.flatten(), 0)
         absorb = sps.diags(self.absorption.flatten(), 0)
 
@@ -1018,7 +1047,12 @@ class DerivedState(State):
         stream_prev, stream_corr_prev = state_prev.compute_surface_dif_coefs(False)
         stream = stream_fwd * wgt + stream_prev * (1 - wgt)
         stream_corr = stream_corr_prev * wgt + stream_corr_prev * (1 - wgt)
-        inscatter = sps.block_diag(self.inscatter)
+
+        if self.ng > 1:
+            inscatter = sps.block_diag(self.inscatter)
+        else:
+            inscatter = sps.diags(self.inscatter.flatten())
+
         outscatter = sps.diags(self.outscatter.flatten(), 0)
         absorb = sps.diags(self.absorption.flatten(), 0)
         matrix = self.dxyz * (absorb + outscatter - inscatter)

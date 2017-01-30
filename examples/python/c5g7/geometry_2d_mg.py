@@ -20,7 +20,11 @@ universes['Core Lattice']    = openmc.Universe(name='Core Lattice')
 cells['Core Lattice']        = openmc.Cell(name='Core Lattice')
 cells['Core Lattice'].fill   = lat
 cells['Core Lattice'].region = +surfaces['Core x-min'] & -surfaces['Core x-max'] & \
-                               +surfaces['Core y-min'] & -surfaces['Core y-max']
+                               +surfaces['Core y-min'] & -surfaces['Core y-max'] & \
+                               +surfaces['Core z-min'] & -surfaces['Core z-max']
+
+surfaces['Core z-min'].boundary_type = 'reflective'
+surfaces['Core z-max'].boundary_type = 'reflective'
 
 # Create core universes
 universes['Core'] = openmc.Universe(universe_id=0, name='Core')

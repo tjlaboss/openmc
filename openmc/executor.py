@@ -45,7 +45,7 @@ def plot_geometry(output=True, openmc_exec='openmc', cwd='.'):
 
 def run(particles=None, threads=None, geometry_debug=False,
         restart_file=None, tracks=False, mpi_procs=1, output=True,
-        openmc_exec='openmc', mpi_exec='mpiexec', cwd='.'):
+        openmc_exec='openmc', mpi_exec='mpiexec', cwd='.', ppn=1):
     """Run an OpenMC simulation.
 
     Parameters
@@ -73,6 +73,8 @@ def run(particles=None, threads=None, geometry_debug=False,
         MPI execute command. Defaults to 'mpiexec'.
     cwd : str, optional
         Path to working directory to run in. Defaults to the current working directory.
+    ppn : int, optional
+        Processes per node.
 
     """
 
@@ -96,6 +98,9 @@ def run(particles=None, threads=None, geometry_debug=False,
 
     if isinstance(mpi_procs, Integral) and mpi_procs > 1:
         pre_args += '{} -n {} '.format(mpi_exec, mpi_procs)
+
+    if isinstance(ppn, Integral) and ppn > 0:
+        pre_args += '-ppn {0} '.format(ppn)
 
     command = pre_args + openmc_exec + ' ' + post_args
 

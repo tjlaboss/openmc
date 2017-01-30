@@ -7,6 +7,8 @@ import os
 import sys
 import copy
 import itertools
+import subprocess
+import time
 
 import numpy as np
 import scipy.sparse as sps
@@ -89,6 +91,9 @@ class Solver(object):
     mpi_procs : int
         The number of MPI processes to use.
 
+    threads : int
+        The number of OpenMP threads to use.
+
     chi_delayed_by_delayed_group : bool
         Whether to use delayed groups in representing chi-delayed.
 
@@ -137,9 +142,12 @@ class Solver(object):
         self._core_volume = 1.
         self._chi_delayed_by_delayed_group = False
         self._chi_delayed_by_mesh = False
-        self._mpi_procs = 4
+        self._mpi_procs = 1
+        self._threads = 1
         self._use_pregenerated_sps = False
         self._log_file = None
+        self._run_on_cluster = False
+        self._job_file = 'job.pbs'
 
     @property
     def log_file(self):
@@ -253,8 +261,20 @@ class Solver(object):
         return self._mpi_procs
 
     @property
+    def threads(self):
+        return self._threads
+
+    @property
     def run_directory(self):
         return self.directory + '/' + self.name
+
+    @property
+    def run_on_cluster(self):
+        return self._run_on_cluster
+
+    @property
+    def job_file(self):
+        return self._job_file
 
     @name.setter
     def name(self, name):
@@ -354,6 +374,18 @@ class Solver(object):
     def mpi_procs(self, mpi_procs):
         self._mpi_procs = mpi_procs
 
+    @threads.setter
+    def threads(self, threads):
+        self._threads = threads
+
+    @run_on_cluster.setter
+    def run_on_cluster(self, run_on_cluster):
+        self._run_on_cluster = run_on_cluster
+
+    @job_file.setter
+    def job_file(self, job_file):
+        self._job_file = job_file
+
     def create_log_file(self):
 
         f = h5py.File(self.log_file, 'w')
@@ -394,15 +426,15 @@ class Solver(object):
     def transfer_states(self, time_from, time_to='all'):
 
         if time_to == 'all':
-            for time in TIME_POINTS:
-                if time != time_from:
-                    self.states[time] = copy.deepcopy(self.states[time_from])
-                    self.states[time].time = time
+            for time_point in TIME_POINTS:
+                if time_point != time_from:
+                    self.states[time_point] = copy.deepcopy(self.states[time_from])
+                    self.states[time_point].time_point = time_point
         else:
             self.states[time_to] = copy.deepcopy(self.states[time_from])
-            self.states[time_to].time = time
+            self.states[time_to].time_point = time_point
 
-    def run_openmc(self, time):
+    def run_openmc(self, time_point):
 
         # Create a new random seed for the xml file
         if not self.constant_seed:
@@ -414,28 +446,62 @@ class Solver(object):
             self.settings_file.energy_mode = 'multi-group'
 
         # Create MGXS
-        self.states[time].initialize_mgxs()
+        self.states[time_point].initialize_mgxs()
 
         # Create the xml files
-        self.geometry.time = self.clock.times[time]
+        self.geometry.time = self.clock.times[time_point]
         self.geometry.export_to_xml(self.run_directory + '/geometry.xml')
         self.materials_file.export_to_xml(self.run_directory + '/materials.xml')
         self.settings_file.export_to_xml(self.run_directory + '/settings.xml')
-        self.generate_tallies_file(time)
+        self.generate_tallies_file(time_point)
 
         # Names of the statepoint and summary files
         sp_old_name = '{}/statepoint.{}.h5'.format(self.run_directory,
                                                    self.settings_file.batches)
         sp_new_name = '{}/statepoint_{:.6f}_sec.{}.h5'\
-                      .format(self.run_directory, self.clock.times[time],
+                      .format(self.run_directory, self.clock.times[time_point],
                               self.settings_file.batches)
         sum_old_name = '{}/summary.h5'.format(self.run_directory)
         sum_new_name = '{}/summary_{:.6f}_sec.h5'.format(self.run_directory,
-                                                         self.clock.times[time])
+                                                         self.clock.times[time_point])
 
         # Run OpenMC
         if not self.use_pregenerated_sps:
-            openmc.run(mpi_procs=self.mpi_procs, cwd=self.run_directory)
+            if self.run_on_cluster:
+                # Copy job file to run directory
+                cmd_str = 'cp ' + self.job_file  + ' ' + self.run_directory
+                subprocess.Popen(cmd_str, shell=True)
+
+                 # Launch job
+                cmd_str = 'qsub -P moose ' + self.job_file
+                proc = subprocess.Popen(cmd_str, cwd=self.run_directory, stdout=subprocess.PIPE, shell=True)
+
+                 # Get the job number
+                job_name = proc.stdout.readlines()[0]
+                job_number = job_name.split('.')[0]
+
+                 # Pause and wait for run to finish
+                cmd_str = 'qstat | grep ' + str(job_number)
+                is_file_running = 'initially'
+                elapsed_time = 0
+                while (is_file_running is not ''):
+                    time.sleep(10)
+                    proc = subprocess.Popen(cmd_str, stdout=subprocess.PIPE, shell=True)
+                    try:
+                        is_file_running = proc.stdout.readlines()[0].split()[4]
+                        if (is_file_running == 'Q'):
+                            print('job {} queued...'.format(job_number))
+                        elif (is_file_running == 'R'):
+                            elapsed_time = elapsed_time + 10
+                            print('job {} running for {} s...'.format(job_number, elapsed_time))
+                        else:
+                            print('job {} in state {}...'.format(job_number, is_file_running))
+                    except:
+                        print('job {} done'.format(job_number))
+                        break
+            else:
+                openmc.run(threads=self.threads, mpi_procs=self.mpi_procs,
+                           mpi_exec='mpirun', cwd=self.run_directory)
 
             # Rename the statepoint and summary files
             os.rename(sp_old_name, sp_new_name)
@@ -447,10 +513,10 @@ class Solver(object):
         statepoint_file.link_with_summary(summary_file)
 
         # Load mgxs library
-        for mgxs in self.states[time].mgxs_lib.values():
+        for mgxs in self.states[time_point].mgxs_lib.values():
             mgxs.load_from_statepoint(statepoint_file)
 
-    def create_state(self, time, derived=False):
+    def create_state(self, time_point, derived=False):
 
         if derived:
             state = openmc.kinetics.DerivedState(self.states)
@@ -464,14 +530,14 @@ class Solver(object):
         state.fine_groups = self.fine_groups
         state.one_group = self.one_group
         state.num_delayed_groups = self.num_delayed_groups
-        state.time = time
+        state.time_point = time_point
         state.clock = self.clock
         state.k_crit = self.k_crit
         state.core_volume = self.core_volume
         state.chi_delayed_by_delayed_group = self.chi_delayed_by_delayed_group
         state.chi_delayed_by_mesh = self.chi_delayed_by_mesh
         state.log_file = self.log_file
-        self.states[time] = state
+        self.states[time_point] = state
 
     def compute_initial_flux(self):
 
@@ -518,14 +584,14 @@ class Solver(object):
         state.compute_initial_precursor_concentration()
 
         # Copy data to all other states
-        for time in TIME_POINTS:
-            if time != 'START':
-                if time in ['PREVIOUS_IN', 'FORWARD_IN']:
-                    self.create_state(time, True)
-                    self.copy_states('START', time)
+        for time_point in TIME_POINTS:
+            if time_point != 'START':
+                if time_point in ['PREVIOUS_IN', 'FORWARD_IN']:
+                    self.create_state(time_point, True)
+                    self.copy_states('START', time_point)
                 else:
-                    self.create_state(time, False)
-                    self.copy_states('START', time, True)
+                    self.create_state(time_point, False)
+                    self.copy_states('START', time_point, True)
 
         # Create hdf5 log file
         self.create_log_file()
@@ -536,13 +602,13 @@ class Solver(object):
         state_from = self.states[time_from]
 
         if time_to == 'ALL':
-            for time in TIME_POINTS:
-                if time != time_from:
-                    state_to = self.states[time]
+            for time_point in TIME_POINTS:
+                if time_point != time_from:
+                    state_to = self.states[time_point]
                     state_to.flux = copy.deepcopy(state_from.flux)
                     state_to.adjoint_flux = copy.deepcopy(state_from.adjoint_flux)
                     state_to.precursors = copy.deepcopy(state_from.precursors)
-                    self.clock.times[time] = self.clock.times[time_from]
+                    self.clock.times[time_point] = self.clock.times[time_from]
 
                     if copy_mgxs:
                         state_to.mgxs_lib = state_from.mgxs_lib
@@ -644,18 +710,18 @@ class Solver(object):
             print('linear solver iter {0} resid {1:1.5e} k-eff {2:1.6f}'\
                   .format(i, residual, k_eff))
 
-            if residual < 1.e-8 and i > 10:
+            if residual < 1.e-6 and i > 10:
                 break
 
         return flux, k_eff
 
-    def generate_tallies_file(self, time):
+    def generate_tallies_file(self, time_point):
 
         # Generate a new tallies file
         tallies_file = openmc.Tallies()
 
         # Get the MGXS library
-        mgxs_lib = self.states[time].mgxs_lib
+        mgxs_lib = self.states[time_point].mgxs_lib
 
         # Add the tallies to the file
         for mgxs in mgxs_lib.values():
