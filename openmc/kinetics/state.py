@@ -563,8 +563,7 @@ class State(object):
         return sps.diags(time_source.flatten(), 0)
 
     def decay_source(self, state):
-        decay_source = self.decay_rate * state.precursors / \
-                       (1. + self.decay_rate * self.dt)
+        decay_source = self.decay_rate * state.precursors
         decay_source = np.repeat(decay_source, self.ngp)
         decay_source.shape = (self.nxyz, self.nd, self.ngp)
         return self.dxyz * (self.chi_delayed * decay_source).sum(axis=1)
@@ -583,8 +582,8 @@ class State(object):
 
     @property
     def transient_matrix(self):
-        return self.time_source_matrix + self.prompt_production_matrix \
-            - self.destruction_matrix + self.decay_production_matrix
+        return self.time_source_matrix - self.prompt_production_matrix \
+            + self.destruction_matrix - self.decay_production_matrix
 
     @property
     def decay_production_matrix(self):

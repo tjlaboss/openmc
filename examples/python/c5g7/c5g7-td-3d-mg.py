@@ -117,7 +117,7 @@ elif case == '5.4':
 # OpenMC simulation parameters
 batches = 200
 inactive = 100
-particles = 100000
+particles = 250000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -137,13 +137,13 @@ settings_file.entropy_dimension   = [34,34,1]
 
 # Instantiate a 50-group EnergyGroups object
 fine_groups = openmc.mgxs.EnergyGroups()
-fine_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 2.0e7]
-#fine_groups.group_edges = [0., 2.0e7]
+#fine_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 2.0e7]
+fine_groups.group_edges = [0., 2.0e7]
 
 # Instantiate a 2-group EnergyGroups object
 energy_groups = openmc.mgxs.EnergyGroups()
 #energy_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 2.0e7]
-energy_groups.group_edges = [0., 55.6, 2.0e7]
+energy_groups.group_edges = [0., 2.0e7]
 
 # Instantiate a 1-group EnergyGroups object
 one_group = openmc.mgxs.EnergyGroups()
@@ -152,7 +152,7 @@ one_group.group_edges = [fine_groups.group_edges[0], fine_groups.group_edges[-1]
 # Create pin cell mesh
 mesh = openmc.Mesh()
 mesh.type = 'regular'
-mesh.dimension = [2,2,1]
+mesh.dimension = [34,34,1]
 mesh.lower_left  = [-32.13, -10.71, -85.68]
 mesh.width = [42.84/mesh.dimension[0],
               42.84/mesh.dimension[1],
@@ -175,7 +175,7 @@ assembly_mesh.width = [42.84/assembly_mesh.dimension[0],
                        171.36/assembly_mesh.dimension[2]]
 
 # Instantiate a clock object
-clock = openmc.kinetics.Clock(start=0., end=10., dt_outer=1.e-1, dt_inner=1.e-2)
+clock = openmc.kinetics.Clock(start=0., end=10., dt_outer=5.e-1, dt_inner=1.e-2)
 
 # Instantiate a kinetics solver object
 solver = openmc.kinetics.Solver(name='MG', directory='C5G7_3D')
@@ -191,17 +191,21 @@ solver.settings_file                = settings_file
 solver.materials_file               = materials_file
 solver.mgxs_lib_file                = mgxs_lib_file
 solver.clock                        = clock
-solver.mpi_procs                    = 36
+solver.mpi_procs                    = 24*10
+solver.threads                      = 1
+solver.ppn                          = 24
 solver.core_volume                  = 42.84 * 42.84 * 128.52
 solver.constant_seed                = True
 solver.chi_delayed_by_delayed_group = False
 solver.chi_delayed_by_mesh          = False
 solver.use_pregenerated_sps         = False
+solver.run_on_cluster               = True
+solver.job_file                     = 'job.pbs'
 
 # Run OpenMC
 solver.compute_initial_flux()
 
-for i in range(3):
+for i in range(20):
     solver.take_outer_step()
 
 kinetics.plotter.scalar_plot('core_power_density', 'C5G7_3D/MG/log_file.h5',

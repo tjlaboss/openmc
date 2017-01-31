@@ -641,9 +641,9 @@ class Solver(object):
             times['FORWARD_IN'] += clock.dt_inner
 
             # Get the transient matrix and time source
-            time_source = state_fwd.time_source_matrix * \
+            time_source = state_pre.time_source_matrix * \
                           state_pre.flux.flatten()
-            source = time_source - state_fwd.decay_source(state_pre).flatten()
+            source = time_source + state_pre.decay_source(state_pre).flatten()
 
             # Solve for the flux at FORWARD_IN
             state_fwd.flux = spsolve(state_fwd.transient_matrix, source)

@@ -733,13 +733,13 @@ module mgxs_header
 
                 ! Get chi-delayed
                 call read_dataset(temp_arr, xsdata_grp, "chi-delayed")
-                allocate(temp_2d(delayed_groups, energy_groups))
-                temp_2d = reshape(temp_arr, (/delayed_groups, energy_groups/))
+                allocate(temp_2d(energy_groups, delayed_groups))
+                temp_2d = reshape(temp_arr, (/energy_groups, delayed_groups/))
 
                 do dg = 1, delayed_groups
                   do gin = 1, energy_groups
                     do gout = 1, energy_groups
-                      xs % chi_delayed(dg, gout, gin) = temp_2d(dg, gout)
+                      xs % chi_delayed(dg, gout, gin) = temp_2d(gout, dg)
                     end do
 
                     ! Normalize chi so its CDF goes to 1

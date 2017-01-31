@@ -58,7 +58,9 @@ def spatial_plot(variable, log_file, directory='.', plane='xy', plane_num=0,
     f = h5py.File(log_file, 'r')
 
     # Retrieve time steps
+    # Retrieve time steps
     time_steps = f['time_steps'].keys()
+    time_steps = np.sort(np.array([float(i) for i in time_steps]))
 
     # Retrieve mesh domain size and number of groups
     if variable in ['pin_powers', 'pin_cell_kappa_fission',
@@ -82,7 +84,7 @@ def spatial_plot(variable, log_file, directory='.', plane='xy', plane_num=0,
     spatial_data = np.zeros((len(time_steps), domains[2], domains[1],
                              domains[0], num_groups))
     for i,step in enumerate(time_steps):
-        data = f['time_steps'][step][variable][:]
+        data = f['time_steps'][str(step)][variable][:]
         data.shape = (domains[2], domains[1], domains[0], num_groups)
         spatial_data[i] = data
 
@@ -101,8 +103,7 @@ def spatial_plot(variable, log_file, directory='.', plane='xy', plane_num=0,
 
     # Plot the spatial data
     for i,step in enumerate(time_steps):
-        fig = plt.Figure()
-        ax = fig.gca()
+        fig, ax = plt.subplots()
         if plane == 'xy':
             cax = ax.imshow(spatial_data[i, plane_num, :, :, group],
                             vmin=data_lim[0], vmax=data_lim[1], interpolation='nearest')
@@ -113,8 +114,8 @@ def spatial_plot(variable, log_file, directory='.', plane='xy', plane_num=0,
             cax = ax.imshow(spatial_data[i, :, :, plane_num, group],
                             vmin=data_lim[0], vmax=data_lim[1], interpolation='nearest')
         fig.colorbar(cax)
-        ax.set_title('{} time step {} @ t = {:.5f} s'.format(variable, i, float(step)))
-        plt.savefig('{}/{}_{}_plane_{}_{:.5f}_s.png'.format(directory, variable, plane, plane_num, float(step)))
+        ax.set_title('{} time step {} @ t = {:.5f} s'.format(variable, i, step))
+        plt.savefig('{}/{}_{}_plane_{}_{:.5f}_s.png'.format(directory, variable, plane, plane_num, step))
         plt.close()
 
     f.close()
@@ -155,22 +156,22 @@ def scalar_plot(variable, log_file, variable_twin=None, directory='.',
 
     # Retrieve time steps
     time_steps = f['time_steps'].keys()
+    time_steps = np.sort(np.array([float(i) for i in time_steps]))
 
     # Retrieve the spatial data
     scalar_data = np.zeros((len(time_steps), 3))
     for i,step in enumerate(time_steps):
-        data = f['time_steps'][step].attrs[variable]
-        scalar_data[i,0] = float(step)
+        data = f['time_steps'][str(step)].attrs[variable]
+        scalar_data[i,0] = step
         scalar_data[i,1] = data
 
         if variable_twin is not None:
-            data = f['time_steps'][step].attrs[variable_twin]
+            data = f['time_steps'][str(step)].attrs[variable_twin]
             scalar_data[i,2] = data
 
     # Plot the spatial data
     if axis == None:
-        fig = plt.Figure()
-        ax = fig.gca()
+        fig, ax = plt.subplots()
     else:
         fig = None
         ax = axis
