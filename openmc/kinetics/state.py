@@ -6,6 +6,7 @@ import itertools
 import sys
 
 import numpy as np
+np.set_printoptions(precision=1)
 import scipy.sparse as sps
 
 import openmc
@@ -326,6 +327,25 @@ class State(object):
         production = production * self.adjoint_flux.flatten()
         return balance.sum() / production.sum()
 
+    def get_diagonal_matrix(self, array):
+
+        ni, ng, ng = array.shape
+        diags = np.zeros((ng*2-1, ni * ng))
+        ndiag = [0] + [g for g in range(1,ng)] + [-g for g in range(1,ng)]
+
+        for i in range(ni):
+            for r in range(ng):
+                for c in range(ng):
+                    diags[c-r][i*ng+r] = array[i, r, c]
+
+        diags2 = [diags[0]]
+        for g in range(1,ng):
+            diags2.append(diags[g][:-g])
+        for g in range(1,ng):
+            diags2.append(diags[-g][g:])
+
+        return sps.diags(diags2, ndiag)
+
     @property
     def beta_eff(self):
         flux = np.tile(self.flux.flatten(), self.nd)
@@ -333,10 +353,8 @@ class State(object):
         delayed_production = self.delayed_production
         delayed_production.shape = (self.nxyz * self.nd, self.ng, self.ng)
 
-        if self.ng > 1:
-            delayed_production = self.dxyz * sps.block_diag(delayed_production) / self.k_crit
-        else:
-            delayed_production = self.dxyz * sps.diags(delayed_production.flatten()) / self.k_crit
+        delayed_production = self.get_diagonal_matrix(delayed_production)
+        delayed_production *= self.dxyz / self.k_crit
 
         delayed_production = delayed_production * flux
         delayed_production = delayed_production * adjoint_flux
@@ -377,12 +395,7 @@ class State(object):
     @property
     def destruction_matrix(self):
         stream, stream_corr = self.compute_surface_dif_coefs()
-
-        if self.ng > 1:
-            inscatter = sps.block_diag(self.inscatter)
-        else:
-            inscatter = sps.diags(self.inscatter.flatten())
-
+        inscatter = self.get_diagonal_matrix(self.inscatter)
         outscatter = sps.diags(self.outscatter.flatten(), 0)
         absorb = sps.diags(self.absorption.flatten(), 0)
 
@@ -391,13 +404,8 @@ class State(object):
 
     @property
     def adjoint_destruction_matrix(self):
-        stream, stream_corr = self.compute_surface_dif_coefs()#False)
-
-        if self.ng > 1:
-            inscatter = sps.block_diag(self.inscatter)
-        else:
-            inscatter = sps.diags(self.inscatter.flatten())
-
+        stream, stream_corr = self.compute_surface_dif_coefs()
+        inscatter = self.get_diagonal_matrix(self.inscatter)
         outscatter = sps.diags(self.outscatter.flatten(), 0)
         absorb = sps.diags(self.absorption.flatten(), 0)
         matrix = self.dxyz * (absorb + outscatter - inscatter)
@@ -442,10 +450,8 @@ class State(object):
 
     @property
     def delayed_production_matrix(self):
-        if self.ng > 1:
-            return self.dxyz * sps.block_diag(self.delayed_production.sum(axis=1)) / self.k_crit
-        else:
-            return self.dxyz * sps.diags(self.delayed_production.sum(axis=1).flatten()) / self.k_crit
+        delayed_production = self.get_diagonal_matrix(self.delayed_production.sum(axis=1))
+        return delayed_production * self.dxyz / self.k_crit
 
     @property
     def production_matrix(self):
@@ -461,10 +467,8 @@ class State(object):
 
     @property
     def prompt_production_matrix(self):
-        if self.ng > 1:
-            return self.dxyz * sps.block_diag(self.prompt_production) / self.k_crit
-        else:
-            return self.dxyz * sps.diags(self.prompt_production.flatten()) / self.k_crit
+        prompt_production = self.get_diagonal_matrix(self.prompt_production)
+        return prompt_production * self.dxyz / self.k_crit
 
     @property
     def kappa_fission(self):
@@ -592,10 +596,7 @@ class State(object):
         decay_term = np.repeat(decay_term, self.ngp * self.ng)
         decay_term.shape = (self.nxyz, self.nd, self.ngp, self.ng)
         decay_term *= self.dxyz * self.delayed_production
-        if self.ng > 1:
-            return sps.block_diag(decay_term.sum(axis=1))
-        else:
-            return sps.diags(decay_term.sum(axis=1).flatten())
+        return self.get_diagonal_matrix(decay_term.sum(axis=1))
 
     @property
     def delayed_fission_rate(self):
@@ -1025,12 +1026,7 @@ class DerivedState(State):
         stream_prev, stream_corr_prev = state_prev.compute_surface_dif_coefs()
         stream = stream_fwd * wgt + stream_prev * (1 - wgt)
         stream_corr = stream_corr_prev * wgt + stream_corr_prev * (1 - wgt)
-
-        if self.ng > 1:
-            inscatter = sps.block_diag(self.inscatter)
-        else:
-            inscatter = sps.diags(self.inscatter.flatten())
-
+        inscatter = self.get_diagonal_matrix(self.inscatter)
         outscatter = sps.diags(self.outscatter.flatten(), 0)
         absorb = sps.diags(self.absorption.flatten(), 0)
 
@@ -1046,12 +1042,7 @@ class DerivedState(State):
         stream_prev, stream_corr_prev = state_prev.compute_surface_dif_coefs(False)
         stream = stream_fwd * wgt + stream_prev * (1 - wgt)
         stream_corr = stream_corr_prev * wgt + stream_corr_prev * (1 - wgt)
-
-        if self.ng > 1:
-            inscatter = sps.block_diag(self.inscatter)
-        else:
-            inscatter = sps.diags(self.inscatter.flatten())
-
+        inscatter = self.get_diagonal_matrix(self.inscatter)
         outscatter = sps.diags(self.outscatter.flatten(), 0)
         absorb = sps.diags(self.absorption.flatten(), 0)
         matrix = self.dxyz * (absorb + outscatter - inscatter)

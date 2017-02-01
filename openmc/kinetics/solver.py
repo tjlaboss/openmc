@@ -710,7 +710,7 @@ class Solver(object):
             print('linear solver iter {0} resid {1:1.5e} k-eff {2:1.6f}'\
                   .format(i, residual, k_eff))
 
-            if residual < 1.e-6 and i > 10:
+            if residual < 1.e-4 and i > 10:
                 break
 
         return flux, k_eff

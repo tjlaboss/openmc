@@ -44,7 +44,7 @@ for bank in range(1,5):
 # OpenMC simulation parameters
 batches = 100
 inactive = 50
-particles = 25000
+particles = 100000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -65,13 +65,13 @@ settings_file.entropy_dimension   = [34,34,1]
 
 # Instantiate a 50-group EnergyGroups object
 fine_groups = openmc.mgxs.EnergyGroups()
-#fine_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 2.0e7]
-fine_groups.group_edges = [0., 55.6, 2.0e7]
+fine_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 2.0e7]
+#fine_groups.group_edges = [0., 55.6, 2.0e7]
 
 # Instantiate a 2-group EnergyGroups object
 energy_groups = openmc.mgxs.EnergyGroups()
-#energy_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 2.0e7]
-energy_groups.group_edges = [0., 55.6, 2.0e7]
+energy_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 2.0e7]
+#energy_groups.group_edges = [0., 55.6, 2.0e7]
 
 # Instantiate a 1-group EnergyGroups object
 one_group = openmc.mgxs.EnergyGroups()
@@ -80,26 +80,26 @@ one_group.group_edges = [fine_groups.group_edges[0], fine_groups.group_edges[-1]
 # Create pin cell mesh
 mesh = openmc.Mesh()
 mesh.type = 'regular'
-mesh.dimension = [1,1,1]
-mesh.lower_left  = [-32.13, -32.13, -64.26]
-mesh.width = [64.26/mesh.dimension[0],
-              64.26/mesh.dimension[1],
+mesh.dimension = [34,34,1]
+mesh.lower_left  = [-32.13, -10.71, -64.26]
+mesh.width = [42.84/mesh.dimension[0],
+              42.84/mesh.dimension[1],
               128.52]
 
 pin_cell_mesh = openmc.Mesh()
 pin_cell_mesh.type = 'regular'
-pin_cell_mesh.dimension = [51,51,1]
-pin_cell_mesh.lower_left  = [-32.13, -32.13, -64.26]
-pin_cell_mesh.width = [64.26/pin_cell_mesh.dimension[0],
-                       64.26/pin_cell_mesh.dimension[1],
+pin_cell_mesh.dimension = [34,34,1]
+pin_cell_mesh.lower_left  = [-32.13, -10.71, -64.26]
+pin_cell_mesh.width = [42.84/pin_cell_mesh.dimension[0],
+                       42.84/pin_cell_mesh.dimension[1],
                        128.52]
 
 assembly_mesh = openmc.Mesh()
 assembly_mesh.type = 'regular'
-assembly_mesh.dimension = [3,3,1]
-assembly_mesh.lower_left  = [-32.13, -32.13, -64.26]
-assembly_mesh.width = [64.26/assembly_mesh.dimension[0],
-                       64.26/assembly_mesh.dimension[1],
+assembly_mesh.dimension = [2,2,1]
+assembly_mesh.lower_left  = [-32.13, -10.71, -64.26]
+assembly_mesh.width = [42.84/assembly_mesh.dimension[0],
+                       42.84/assembly_mesh.dimension[1],
                        128.52]
 
 # Instantiate a clock object
@@ -119,7 +119,7 @@ solver.settings_file                = settings_file
 solver.materials_file               = materials_file
 solver.mgxs_lib_file                = mgxs_lib_file
 solver.clock                        = clock
-solver.mpi_procs                    = 24
+solver.mpi_procs                    = 24*5
 solver.threads                      = 1
 solver.ppn                          = 24
 solver.core_volume                  = 42.84 * 42.84 * 128.52
@@ -127,7 +127,7 @@ solver.constant_seed                = True
 solver.chi_delayed_by_delayed_group = False
 solver.chi_delayed_by_mesh          = False
 solver.use_pregenerated_sps         = False
-solver.run_on_cluster               = False
+solver.run_on_cluster               = True
 solver.job_file                     = 'job.pbs'
 
 # Run OpenMC
