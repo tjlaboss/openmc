@@ -44,7 +44,7 @@ for bank in range(1,5):
 # OpenMC simulation parameters
 batches = 100
 inactive = 50
-particles = 100000
+particles = 1000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -119,7 +119,7 @@ solver.settings_file                = settings_file
 solver.materials_file               = materials_file
 solver.mgxs_lib_file                = mgxs_lib_file
 solver.clock                        = clock
-solver.mpi_procs                    = 24*5
+solver.mpi_procs                    = 4
 solver.threads                      = 1
 solver.ppn                          = 24
 solver.core_volume                  = 42.84 * 42.84 * 128.52
@@ -127,7 +127,7 @@ solver.constant_seed                = True
 solver.chi_delayed_by_delayed_group = False
 solver.chi_delayed_by_mesh          = False
 solver.use_pregenerated_sps         = False
-solver.run_on_cluster               = True
+solver.run_on_cluster               = False
 solver.job_file                     = 'job.pbs'
 
 # Run OpenMC

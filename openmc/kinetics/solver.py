@@ -20,6 +20,7 @@ import openmc.mgxs
 import openmc.kinetics
 from openmc.kinetics.clock import TIME_POINTS
 import h5py
+import openrk as rk
 
 if sys.version_info[0] >= 3:
     basestring = str
@@ -377,6 +378,7 @@ class Solver(object):
     @threads.setter
     def threads(self, threads):
         self._threads = threads
+        rk.setNumThreads(threads)
 
     @run_on_cluster.setter
     def run_on_cluster(self, run_on_cluster):
@@ -646,7 +648,31 @@ class Solver(object):
             source = time_source + state_pre.decay_source(state_pre).flatten()
 
             # Solve for the flux at FORWARD_IN
-            state_fwd.flux = spsolve(state_fwd.transient_matrix, source)
+
+
+
+            TM = rk.Matrix(state_fwd.transient_matrix.shape[0])
+            TM.setA(state_fwd.transient_matrix.data)
+            TM.setIA(state_fwd.transient_matrix.indptr)
+            TM.setJA(state_fwd.transient_matrix.indices)
+            TM.generateDiag()
+
+            # Convert M to OpenRK matrix
+            MM = rk.Matrix(state_fwd.production_matrix.shape[0])
+            MM.setA(state_fwd.production_matrix.data)
+            MM.setIA(state_fwd.production_matrix.indptr)
+            MM.setJA(state_fwd.production_matrix.indices)
+            MM.generateDiag()
+
+            # Convert flux to OpenRK array
+            source_array = rk.Array([state_fwd.transient_matrix.shape[0]])
+            source_array.setValues(source.flatten())
+
+            flux_array = rk.linearSolve(TM, MM, source_array)
+            flux = state_fwd.flux.flatten()
+            flux_array.outputValues(flux)
+            state_fwd.flux = flux
+
             state_fwd.flux[state_fwd.flux < 0.] = 0.
 
             # Propagate the precursors
@@ -678,40 +704,26 @@ class Solver(object):
         # Ensure flux is a 1D array
         flux = flux.flatten()
 
-        # Compute the initial source
-        old_source = M * flux
-        norm = old_source.mean()
-        old_source /= norm
-        flux /= norm
+        # Convert A to OpenRK matrix
+        AA = rk.Matrix(A.shape[0])
+        AA.setA(A.data)
+        AA.setIA(A.indptr)
+        AA.setJA(A.indices)
+        AA.generateDiag()
 
-        for i in range(10000):
+        # Convert M to OpenRK matrix
+        MM = rk.Matrix(M.shape[0])
+        MM.setA(M.data)
+        MM.setIA(M.indptr)
+        MM.setJA(M.indices)
+        MM.generateDiag()
 
-            # Solve linear system
-            flux = spsolve(A, old_source)
+        # Convert flux to OpenRK array
+        flux_array = rk.Array([A.shape[0]])
+        flux_array.setValues(flux)
 
-            # Compute new source
-            new_source = M * flux
-
-            # Compute and set k-eff
-            k_eff = new_source.mean()
-
-            # Scale the new source by 1 / k-eff
-            new_source /= k_eff
-
-            # Compute the residual
-            residual_array = (new_source - old_source) / new_source
-            residual_array = np.nan_to_num(residual_array)
-            residual_array = np.square(residual_array)
-            residual = np.sqrt(residual_array.mean())
-
-            # Copy new source to old source
-            old_source = np.copy(new_source)
-
-            print('linear solver iter {0} resid {1:1.5e} k-eff {2:1.6f}'\
-                  .format(i, residual, k_eff))
-
-            if residual < 1.e-4 and i > 10:
-                break
+        k_eff = rk.eigenvalueSolve(AA, MM, flux_array, 1.e-6, 1.5)
+        flux_array.outputValues(flux)
 
         return flux, k_eff
 
