@@ -29,8 +29,8 @@ surfaces['Upper Reflector z-max'] = openmc.ZPlane(z0= 85.68, name='Upper Reflect
 
 # Set the boundary conditions
 surfaces['Core x-min'].boundary_type = 'reflective'
-surfaces['Core x-max'].boundary_type = 'reflective'
-surfaces['Core y-min'].boundary_type = 'reflective'
+surfaces['Core x-max'].boundary_type = 'vacuum'
+surfaces['Core y-min'].boundary_type = 'vacuum'
 surfaces['Core y-max'].boundary_type = 'reflective'
 surfaces['Lower Reflector z-min'].boundary_type = 'reflective'
 surfaces['Upper Reflector z-max'].boundary_type = 'reflective'

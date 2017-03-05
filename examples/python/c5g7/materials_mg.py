@@ -12,7 +12,7 @@ materials_mgxs_data = {}
 ###############################################################################
 
 groups = openmc.mgxs.EnergyGroups()
-groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 2.0e7]
+groups.group_edges = mgxs_data['group_edges']
 
 for mat in ['UO2', 'MOX 4.3%',  'MOX 7.0%',  'MOX 8.7%', 'Fission Chamber', 'Guide Tube', 'Moderator', 'Control Rod']:
 

@@ -2547,6 +2547,7 @@ class DiffusionCoefficient(TransportXS):
             transport = (self.tallies['total'] - self.tallies['scatter-1']) / \
                         self.tallies['flux']
             dif_coef = transport**(-1) / 3.0
+
             self._rxn_rate_tally = dif_coef * self.tallies['flux']
             self._rxn_rate_tally.sparse = self.sparse
 
