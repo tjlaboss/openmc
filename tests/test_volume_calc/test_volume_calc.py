@@ -38,8 +38,7 @@ class VolumeTest(PyAPITestHarness):
         bottom_hemisphere = openmc.Cell(3, fill=water, region=-bottom_sphere & -top_plane)
         root = openmc.Universe(0, cells=(inside_cyl, top_hemisphere, bottom_hemisphere))
 
-        geometry = openmc.Geometry()
-        geometry.root_universe = root
+        geometry = openmc.Geometry(root)
         geometry.export_to_xml()
 
         # Set up stochastic volume calculation
@@ -52,37 +51,30 @@ class VolumeTest(PyAPITestHarness):
 
         # Define settings
         settings = openmc.Settings()
-        settings.particles = 1000
-        settings.batches = 4
-        settings.inactive = 0
-        settings.source = openmc.Source(space=openmc.stats.Box(
-            [-1., -1., -5.], [1., 1., 5.]))
+        settings.run_mode = 'volume'
         settings.volume_calculations = vol_calcs
         settings.export_to_xml()
 
     def _get_results(self):
-        # Read the statepoint file.
-        statepoint = os.path.join(os.getcwd(), self._sp_name)
-        sp = openmc.StatePoint(statepoint)
-
-        # Write out k-combined.
-        outstr = 'k-combined: {:12.6e} {:12.6e}\n'.format(*sp.k_combined)
-
+        outstr = ''
         for i, filename in enumerate(sorted(glob.glob(os.path.join(
                 os.getcwd(), 'volume_*.h5')))):
             outstr += 'Volume calculation {}\n'.format(i)
 
             # Read volume calculation results
-            vol = openmc.VolumeCalculation.from_hdf5(filename)
+            volume_calc = openmc.VolumeCalculation.from_hdf5(filename)
 
             # Write cell volumes and total # of atoms for each nuclide
-            for uid, results in sorted(vol.results.items()):
+            for uid, volume in sorted(volume_calc.volumes.items()):
                 outstr += 'Domain {0}: {1[0]:.4f} +/- {1[1]:.4f} cm^3\n'.format(
-                    uid, results['volume'])
-            outstr += str(vol.atoms_dataframe) + '\n'
+                    uid, volume)
+            outstr += str(volume_calc.atoms_dataframe) + '\n'
 
         return outstr
 
+    def _test_output_created(self):
+        pass
+
 if __name__ == '__main__':
-    harness = VolumeTest('statepoint.4.h5')
+    harness = VolumeTest('')
     harness.main()

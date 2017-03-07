@@ -18,9 +18,9 @@ from plots import plots
 from mgxs_lib import mgxs_data
 
 # Create the materials file
-materials_file = openmc.Materials(geometry.get_all_materials())
+materials_file = openmc.Materials(geometry.get_all_materials().values())
 
-case = '3.2'
+case = '3.1'
 omega = 1.0
 
 # Adjust the cells to have the desired moderator densities
@@ -44,7 +44,7 @@ for bank in range(1,5):
 # OpenMC simulation parameters
 batches = 200
 inactive = 100
-particles = 1000000
+particles = 10000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -130,10 +130,10 @@ full_assembly_mesh.width = [64.26/full_assembly_mesh.dimension[0],
                             128.52]
 
 # Instantiate a clock object
-clock = openmc.kinetics.Clock(start=0., end=2., dt_outer=1.e-1, dt_inner=1.e-2)
+clock = openmc.kinetics.Clock(start=0., end=2., dt_outer=5.e-1, dt_inner=1.e-1)
 
 # Instantiate a kinetics solver object
-solver = openmc.kinetics.Solver(name='MG_PC_1E6_32', directory='C5G7_2D')
+solver = openmc.kinetics.Solver(name='MG_PC_TEST', directory='C5G7_2D')
 solver.num_delayed_groups           = 8
 solver.mesh                         = pin_cell_mesh
 solver.pin_cell_mesh                = pin_cell_mesh
@@ -152,9 +152,9 @@ solver.ppn                          = 24
 solver.core_volume                  = 42.84 * 42.84 * 128.52
 solver.constant_seed                = False
 solver.seed                         = 1
-solver.chi_delayed_by_delayed_group = True
-solver.chi_delayed_by_mesh          = True
-solver.use_pregenerated_sps         = True
+solver.chi_delayed_by_delayed_group = False
+solver.chi_delayed_by_mesh          = False
+solver.use_pregenerated_sps         = False
 solver.pregenerate_sps              = False
 solver.run_on_cluster               = False
 solver.job_file                     = 'job.pbs'

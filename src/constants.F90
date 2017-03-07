@@ -9,17 +9,20 @@ module constants
   integer, parameter :: VERSION_MAJOR   = 0
   integer, parameter :: VERSION_MINOR   = 8
   integer, parameter :: VERSION_RELEASE = 0
+  integer, parameter :: &
+       VERSION(3) = [VERSION_MAJOR, VERSION_MINOR, VERSION_RELEASE]
 
   ! HDF5 data format
-  integer, parameter :: HDF5_VERSION_MAJOR = 1
-  integer, parameter :: HDF5_VERSION_MINOR = 0
+  integer, parameter :: HDF5_VERSION(2) = [1, 0]
 
-  ! Revision numbers for binary files
-  integer,       parameter :: REVISION_STATEPOINT       = 15
-  integer,       parameter :: REVISION_PARTICLE_RESTART = 1
-  integer,       parameter :: REVISION_TRACK            = 1
-  integer,       parameter :: REVISION_SUMMARY          = 4
-  character(10), parameter :: MULTIPOLE_VERSION         = "v0.2"
+  ! Version numbers for binary files
+  integer, parameter :: VERSION_STATEPOINT(2)       = [16, 0]
+  integer, parameter :: VERSION_PARTICLE_RESTART(2) = [2, 0]
+  integer, parameter :: VERSION_TRACK(2)            = [2, 0]
+  integer, parameter :: VERSION_SUMMARY(2)          = [5, 0]
+  integer, parameter :: VERSION_VOLUME(2)           = [1, 0]
+  integer, parameter :: VERSION_VOXEL(2)            = [1, 0]
+  character(10), parameter :: VERSION_MULTIPOLE     = "v0.2"
 
   ! ============================================================================
   ! ADJUSTABLE PARAMETERS
@@ -54,7 +57,6 @@ module constants
   integer, parameter :: MAX_LINE_LEN    = 250
   integer, parameter :: MAX_WORD_LEN    = 150
   integer, parameter :: MAX_FILE_LEN    = 255
-  integer, parameter :: REGION_SPEC_LEN = 1000
 
   ! Maximum number of external source spatial resamples to encounter before an
   ! error is thrown.
@@ -65,18 +67,18 @@ module constants
   ! PHYSICAL CONSTANTS
 
   ! Values here are from the Committee on Data for Science and Technology
-  ! (CODATA) 2010 recommendation (doi:10.1103/RevModPhys.84.1527).
+  ! (CODATA) 2014 recommendation (doi:10.1103/RevModPhys.88.035009).
 
   real(8), parameter ::                      &
        PI               = 3.1415926535898_8, & ! pi
        SQRT_PI          = 1.7724538509055_8, & ! square root of pi
-       MASS_NEUTRON     = 1.008664916_8,     & ! mass of a neutron in amu
-       MASS_NEUTRON_EV  = 939.565379e6_8,    & ! mass of a neutron in eV/c^2
-       MASS_PROTON      = 1.007276466812_8,  & ! mass of a proton in amu
-       AMU              = 1.660538921e-27_8, & ! 1 amu in kg
+       MASS_NEUTRON     = 1.00866491588_8,   & ! mass of a neutron in amu
+       MASS_NEUTRON_EV  = 939.5654133e6_8,   & ! mass of a neutron in eV/c^2
+       MASS_PROTON      = 1.007276466879_8,  & ! mass of a proton in amu
+       AMU              = 1.660539040e-27_8, & ! 1 amu in kg
        C_LIGHT          = 2.99792458e8_8,    & ! speed of light in m/s
-       N_AVOGADRO       = 0.602214129_8,     & ! Avogadro's number in 10^24/mol
-       K_BOLTZMANN      = 8.6173324e-5_8,    & ! Boltzmann constant in eV/K
+       N_AVOGADRO       = 0.6022140857_8,    & ! Avogadro's number in 10^24/mol
+       K_BOLTZMANN      = 8.6173303e-5_8,    & ! Boltzmann constant in eV/K
        INFINITY         = huge(0.0_8),       & ! positive infinity
        ZERO             = 0.0_8,             &
        HALF             = 0.5_8,             &
@@ -104,11 +106,11 @@ module constants
        OP_INTERSECTION = huge(0) - 3, & ! Intersection operator
        OP_UNION        = huge(0) - 4    ! Union operator (^)
 
-  ! Cell types
+  ! Cell fill types
   integer, parameter ::  &
-       CELL_NORMAL  = 1, & ! Cell with a specified material
-       CELL_FILL    = 2, & ! Cell filled by a separate universe
-       CELL_LATTICE = 3    ! Cell filled with a lattice
+       FILL_MATERIAL = 1, & ! Cell with a specified material
+       FILL_UNIVERSE = 2, & ! Cell filled by a separate universe
+       FILL_LATTICE  = 3    ! Cell filled with a lattice
 
   ! Void material
   integer, parameter :: MATERIAL_VOID = -1
@@ -142,7 +144,7 @@ module constants
        SURF_CONE_Z = 11    ! Cone parallel to z-axis
 
   ! Flag to say that the outside of a lattice is not defined
-  integer, parameter :: NO_OUTER_UNIVERSE = -22
+  integer, parameter :: NO_OUTER_UNIVERSE = -1
 
   ! Maximum number of lost particles
   integer, parameter :: MAX_LOST_PARTICLES = 10
@@ -424,7 +426,8 @@ module constants
        MODE_FIXEDSOURCE = 1, & ! Fixed source mode
        MODE_EIGENVALUE  = 2, & ! K eigenvalue mode
        MODE_PLOTTING    = 3, & ! Plotting mode
-       MODE_PARTICLE    = 4    ! Particle restart mode
+       MODE_PARTICLE    = 4, & ! Particle restart mode
+       MODE_VOLUME      = 5    ! Volume calculation mode
 
   !=============================================================================
   ! CMFD CONSTANTS

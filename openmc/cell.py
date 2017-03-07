@@ -86,9 +86,9 @@ class Cell(object):
     distribcell_paths : list of str
         The paths traversed through the CSG tree to reach each distribcell
         instance
-    volume_information : dict
-        Estimate of the volume and total number of atoms of each nuclide from a
-        stochastic volume calculation. This information is set with the
+    volume : float
+        Volume of the cell in cm^3. This can either be set manually or
+        calculated in a stochastic volume calculation and added via the
         :meth:`Cell.add_volume_information` method.
     time : float
         The time at which the material properties are created.
@@ -110,9 +110,10 @@ class Cell(object):
         self._offsets = None
         self._distribcell_index = None
         self._distribcell_paths = None
-        self._volume_information = None
         self._time = 0.0
         self._translation_times = None
+        self._volume = None
+        self._atoms = None
 
     def __contains__(self, point):
         if self.region is None:
@@ -251,8 +252,8 @@ class Cell(object):
         return self._distribcell_paths
 
     @property
-    def volume_information(self):
-        return self._volume_information
+    def volume(self):
+        return self._volume
 
     @property
     def time(self):
@@ -374,6 +375,12 @@ class Cell(object):
             cv.check_type('cell region', region, Region)
         self._region = region
 
+    @volume.setter
+    def volume(self, volume):
+        if volume is not None:
+            cv.check_type('cell volume', volume, Real)
+        self._volume = volume
+
     @distribcell_index.setter
     def distribcell_index(self, ind):
         cv.check_type('distribcell index', ind, Integral)
@@ -458,10 +465,9 @@ class Cell(object):
 
         """
         if volume_calc.domain_type == 'cell':
-            for cell_id in volume_calc.results:
-                if cell_id == self.id:
-                    self._volume_information = volume_calc.results[cell_id]
-                    break
+            if self.id in volume_calc.volumes:
+                self._volume = volume_calc.volumes[self.id][0]
+                self._atoms = volume_calc.atoms[self.id]
             else:
                 raise ValueError('No volume information found for this cell.')
         else:
@@ -500,7 +506,7 @@ class Cell(object):
 
         Returns
         -------
-        nuclides : dict
+        nuclides : collections.OrderedDict
             Dictionary whose keys are nuclide names and values are 2-tuples of
             (nuclide, density)
 
@@ -513,9 +519,9 @@ class Cell(object):
         elif self.fill_type == 'void':
             pass
         else:
-            if self.volume_information is not None:
-                volume = self.volume_information['volume'][0]
-                for name, atoms in self.volume_information['atoms']:
+            if self._atoms is not None:
+                volume = self.volume
+                for name, atoms in self._atoms.items():
                     nuclide = openmc.Nuclide(name)
                     density = 1.0e-24 * atoms[0]/volume  # density in atoms/b-cm
                     nuclides[name] = (nuclide, density)
@@ -534,7 +540,7 @@ class Cell(object):
 
         Returns
         -------
-        cells : dict
+        cells : collections.orderedDict
             Dictionary whose keys are cell IDs and values are :class:`Cell`
             instances
 
@@ -552,20 +558,23 @@ class Cell(object):
 
         Returns
         -------
-        materials : dict
+        materials : collections.OrderedDict
             Dictionary whose keys are material IDs and values are
             :class:`Material` instances
 
         """
-
         materials = OrderedDict()
         if self.fill_type == 'material':
             materials[self.fill.id] = self.fill
-
-        # Append all Cells in each Cell in the Universe to the dictionary
-        cells = self.get_all_cells()
-        for cell in cells.values():
-            materials.update(cell.get_all_materials())
+        elif self.fill_type == 'distribmat':
+            for m in self.fill:
+                if m is not None:
+                    materials[m.id] = m
+        else:
+            # Append all Cells in each Cell in the Universe to the dictionary
+            cells = self.get_all_cells()
+            for cell in cells.values():
+                materials.update(cell.get_all_materials())
 
         return materials
 
@@ -575,7 +584,7 @@ class Cell(object):
 
         Returns
         -------
-        universes : dict
+        universes : collections.OrderedDict
             Dictionary whose keys are universe IDs and values are
             :class:`Universe` instances
 
@@ -630,7 +639,7 @@ class Cell(object):
                 if isinstance(node, Halfspace):
                     path = "./surface[@id='{}']".format(node.surface.id)
                     if xml_element.find(path) is None:
-                        xml_element.append(node.surface.create_xml_subelement())
+                        xml_element.append(node.surface.to_xml_element())
                 elif isinstance(node, Complement):
                     create_surface_elements(node.node, element)
                 else:

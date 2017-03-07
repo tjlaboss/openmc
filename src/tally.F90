@@ -2,10 +2,6 @@ module tally
 
   use, intrinsic :: ISO_C_BINDING
 
-#ifdef MPI
-  use message_passing
-#endif
-
   use algorithm,        only: binary_search
   use constants
   use cross_section,    only: multipole_deriv_eval
@@ -18,6 +14,7 @@ module tally
                               mesh_intersects_1d, mesh_intersects_2d, &
                               mesh_intersects_3d
   use mesh_header,      only: RegularMesh
+  use message_passing
   use output,           only: header
   use particle_header,  only: LocalCoord, Particle
   use string,           only: to_str
@@ -585,7 +582,8 @@ contains
             else
 
               ! Add the contribution from all delayed groups
-              score = keff * p % wgt_bank / p % n_bank * sum(p % n_delayed_bank) * flux
+              score = keff * p % wgt_bank / p % n_bank * &
+                   sum(p % n_delayed_bank) * flux
             end if
           end if
         else
@@ -2028,7 +2026,7 @@ contains
 
     end do SCORE_LOOP
 
-    nullify(matxs,nucxs)
+    nullify(matxs, nucxs)
   end subroutine score_general_mg
 
 !===============================================================================
@@ -2559,12 +2557,11 @@ contains
           ! determine scoring index and weight for this filter combination
           i_filter = sum((matching_bins(1:size(t%filters)) - 1) * t % stride) &
                + 1
-          filter_weight = product(filter_weights(:size(t % filters)))
 
           ! Add score to tally
 !$omp atomic
           t % results(RESULT_VALUE, i_score, i_filter) = &
-               t % results(RESULT_VALUE, i_score, i_filter) + score * filter_weight
+               t % results(RESULT_VALUE, i_score, i_filter) + score
 
         ! Case for tallying delayed emissions
         else if (score_bin == SCORE_DELAYED_NU_FISSION .and. g /= 0) then
@@ -2588,7 +2585,15 @@ contains
                 ! check whether the delayed group of the particle is equal to
                 ! the delayed group of this bin
                 if (d == g) then
-                  call score_fission_delayed_dg(t, d_bin, score, i_score)
+
+                  ! determine scoring index and weight for this filter
+                  ! combination
+                  i_filter = sum((matching_bins(1:size(t%filters)) - 1) * &
+                       t % stride) + 1
+                  filter_weight = product(filter_weights(:size(t % filters)))
+
+                  call score_fission_delayed_dg(t, d_bin, &
+                       score * filter_weight, i_score)
                 end if
               end do
             end select
@@ -4073,14 +4078,14 @@ contains
         ! The MPI_IN_PLACE specifier allows the master to copy values into
         ! a receive buffer without having a temporary variable
         call MPI_REDUCE(MPI_IN_PLACE, tally_temp, n_bins, MPI_REAL8, &
-             MPI_SUM, 0, MPI_COMM_WORLD, mpi_err)
+             MPI_SUM, 0, mpi_intracomm, mpi_err)
 
         ! Transfer values to value on master
         t % results(RESULT_VALUE,:,:) = tally_temp
       else
         ! Receive buffer not significant at other processors
         call MPI_REDUCE(tally_temp, dummy, n_bins, MPI_REAL8, &
-             MPI_SUM, 0, MPI_COMM_WORLD, mpi_err)
+             MPI_SUM, 0, mpi_intracomm, mpi_err)
 
         ! Reset value on other processors
         t % results(RESULT_VALUE,:,:) = ZERO
@@ -4094,14 +4099,14 @@ contains
 
     if (master) then
       call MPI_REDUCE(MPI_IN_PLACE, global_temp, N_GLOBAL_TALLIES, &
-           MPI_REAL8, MPI_SUM, 0, MPI_COMM_WORLD, mpi_err)
+           MPI_REAL8, MPI_SUM, 0, mpi_intracomm, mpi_err)
 
       ! Transfer values back to global_tallies on master
       global_tallies(RESULT_VALUE, :) = global_temp
     else
       ! Receive buffer not significant at other processors
       call MPI_REDUCE(global_temp, dummy, N_GLOBAL_TALLIES, &
-           MPI_REAL8, MPI_SUM, 0, MPI_COMM_WORLD, mpi_err)
+           MPI_REAL8, MPI_SUM, 0, mpi_intracomm, mpi_err)
 
       ! Reset value on other processors
       global_tallies(RESULT_VALUE, :) = ZERO
@@ -4111,11 +4116,11 @@ contains
     ! last realization
     if (master) then
       call MPI_REDUCE(MPI_IN_PLACE, total_weight, 1, MPI_REAL8, MPI_SUM, &
-           0, MPI_COMM_WORLD, mpi_err)
+           0, mpi_intracomm, mpi_err)
     else
       ! Receive buffer not significant at other processors
       call MPI_REDUCE(total_weight, dummy, 1, MPI_REAL8, MPI_SUM, &
-           0, MPI_COMM_WORLD, mpi_err)
+           0, mpi_intracomm, mpi_err)
     end if
 
   end subroutine reduce_tally_results

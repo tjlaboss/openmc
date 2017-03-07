@@ -16,7 +16,7 @@ from plots import plots
 from mgxs_lib import mgxs_data
 
 # Create the materials file
-materials_file = openmc.Materials(geometry.get_all_materials())
+materials_file = openmc.Materials(geometry.get_all_materials().values())
 
 # Set the base control rod bank positions
 cells['Control Rod Base Bank 1'].translation = [0., 0., 64.26]

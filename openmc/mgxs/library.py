@@ -3,7 +3,7 @@ import os
 import copy
 import pickle
 from numbers import Integral
-from collections import OrderedDict
+from collections import OrderedDict, Iterable
 from warnings import warn
 
 from six import string_types
@@ -31,7 +31,7 @@ class Library(object):
 
     Parameters
     ----------
-    openmc_geometry : openmc.Geometry
+    geometry : openmc.Geometry
         A geometry which has been initialized with a root universe
     by_nuclide : bool
         If true, computes cross sections for each nuclide in each domain
@@ -43,12 +43,8 @@ class Library(object):
 
     Attributes
     ----------
-    openmc_geometry : openmc.Geometry
+    geometry : openmc.Geometry
         An geometry which has been initialized with a root universe
-    opencg_geometry : opencg.Geometry
-        An OpenCG geometry object equivalent to the OpenMC geometry
-        encapsulated by the summary file. Use of this attribute requires
-        installation of the OpenCG Python module.
     by_nuclide : bool
         If true, computes cross sections for each nuclide in each domain
     mgxs_types : Iterable of str
@@ -73,6 +69,10 @@ class Library(object):
         Energy group structure for energy condensation
     num_delayed_groups : int
         Number of delayed groups
+    num_polar : Integral
+        Number of equi-width polar angle bins for angle discretization
+    num_azimuthal : Integral
+        Number of equi-width azimuthal angle bins for angle discretization
     estimator : str or None
         The tally estimator used to compute multi-group cross sections.
         If None, the default for each MGXS type is used.
@@ -96,17 +96,18 @@ class Library(object):
 
     """
 
-    def __init__(self, openmc_geometry, by_nuclide=False,
+    def __init__(self, geometry, by_nuclide=False,
                  mgxs_types=None, name=''):
 
         self._name = ''
-        self._openmc_geometry = None
-        self._opencg_geometry = None
+        self._geometry = None
         self._by_nuclide = None
         self._mgxs_types = []
         self._domain_type = None
         self._domains = 'all'
         self._energy_groups = None
+        self._num_polar = 1
+        self._num_azimuthal = 1
         self._num_delayed_groups = 0
         self._correction = 'P0'
         self._scatter_format = 'legendre'
@@ -120,7 +121,7 @@ class Library(object):
         self._estimator = None
 
         self.name = name
-        self.openmc_geometry = openmc_geometry
+        self.geometry = geometry
         self.by_nuclide = by_nuclide
 
         if mgxs_types is not None:
@@ -133,8 +134,7 @@ class Library(object):
         if existing is None:
             clone = type(self).__new__(type(self))
             clone._name = self.name
-            clone._openmc_geometry = self.openmc_geometry
-            clone._opencg_geometry = None
+            clone._geometry = self.geometry
             clone._by_nuclide = self.by_nuclide
             clone._mgxs_types = self.mgxs_types
             clone._domain_type = self.domain_type
@@ -144,6 +144,8 @@ class Library(object):
             clone._legendre_order = self.legendre_order
             clone._histogram_bins = self.histogram_bins
             clone._energy_groups = copy.deepcopy(self.energy_groups, memo)
+            clone._num_polar = self.num_polar
+            clone._num_azimuthal = self.num_azimuthal
             clone._num_delayed_groups = self.num_delayed_groups
             clone._tally_trigger = copy.deepcopy(self.tally_trigger, memo)
             clone._all_mgxs = copy.deepcopy(self.all_mgxs)
@@ -167,15 +169,8 @@ class Library(object):
             return existing
 
     @property
-    def openmc_geometry(self):
-        return self._openmc_geometry
-
-    @property
-    def opencg_geometry(self):
-        if self._opencg_geometry is None:
-            from openmc.opencg_compatible import get_opencg_geometry
-            self._opencg_geometry = get_opencg_geometry(self._openmc_geometry)
-        return self._opencg_geometry
+    def geometry(self):
+        return self._geometry
 
     @property
     def name(self):
@@ -197,11 +192,11 @@ class Library(object):
     def domains(self):
         if self._domains == 'all':
             if self.domain_type == 'material':
-                return self.openmc_geometry.get_all_materials()
+                return list(self.geometry.get_all_materials().values())
             elif self.domain_type in ['cell', 'distribcell']:
-                return self.openmc_geometry.get_all_material_cells()
+                return list(self.geometry.get_all_material_cells().values())
             elif self.domain_type == 'universe':
-                return self.openmc_geometry.get_all_universes()
+                return list(self.geometry.get_all_universes().values())
             elif self.domain_type == 'mesh':
                 raise ValueError('Unable to get domains for Mesh domain type')
             else:
@@ -216,6 +211,14 @@ class Library(object):
     @property
     def num_delayed_groups(self):
         return self._num_delayed_groups
+
+    @property
+    def num_polar(self):
+        return self._num_polar
+
+    @property
+    def num_azimuthal(self):
+        return self._num_azimuthal
 
     @property
     def correction(self):
@@ -261,11 +264,10 @@ class Library(object):
     def sparse(self):
         return self._sparse
 
-    @openmc_geometry.setter
-    def openmc_geometry(self, openmc_geometry):
-        cv.check_type('openmc_geometry', openmc_geometry, openmc.Geometry)
-        self._openmc_geometry = openmc_geometry
-        self._opencg_geometry = None
+    @geometry.setter
+    def geometry(self, geometry):
+        cv.check_type('geometry', geometry, openmc.Geometry)
+        self._geometry = geometry
 
     @name.setter
     def name(self, name):
@@ -313,16 +315,16 @@ class Library(object):
         # User specified a list of material, cell or universe domains
         else:
             if self.domain_type == 'material':
-                cv.check_iterable_type('domain', domains, openmc.Material)
-                all_domains = self.openmc_geometry.get_all_materials()
+                cv.check_type('domain', domains, Iterable, openmc.Material)
+                all_domains = self.geometry.get_all_materials().values()
             elif self.domain_type in ['cell', 'distribcell']:
-                cv.check_iterable_type('domain', domains, openmc.Cell)
-                all_domains = self.openmc_geometry.get_all_material_cells()
+                cv.check_type('domain', domains, Iterable, openmc.Cell)
+                all_domains = self.geometry.get_all_material_cells().values()
             elif self.domain_type == 'universe':
-                cv.check_iterable_type('domain', domains, openmc.Universe)
-                all_domains = self.openmc_geometry.get_all_universes()
+                cv.check_type('domain', domains, Iterable, openmc.Universe)
+                all_domains = self.geometry.get_all_universes().values()
             elif self.domain_type == 'mesh':
-                cv.check_iterable_type('domain', domains, openmc.Mesh)
+                cv.check_type('domain', domains, Iterable, openmc.Mesh)
 
                 # The mesh and geometry are independent, so set all_domains
                 # to the input domains
@@ -337,7 +339,7 @@ class Library(object):
                     raise ValueError('Domain "{}" could not be found in the '
                                      'geometry.'.format(domain))
 
-            self._domains = domains
+            self._domains = list(domains)
 
     @energy_groups.setter
     def energy_groups(self, energy_groups):
@@ -352,6 +354,18 @@ class Library(object):
         cv.check_greater_than('num delayed groups', num_delayed_groups, 0,
                               equality=True)
         self._num_delayed_groups = num_delayed_groups
+
+    @num_polar.setter
+    def num_polar(self, num_polar):
+        cv.check_type('num_polar', num_polar, Integral)
+        cv.check_greater_than('num_polar', num_polar, 0)
+        self._num_polar = num_polar
+
+    @num_azimuthal.setter
+    def num_azimuthal(self, num_azimuthal):
+        cv.check_type('num_azimuthal', num_azimuthal, Integral)
+        cv.check_greater_than('num_azimuthal', num_azimuthal, 0)
+        self._num_azimuthal = num_azimuthal
 
     @correction.setter
     def correction(self, correction):
@@ -470,9 +484,13 @@ class Library(object):
             self.all_mgxs[domain.id] = OrderedDict()
             for mgxs_type in self.mgxs_types:
                 if mgxs_type in openmc.mgxs.MDGXS_TYPES:
-                    mgxs = openmc.mgxs.MDGXS.get_mgxs(mgxs_type, name=self.name)
+                    mgxs = openmc.mgxs.MDGXS.get_mgxs(
+                        mgxs_type, name=self.name, num_polar=self.num_polar,
+                        num_azimuthal=self.num_azimuthal)
                 else:
-                    mgxs = openmc.mgxs.MGXS.get_mgxs(mgxs_type, name=self.name)
+                    mgxs = openmc.mgxs.MGXS.get_mgxs(
+                        mgxs_type, name=self.name, num_polar=self.num_polar,
+                        num_azimuthal=self.num_azimuthal)
 
                 mgxs.domain = domain
                 mgxs.domain_type = self.domain_type
@@ -529,9 +547,8 @@ class Library(object):
                     if self.num_delayed_groups == 0:
                         mgxs.delayed_groups = None
                     else:
-                        delayed_groups \
-                            = list(range(1,self.num_delayed_groups+1))
-                        mgxs.delayed_groups = delayed_groups
+                        mgxs.delayed_groups \
+                            = list(range(1, self.num_delayed_groups + 1))
 
                 for tally in mgxs.tallies.values():
                     tallies_file.append(tally, merge=merge)
@@ -566,10 +583,10 @@ class Library(object):
             raise ValueError(msg)
 
         self._sp_filename = statepoint._f.filename
-        self._openmc_geometry = statepoint.summary.openmc_geometry
+        self._geometry = statepoint.summary.geometry
         self._nuclides = statepoint.summary.nuclides
 
-        if statepoint.run_mode == 'k-eigenvalue':
+        if statepoint.run_mode == 'eigenvalue':
             self._keff = statepoint.k_combined[0]
 
         # Load tallies for each MGXS for each domain and mgxs type
@@ -954,11 +971,16 @@ class Library(object):
         name = xsdata_name
         if nuclide != 'total':
             name += '_' + nuclide
-        xsdata = openmc.XSdata(name, self.energy_groups)
+        if self.num_polar > 1 or self.num_azimuthal > 1:
+            representation = 'angle'
+        else:
+            representation = 'isotropic'
+        xsdata = openmc.XSdata(name, self.energy_groups,
+                               representation=representation)
         xsdata.num_delayed_groups = self.num_delayed_groups
-
-        # Right now only isotropic weighting is supported
-        self.representation = 'isotropic'
+        if self.num_polar > 1 or self.num_azimuthal > 1:
+            xsdata.num_polar = self.num_polar
+            xsdata.num_azimuthal = self.num_azimuthal
 
         if nuclide != 'total':
             xsdata.atomic_weight_ratio = self._nuclides[nuclide][1]
@@ -1099,15 +1121,28 @@ class Library(object):
                 if 'total' in self.mgxs_types or 'transport' in self.mgxs_types:
                     if xsdata.scatter_format == 'legendre':
                         for i in range(len(xsdata.temperatures)):
-                            xsdata._absorption[i] = \
-                                np.subtract(xsdata._total[i], np.sum(
-                                    xsdata._scatter_matrix[i][0, :, :], axis=1))
+                            if representation == 'isotropic':
+                                xsdata._absorption[i] = \
+                                    np.subtract(xsdata._total[i], np.sum(
+                                        xsdata._scatter_matrix[i][:, :, 0],
+                                        axis=1))
+                            elif representation == 'angle':
+                                xsdata._absorption[i] = \
+                                    np.subtract(xsdata._total[i], np.sum(
+                                        xsdata._scatter_matrix[i][:, :, :, :, 0],
+                                        axis=3))
                     elif xsdata.scatter_format == 'histogram':
                         for i in range(len(xsdata.temperatures)):
-                            xsdata._absorption[i] = \
-                                np.subtract(xsdata._total[i], np.sum(np.sum(
-                                    xsdata._scatter_matrix[i][:, :, :], axis=0),
-                                    axis=1))
+                            if representation == 'isotropic':
+                                xsdata._absorption[i] = \
+                                    np.subtract(xsdata._total[i], np.sum(np.sum(
+                                        xsdata._scatter_matrix[i][:, :, :],
+                                        axis=2), axis=1))
+                            elif representation == 'angle':
+                                xsdata._absorption[i] = \
+                                    np.subtract(xsdata._total[i], np.sum(np.sum(
+                                        xsdata._scatter_matrix[i][:, :, :, :, :],
+                                        axis=4), axis=3))
 
         return xsdata
 
@@ -1282,6 +1317,7 @@ class Library(object):
             root_cell, cells = \
                 self.domains[0].build_cells(bc)
             root.add_cell(root_cell)
+
             geometry = openmc.Geometry()
             geometry.root_universe = root
             materials = openmc.Materials()
@@ -1303,11 +1339,11 @@ class Library(object):
 
         else:
             # Create a copy of the Geometry for these Macroscopics
-            geometry = copy.deepcopy(self.openmc_geometry)
+            geometry = copy.deepcopy(self.geometry)
             materials = openmc.Materials()
 
             # Get all Cells from the Geometry for differentiation
-            all_cells = geometry.get_all_material_cells()
+            all_cells = geometry.get_all_material_cells().values()
 
             # Create the xsdata object and add it to the mgxs_file
             for i, domain in enumerate(self.domains):

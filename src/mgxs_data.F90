@@ -43,10 +43,10 @@ contains
 
       ! Could not find MGXS Library file
       call fatal_error("Cross sections HDF5 file '" &
-           &// trim(path_cross_sections) // "' does not exist!")
+           // trim(path_cross_sections) // "' does not exist!")
     end if
 
-    call write_message("Loading Cross Section Data...", 5)
+    call write_message("Loading cross section data...", 5)
 
     ! Get temperatures
     call get_temperatures(cells, materials, material_dict, nuclide_dict, &
@@ -75,7 +75,7 @@ contains
           i_xsdata = xsdata_dict % get_key(to_lower(name))
           i_nuclide = mat % nuclide(j)
 
-          call write_message("Loading " // trim(name) // " Data...", 5)
+          call write_message("Loading " // trim(name) // " data...", 6)
 
           ! Check to make sure cross section set exists in the library
           if (object_exists(file_id, trim(name))) then
@@ -183,7 +183,7 @@ contains
       end select
 
       ! Do not read materials which we do not actually use in the problem to
-      ! save space
+      ! reduce storage
       if (allocated(kTs(i_mat) % data)) then
         call macro_xs(i_mat) % obj % combine(kTs(i_mat), mat, nuclides_MG, &
              num_energy_groups, num_delayed_groups, max_order, &

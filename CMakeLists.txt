@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8 FATAL_ERROR)
-project(openmc Fortran C)
+project(openmc Fortran C CXX)
 
 # Setup output directories
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -103,21 +103,17 @@ if(CMAKE_Fortran_COMPILER_ID STREQUAL GNU)
   # Make sure version is sufficient
   execute_process(COMMAND ${CMAKE_Fortran_COMPILER} -dumpversion
     OUTPUT_VARIABLE GCC_VERSION)
-  if(GCC_VERSION VERSION_LESS 4.6)
-    message(FATAL_ERROR "gfortran version must be 4.6 or higher")
+  if(GCC_VERSION VERSION_LESS 4.8)
+    message(FATAL_ERROR "gfortran version must be 4.8 or higher")
   endif()
 
   # GCC compiler options
   list(APPEND f90flags -cpp -std=f2008 -fbacktrace)
   list(APPEND cflags -cpp -std=c99)
   if(debug)
-    if(NOT (GCC_VERSION VERSION_LESS 4.7))
-      list(APPEND f90flags -Wall)
-      list(APPEND cflags -Wall)
-    endif()
-    list(APPEND f90flags -g -pedantic -fbounds-check
+    list(APPEND f90flags -g -Wall -pedantic -fbounds-check
       -ffpe-trap=invalid,overflow,underflow)
-    list(APPEND cflags -g -pedantic -fbounds-check)
+    list(APPEND cflags -g -Wall -pedantic -fbounds-check)
     list(APPEND ldflags -g)
   endif()
   if(profile)
@@ -225,27 +221,14 @@ if(GIT_SHA1_SUCCESS EQUAL 0)
 endif()
 
 #===============================================================================
-# FoX Fortran XML Library
+# pugixml library
 #===============================================================================
 
-# Only initialize git submodules if it is not there. User is responsible
-# for future updates of fox xml submodule.
-if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/xml/fox/.git)
-  if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/.git)
-    message("-- Cloning FoX XML git repository...")
-    execute_process(COMMAND git clone https://github.com/mit-crpg/fox.git src/xml/fox
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    execute_process(COMMAND git checkout bdc852f4f43d969fb1b179cba79295c1e095a455
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/xml/fox)
-  else()
-    message("-- Initializing/Updating FoX XML submodule...")
-    execute_process(COMMAND git submodule init
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    execute_process(COMMAND git submodule update
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-  endif()
-endif()
-add_subdirectory(src/xml/fox)
+add_library(pugixml src/pugixml/pugixml_c.cpp src/pugixml/pugixml.cpp)
+set_property(TARGET pugixml PROPERTY CXX_STANDARD 11)
+
+add_library(pugixml_fortran src/pugixml/pugixml_f.F90)
+target_link_libraries(pugixml_fortran pugixml)
 
 #===============================================================================
 # RPATH information
@@ -259,22 +242,112 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 # Build faddeeva library
 #===============================================================================
 
-add_library(faddeeva STATIC src/Faddeeva.c)
+add_library(faddeeva STATIC src/faddeeva/Faddeeva.c)
 
 #===============================================================================
 # Build OpenMC executable
 #===============================================================================
 
 set(program "openmc")
-file(GLOB source src/*.F90 src/xml/openmc_fox.F90)
-add_executable(${program} ${source})
+set(LIBOPENMC_FORTRAN_SRC
+  src/algorithm.F90
+  src/angle_distribution.F90
+  src/angleenergy_header.F90
+  src/bank_header.F90
+  src/cmfd_data.F90
+  src/cmfd_execute.F90
+  src/cmfd_header.F90
+  src/cmfd_input.F90
+  src/cmfd_loss_operator.F90
+  src/cmfd_prod_operator.F90
+  src/cmfd_solver.F90
+  src/constants.F90
+  src/cross_section.F90
+  src/dict_header.F90
+  src/distribution_multivariate.F90
+  src/distribution_univariate.F90
+  src/doppler.F90
+  src/eigenvalue.F90
+  src/endf.F90
+  src/endf_header.F90
+  src/energy_distribution.F90
+  src/energy_grid.F90
+  src/error.F90
+  src/finalize.F90
+  src/geometry.F90
+  src/geometry_header.F90
+  src/global.F90
+  src/hdf5_interface.F90
+  src/initialize.F90
+  src/input_xml.F90
+  src/list_header.F90
+  src/material_header.F90
+  src/math.F90
+  src/matrix_header.F90
+  src/mesh.F90
+  src/mesh_header.F90
+  src/message_passing.F90
+  src/mgxs_data.F90
+  src/mgxs_header.F90
+  src/multipole.F90
+  src/multipole_header.F90
+  src/nuclide_header.F90
+  src/output.F90
+  src/particle_header.F90
+  src/particle_restart.F90
+  src/particle_restart_write.F90
+  src/physics_common.F90
+  src/physics.F90
+  src/physics_mg.F90
+  src/plot.F90
+  src/plot_header.F90
+  src/product_header.F90
+  src/progress_header.F90
+  src/random_lcg.F90
+  src/reaction_header.F90
+  src/relaxng
+  src/sab_header.F90
+  src/scattdata_header.F90
+  src/secondary_correlated.F90
+  src/secondary_kalbach.F90
+  src/secondary_nbody.F90
+  src/secondary_uncorrelated.F90
+  src/set_header.F90
+  src/simulation.F90
+  src/source.F90
+  src/source_header.F90
+  src/state_point.F90
+  src/stl_vector.F90
+  src/string.F90
+  src/summary.F90
+  src/surface_header.F90
+  src/tally.F90
+  src/tally_filter.F90
+  src/tally_filter_header.F90
+  src/tally_header.F90
+  src/tally_initialize.F90
+  src/timer_header.F90
+  src/tracking.F90
+  src/track_output.F90
+  src/trigger.F90
+  src/trigger_header.F90
+  src/urr_header.F90
+  src/vector_header.F90
+  src/volume_calc.F90
+  src/volume_header.F90
+  src/xml_interface.F90)
+add_library(libopenmc STATIC ${LIBOPENMC_FORTRAN_SRC})
+set_target_properties(libopenmc PROPERTIES OUTPUT_NAME openmc)
+add_executable(${program} src/main.F90)
+set_property(TARGET ${program} libopenmc pugixml_fortran
+  PROPERTY LINKER_LANGUAGE Fortran)
 
 # target_include_directories was added in CMake 2.8.11 and is the recommended
 # way to set include directories. For lesser versions, we revert to set_property
 if(CMAKE_VERSION VERSION_LESS 2.8.11)
   include_directories(${HDF5_INCLUDE_DIRS})
 else()
-  target_include_directories(${program} PUBLIC ${HDF5_INCLUDE_DIRS})
+  target_include_directories(libopenmc PUBLIC ${HDF5_INCLUDE_DIRS})
 endif()
 
 # target_compile_options was added in CMake 2.8.12 and is the recommended way to
@@ -288,6 +361,7 @@ if (CMAKE_VERSION VERSION_LESS 2.8.12)
   set_property(TARGET faddeeva PROPERTY COMPILE_FLAGS "${cflags}")
 else()
   target_compile_options(${program} PUBLIC ${f90flags})
+  target_compile_options(libopenmc PUBLIC ${f90flags})
   target_compile_options(faddeeva PRIVATE ${cflags})
 endif()
 
@@ -298,7 +372,8 @@ endforeach()
 
 # target_link_libraries treats any arguments starting with - but not -l as
 # linker flags. Thus, we can pass both linker flags and libraries together.
-target_link_libraries(${program} ${ldflags} ${HDF5_LIBRARIES} fox_dom faddeeva)
+target_link_libraries(libopenmc ${ldflags} ${HDF5_LIBRARIES} pugixml_fortran faddeeva)
+target_link_libraries(${program} ${ldflags} libopenmc)
 
 #===============================================================================
 # Install executable, scripts, manpage, license
