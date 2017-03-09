@@ -79,16 +79,15 @@ class Cell(object):
     translation : Iterable of float
         If the cell is filled with a universe, this array specifies a vector
         that is used to translate (shift) the universe.
-    offsets : ndarray
-        Array of offsets used for distributed cell searches
-    distribcell_index : int
-        Index of this cell in distribcell arrays
-    distribcell_paths : list of str
-        The paths traversed through the CSG tree to reach each distribcell
-        instance
-    volume_information : dict
-        Estimate of the volume and total number of atoms of each nuclide from a
-        stochastic volume calculation. This information is set with the
+    paths : list of str
+        The paths traversed through the CSG tree to reach each cell
+        instance. This property is initialized by calling the
+        :meth:`Geometry.determine_paths` method.
+    num_instances : int
+        The number of instances of this cell throughout the geometry.
+    volume : float
+        Volume of the cell in cm^3. This can either be set manually or
+        calculated in a stochastic volume calculation and added via the
         :meth:`Cell.add_volume_information` method.
 
     """
@@ -103,10 +102,9 @@ class Cell(object):
         self._rotation_matrix = None
         self._temperature = None
         self._translation = None
-        self._offsets = None
-        self._distribcell_index = None
-        self._distribcell_paths = None
-        self._volume_information = None
+        self._paths = []
+        self._volume = None
+        self._atoms = None
 
     def __contains__(self, point):
         if self.region is None:
@@ -161,8 +159,6 @@ class Cell(object):
             string += '\t{0: <15}=\t{1}\n'.format('Temperature',
                                                   self.temperature)
         string += '{: <16}=\t{}\n'.format('\tTranslation', self.translation)
-        string += '{: <16}=\t{}\n'.format('\tOffset', self.offsets)
-        string += '{: <16}=\t{}\n'.format('\tDistribcell index', self.distribcell_index)
 
         return string
 
@@ -212,20 +208,19 @@ class Cell(object):
         return self._translation
 
     @property
-    def offsets(self):
-        return self._offsets
+    def volume(self):
+        return self._volume
 
     @property
-    def distribcell_index(self):
-        return self._distribcell_index
+    def paths(self):
+        if not self._paths:
+            raise ValueError('Cell instance paths have not been determined. '
+                             'Call the Geometry.determine_paths() method.')
+        return self._paths
 
     @property
-    def distribcell_paths(self):
-        return self._distribcell_paths
-
-    @property
-    def volume_information(self):
-        return self._volume_information
+    def num_instances(self):
+        return len(self.paths)
 
     @id.setter
     def id(self, cell_id):
@@ -315,27 +310,17 @@ class Cell(object):
         else:
             self._temperature = temperature
 
-    @offsets.setter
-    def offsets(self, offsets):
-        cv.check_type('cell offsets', offsets, Iterable)
-        self._offsets = offsets
-
     @region.setter
     def region(self, region):
         if region is not None:
             cv.check_type('cell region', region, Region)
         self._region = region
 
-    @distribcell_index.setter
-    def distribcell_index(self, ind):
-        cv.check_type('distribcell index', ind, Integral)
-        self._distribcell_index = ind
-
-    @distribcell_paths.setter
-    def distribcell_paths(self, distribcell_paths):
-        cv.check_iterable_type('distribcell_paths', distribcell_paths,
-                               string_types)
-        self._distribcell_paths = distribcell_paths
+    @volume.setter
+    def volume(self, volume):
+        if volume is not None:
+            cv.check_type('cell volume', volume, Real)
+        self._volume = volume
 
     def add_surface(self, surface, halfspace):
         """Add a half-space to the list of half-spaces whose intersection defines the
@@ -391,31 +376,13 @@ class Cell(object):
 
         """
         if volume_calc.domain_type == 'cell':
-            for cell_id in volume_calc.results:
-                if cell_id == self.id:
-                    self._volume_information = volume_calc.results[cell_id]
-                    break
+            if self.id in volume_calc.volumes:
+                self._volume = volume_calc.volumes[self.id][0]
+                self._atoms = volume_calc.atoms[self.id]
             else:
                 raise ValueError('No volume information found for this cell.')
         else:
             raise ValueError('No volume information found for this cell.')
-
-    def get_cell_instance(self, path, distribcell_index):
-
-        # If the Cell is filled by a Material
-        if self.fill_type in ('material', 'distribmat', 'void'):
-            offset = 0
-
-        # If the Cell is filled by a Universe
-        elif self.fill_type == 'universe':
-            offset = self.offsets[distribcell_index-1]
-            offset += self.fill.get_cell_instance(path, distribcell_index)
-
-        # If the Cell is filled by a Lattice
-        else:
-            offset = self.fill.get_cell_instance(path, distribcell_index)
-
-        return offset
 
     def get_nuclides(self):
         """Returns all nuclides in the cell
@@ -433,7 +400,7 @@ class Cell(object):
 
         Returns
         -------
-        nuclides : dict
+        nuclides : collections.OrderedDict
             Dictionary whose keys are nuclide names and values are 2-tuples of
             (nuclide, density)
 
@@ -446,9 +413,9 @@ class Cell(object):
         elif self.fill_type == 'void':
             pass
         else:
-            if self.volume_information is not None:
-                volume = self.volume_information['volume'][0]
-                for name, atoms in self.volume_information['atoms']:
+            if self._atoms is not None:
+                volume = self.volume
+                for name, atoms in self._atoms.items():
                     nuclide = openmc.Nuclide(name)
                     density = 1.0e-24 * atoms[0]/volume  # density in atoms/b-cm
                     nuclides[name] = (nuclide, density)
@@ -467,7 +434,7 @@ class Cell(object):
 
         Returns
         -------
-        cells : dict
+        cells : collections.orderedDict
             Dictionary whose keys are cell IDs and values are :class:`Cell`
             instances
 
@@ -485,20 +452,23 @@ class Cell(object):
 
         Returns
         -------
-        materials : dict
+        materials : collections.OrderedDict
             Dictionary whose keys are material IDs and values are
             :class:`Material` instances
 
         """
-
         materials = OrderedDict()
         if self.fill_type == 'material':
             materials[self.fill.id] = self.fill
-
-        # Append all Cells in each Cell in the Universe to the dictionary
-        cells = self.get_all_cells()
-        for cell in cells.values():
-            materials.update(cell.get_all_materials())
+        elif self.fill_type == 'distribmat':
+            for m in self.fill:
+                if m is not None:
+                    materials[m.id] = m
+        else:
+            # Append all Cells in each Cell in the Universe to the dictionary
+            cells = self.get_all_cells()
+            for cell in cells.values():
+                materials.update(cell.get_all_materials())
 
         return materials
 
@@ -508,7 +478,7 @@ class Cell(object):
 
         Returns
         -------
-        universes : dict
+        universes : collections.OrderedDict
             Dictionary whose keys are universe IDs and values are
             :class:`Universe` instances
 
@@ -563,7 +533,7 @@ class Cell(object):
                 if isinstance(node, Halfspace):
                     path = "./surface[@id='{}']".format(node.surface.id)
                     if xml_element.find(path) is None:
-                        xml_element.append(node.surface.create_xml_subelement())
+                        xml_element.append(node.surface.to_xml_element())
                 elif isinstance(node, Complement):
                     create_surface_elements(node.node, element)
                 else:

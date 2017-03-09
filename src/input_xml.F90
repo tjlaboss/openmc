@@ -10,14 +10,15 @@ module input_xml
   use energy_grid,      only: grid_method, n_log_bins
   use error,            only: fatal_error, warning
   use geometry_header,  only: Cell, Lattice, RectLattice, HexLattice, &
-                              get_temperatures
+                              get_temperatures, root_universe
   use global
   use hdf5_interface
   use list_header,      only: ListChar, ListInt, ListReal
   use mesh_header,      only: RegularMesh
+  use message_passing
   use mgxs_data,        only: create_macro_xs, read_mgxs
   use multipole,        only: multipole_read
-  use output,           only: write_message
+  use output,           only: write_message, title, header
   use plot_header
   use random_lcg,       only: prn, seed
   use surface_header
@@ -33,9 +34,6 @@ module input_xml
 
   implicit none
   save
-
-  type(DictIntInt) :: cells_in_univ_dict ! Used to count how many cells each
-                                         ! universe contains
 
 contains
 
@@ -78,33 +76,31 @@ contains
     integer :: temp_int
     integer :: temp_int_array3(3)
     integer, allocatable :: temp_int_array(:)
-    integer(8) :: temp_long
     real(8), allocatable :: temp_real(:)
     integer :: n_tracks
     logical :: file_exists
     character(MAX_WORD_LEN) :: type
     character(MAX_LINE_LEN) :: filename
-    type(Node), pointer :: doc            => null()
-    type(Node), pointer :: node_mode      => null()
-    type(Node), pointer :: node_source    => null()
-    type(Node), pointer :: node_space     => null()
-    type(Node), pointer :: node_angle     => null()
-    type(Node), pointer :: node_dist      => null()
-    type(Node), pointer :: node_cutoff    => null()
-    type(Node), pointer :: node_entropy   => null()
-    type(Node), pointer :: node_ufs       => null()
-    type(Node), pointer :: node_sp        => null()
-    type(Node), pointer :: node_output    => null()
-    type(Node), pointer :: node_verb      => null()
-    type(Node), pointer :: node_res_scat  => null()
-    type(Node), pointer :: node_scatterer => null()
-    type(Node), pointer :: node_trigger   => null()
-    type(Node), pointer :: node_keff_trigger => null()
-    type(Node), pointer :: node_vol => null()
-    type(Node), pointer :: node_tab_leg => null()
-    type(NodeList), pointer :: node_scat_list => null()
-    type(NodeList), pointer :: node_source_list => null()
-    type(NodeList), pointer :: node_vol_list => null()
+    type(XMLDocument) :: doc
+    type(XMLNode) :: root
+    type(XMLNode) :: node_mode
+    type(XMLNode) :: node_source
+    type(XMLNode) :: node_space
+    type(XMLNode) :: node_angle
+    type(XMLNode) :: node_dist
+    type(XMLNode) :: node_cutoff
+    type(XMLNode) :: node_entropy
+    type(XMLNode) :: node_ufs
+    type(XMLNode) :: node_sp
+    type(XMLNode) :: node_output
+    type(XMLNode) :: node_res_scat
+    type(XMLNode) :: node_scatterer
+    type(XMLNode) :: node_trigger
+    type(XMLNode) :: node_vol
+    type(XMLNode) :: node_tab_leg
+    type(XMLNode), allocatable :: node_scat_list(:)
+    type(XMLNode), allocatable :: node_source_list(:)
+    type(XMLNode), allocatable :: node_vol_list(:)
 
     ! Check if settings.xml exists
     filename = trim(path_input) // "settings.xml"
@@ -120,16 +116,27 @@ contains
         ! The settings.xml file is optional if we just want to make a plot.
         return
       end if
-    else
-      call write_message("Reading settings XML file...", 5)
     end if
 
     ! Parse settings.xml file
-    call open_xmldoc(doc, filename)
+    call doc % load_file(filename)
+    root = doc % document_element()
+
+    ! Verbosity
+    if (check_for_node(root, "verbosity")) then
+      call get_node_value(root, "verbosity", verbosity)
+    end if
+
+    ! To this point, we haven't displayed any output since we didn't know what
+    ! the verbosity is. Now that we checked for it, show the title if necessary
+    if (master) then
+      if (verbosity >= 2) call title()
+    end if
+    call write_message("Reading settings XML file...", 5)
 
     ! Find if a multi-group or continuous-energy simulation is desired
-    if (check_for_node(doc, "energy_mode")) then
-      call get_node_value(doc, "energy_mode", temp_str)
+    if (check_for_node(root, "energy_mode")) then
+      call get_node_value(root, "energy_mode", temp_str)
       temp_str = trim(to_lower(temp_str))
       if (temp_str == "mg" .or. temp_str == "multi-group") then
         run_CE = .false.
@@ -139,24 +146,24 @@ contains
     end if
 
     ! Look for deprecated cross_sections.xml file in settings.xml
-    if (check_for_node(doc, "cross_sections")) then
+    if (check_for_node(root, "cross_sections")) then
       call warning("Setting cross_sections in settings.xml has been deprecated.&
            & The cross_sections are now set in materials.xml and the &
            &cross_sections input to materials.xml and the OPENMC_CROSS_SECTIONS&
            & environment variable will take precendent over setting &
            &cross_sections in settings.xml.")
-      call get_node_value(doc, "cross_sections", path_cross_sections)
+      call get_node_value(root, "cross_sections", path_cross_sections)
     end if
 
     ! Look for deprecated windowed_multipole file in settings.xml
     if (run_mode /= MODE_PLOTTING) then
-      if (check_for_node(doc, "multipole_library")) then
+      if (check_for_node(root, "multipole_library")) then
         call warning("Setting multipole_library in settings.xml has been &
              &deprecated. The multipole_library is now set in materials.xml and&
              & the multipole_library input to materials.xml and the &
              &OPENMC_MULTIPOLE_LIBRARY environment variable will take &
              &precendent over setting multipole_library in settings.xml.")
-        call get_node_value(doc, "multipole_library", path_multipole)
+        call get_node_value(root, "multipole_library", path_multipole)
       end if
       if (.not. ends_with(path_multipole, "/")) &
            path_multipole = trim(path_multipole) // "/"
@@ -164,8 +171,8 @@ contains
 
     if (.not. run_CE) then
       ! Scattering Treatments
-      if (check_for_node(doc, "max_order")) then
-        call get_node_value(doc, "max_order", max_order)
+      if (check_for_node(root, "max_order")) then
+        call get_node_value(root, "max_order", max_order)
       else
         ! Set to default of largest int - 1, which means to use whatever is
         ! contained in library.
@@ -180,30 +187,20 @@ contains
 
     ! Set output directory if a path has been specified on the <output_path>
     ! element
-    if (check_for_node(doc, "output_path")) then
-      call get_node_value(doc, "output_path", path_output)
+    if (check_for_node(root, "output_path")) then
+      call get_node_value(root, "output_path", path_output)
       if (.not. ends_with(path_output, "/")) &
            path_output = trim(path_output) // "/"
     end if
 
     ! Check for a trigger node and get trigger information
-    if (check_for_node(doc, "trigger")) then
-      call get_node_ptr(doc, "trigger", node_trigger)
+    if (check_for_node(root, "trigger")) then
+      node_trigger = root % child("trigger")
 
       ! Check if trigger(s) are to be turned on
-      call get_node_value(node_trigger, "active", temp_str)
-      temp_str = trim(to_lower(temp_str))
-
-      if (temp_str == 'true' .or. temp_str == '1') then
-        trigger_on = .true.
-      elseif (temp_str == 'false' .or. temp_str == '0') then
-        trigger_on = .false.
-      else
-        call fatal_error("Unrecognized trigger active: " // temp_str)
-      end if
+      call get_node_value(node_trigger, "active", trigger_on)
 
       if (trigger_on) then
-
         if (check_for_node(node_trigger, "max_batches") )then
           call get_node_value(node_trigger, "max_batches", n_max_batches)
         else
@@ -223,127 +220,66 @@ contains
       end if
     end if
 
-    ! Make sure that either eigenvalue or fixed source was specified
-    if (.not. check_for_node(doc, "eigenvalue") .and. &
-         .not. check_for_node(doc, "fixed_source")) then
-      call fatal_error("<eigenvalue> or <fixed_source> not specified.")
-    end if
+    ! Check run mode if it hasn't been set from the command line
+    if (run_mode == NONE) then
+      if (check_for_node(root, "run_mode")) then
+        call get_node_value(root, "run_mode", temp_str)
+        select case (to_lower(temp_str))
+        case ("eigenvalue")
+          run_mode = MODE_EIGENVALUE
+        case ("fixed source")
+          run_mode = MODE_FIXEDSOURCE
+        case ("plot")
+          run_mode = MODE_PLOTTING
+        case ("particle restart")
+          run_mode = MODE_PARTICLE
+        case ("volume")
+          run_mode = MODE_VOLUME
+        case default
+          call fatal_error("Unrecognized run mode: " // &
+               trim(temp_str) // ".")
+        end select
 
-    ! Eigenvalue information
-    if (check_for_node(doc, "eigenvalue")) then
-      ! Set run mode
-      if (run_mode == NONE) run_mode = MODE_EIGENVALUE
+        ! Assume XML specifics <particles>, <batches>, etc. directly
+        node_mode = root
+      else
+        call warning("<run_mode> should be specified.")
 
-      ! Get pointer to eigenvalue XML block
-      call get_node_ptr(doc, "eigenvalue", node_mode)
-
-      ! Check number of particles
-      if (.not. check_for_node(node_mode, "particles")) then
-        call fatal_error("Need to specify number of particles per generation.")
-      end if
-
-      ! Get number of particles
-      call get_node_value(node_mode, "particles", temp_long)
-
-      ! If the number of particles was specified as a command-line argument, we
-      ! don't set it here
-      if (n_particles == 0) n_particles = temp_long
-
-      ! Get number of basic batches
-      call get_node_value(node_mode, "batches", n_batches)
-      if (.not. trigger_on) then
-        n_max_batches = n_batches
-      end if
-
-      ! Get number of inactive batches
-      call get_node_value(node_mode, "inactive", n_inactive)
-      n_active = n_batches - n_inactive
-      if (check_for_node(node_mode, "generations_per_batch")) then
-        call get_node_value(node_mode, "generations_per_batch", gen_per_batch)
-      end if
-
-      ! Allocate array for batch keff and entropy
-      allocate(k_generation(n_max_batches*gen_per_batch))
-      allocate(entropy(n_max_batches*gen_per_batch))
-      entropy = ZERO
-
-      ! Get the trigger information for keff
-      if (check_for_node(node_mode, "keff_trigger")) then
-        call get_node_ptr(node_mode, "keff_trigger", node_keff_trigger)
-
-        if (check_for_node(node_keff_trigger, "type")) then
-          call get_node_value(node_keff_trigger, "type", temp_str)
-          temp_str = trim(to_lower(temp_str))
-
-          select case (temp_str)
-          case ('std_dev')
-            keff_trigger % trigger_type = STANDARD_DEVIATION
-          case ('variance')
-            keff_trigger % trigger_type = VARIANCE
-          case ('rel_err')
-            keff_trigger % trigger_type = RELATIVE_ERROR
-          case default
-            call fatal_error("Unrecognized keff trigger type " // temp_str)
-          end select
-
+        ! Make sure that either eigenvalue or fixed source was specified
+        node_mode = root % child("eigenvalue")
+        if (node_mode % associated()) then
+          if (run_mode == NONE) run_mode = MODE_EIGENVALUE
         else
-          call fatal_error("Specify keff trigger type in settings XML")
-        end if
-
-        if (check_for_node(node_keff_trigger, "threshold")) then
-          call get_node_value(node_keff_trigger, "threshold", &
-               keff_trigger % threshold)
-        else
-          call fatal_error("Specify keff trigger threshold in settings XML")
+          node_mode = root % child("fixed_source")
+          if (node_mode % associated()) then
+            if (run_mode == NONE) run_mode = MODE_FIXEDSOURCE
+          else
+            call fatal_error("<eigenvalue> or <fixed_source> not specified.")
+          end if
         end if
       end if
     end if
 
-    ! Fixed source calculation information
-    if (check_for_node(doc, "fixed_source")) then
-      ! Set run mode
-      if (run_mode == NONE) run_mode = MODE_FIXEDSOURCE
+    if (run_mode == MODE_EIGENVALUE .or. run_mode == MODE_FIXEDSOURCE) then
+      ! Read run parameters
+      call get_run_parameters(node_mode)
 
-      ! Get pointer to fixed_source XML block
-      call get_node_ptr(doc, "fixed_source", node_mode)
-
-      ! Check number of particles
-      if (.not. check_for_node(node_mode, "particles")) then
-        call fatal_error("Need to specify number of particles per batch.")
+      ! Check number of active batches, inactive batches, and particles
+      if (n_active <= 0) then
+        call fatal_error("Number of active batches must be greater than zero.")
+      elseif (n_inactive < 0) then
+        call fatal_error("Number of inactive batches must be non-negative.")
+      elseif (n_particles <= 0) then
+        call fatal_error("Number of particles must be greater than zero.")
       end if
-
-      ! Get number of particles
-      call get_node_value(node_mode, "particles", temp_long)
-
-      ! If the number of particles was specified as a command-line argument, we
-      ! don't set it here
-      if (n_particles == 0) n_particles = temp_long
-
-      ! Copy batch information
-      call get_node_value(node_mode, "batches", n_batches)
-      if (.not. trigger_on) then
-        n_max_batches = n_batches
-      end if
-      n_active = n_batches
-      n_inactive    = 0
-      gen_per_batch = 1
-    end if
-
-    ! Check number of active batches, inactive batches, and particles
-    if (n_active <= 0) then
-      call fatal_error("Number of active batches must be greater than zero.")
-    elseif (n_inactive < 0) then
-      call fatal_error("Number of inactive batches must be non-negative.")
-    elseif (n_particles <= 0) then
-      call fatal_error("Number of particles must be greater than zero.")
     end if
 
     ! Copy random number seed if specified
-    if (check_for_node(doc, "seed")) call get_node_value(doc, "seed", seed)
+    if (check_for_node(root, "seed")) call get_node_value(root, "seed", seed)
 
     ! Number of bins for logarithmic grid
-    if (check_for_node(doc, "log_grid_bins")) then
-      call get_node_value(doc, "log_grid_bins", n_log_bins)
+    if (check_for_node(root, "log_grid_bins")) then
+      call get_node_value(root, "log_grid_bins", n_log_bins)
       if (n_log_bins < 1) then
         call fatal_error("Number of bins for logarithmic grid must be &
              &greater than zero.")
@@ -352,17 +288,11 @@ contains
       n_log_bins = 8000
     end if
 
-    ! Verbosity
-    if (check_for_node(doc, "verbosity")) then
-      call get_node_ptr(doc, "verbosity", node_verb)
-      call get_node_value(node_verb, "value", verbosity)
-    end if
-
     ! Number of OpenMP threads
-    if (check_for_node(doc, "threads")) then
+    if (check_for_node(root, "threads")) then
 #ifdef _OPENMP
       if (n_threads == NONE) then
-        call get_node_value(doc, "threads", n_threads)
+        call get_node_value(root, "threads", n_threads)
         if (n_threads < 1) then
           call fatal_error("Invalid number of threads: " // to_str(n_threads))
         end if
@@ -377,9 +307,12 @@ contains
     ! EXTERNAL SOURCE
 
     ! Get point to list of <source> elements and make sure there is at least one
-    call get_node_list(doc, "source", node_source_list)
-    n = get_list_size(node_source_list)
-    if (n == 0) call fatal_error("No source specified in settings XML file.")
+    call get_node_list(root, "source", node_source_list)
+    n = size(node_source_list)
+
+    if (run_mode == MODE_EIGENVALUE .or. run_mode == MODE_FIXEDSOURCE) then
+      if (n == 0) call fatal_error("No source specified in settings XML file.")
+    end if
 
     ! Allocate array for sources
     allocate(external_source(n))
@@ -387,14 +320,11 @@ contains
     ! Read each source
     do i = 1, n
       ! Get pointer to source
-      call get_list_item(node_source_list, i, node_source)
+      node_source = node_source_list(i)
 
       ! Check if we want to write out source
       if (check_for_node(node_source, "write_initial")) then
-        call get_node_value(node_source, "write_initial", temp_str)
-        temp_str = to_lower(temp_str)
-        if (trim(temp_str) == 'true' .or. trim(temp_str) == '1') &
-             write_initial_source = .true.
+        call get_node_value(node_source, "write_initial", write_initial_source)
       end if
 
       ! Check for source strength
@@ -422,7 +352,7 @@ contains
         if (check_for_node(node_source, "space")) then
 
           ! Get pointer to spatial distribution
-          call get_node_ptr(node_source, "space", node_space)
+          node_space = node_source % child("space")
 
           ! Check for type of spatial distribution
           type = ''
@@ -454,7 +384,7 @@ contains
           type is (CartesianIndependent)
             ! Read distribution for x coordinate
             if (check_for_node(node_space, "x")) then
-              call get_node_ptr(node_space, "x", node_dist)
+              node_dist = node_space % child("x")
               call distribution_from_xml(space%x, node_dist)
             else
               allocate(Discrete :: space%x)
@@ -468,7 +398,7 @@ contains
 
             ! Read distribution for y coordinate
             if (check_for_node(node_space, "y")) then
-              call get_node_ptr(node_space, "y", node_dist)
+              node_dist = node_space % child("y")
               call distribution_from_xml(space%y, node_dist)
             else
               allocate(Discrete :: space%y)
@@ -481,7 +411,7 @@ contains
             end if
 
             if (check_for_node(node_space, "z")) then
-              call get_node_ptr(node_space, "z", node_dist)
+              node_dist = node_space % child("z")
               call distribution_from_xml(space%z, node_dist)
             else
               allocate(Discrete :: space%z)
@@ -495,7 +425,7 @@ contains
 
           type is (SpatialBox)
             ! Make sure correct number of parameters are given
-            if (get_arraysize_double(node_space, "parameters") /= 6) then
+            if (node_word_count(node_space, "parameters") /= 6) then
               call fatal_error('Box/fission spatial source must have &
                    &six parameters specified.')
             end if
@@ -509,7 +439,7 @@ contains
 
           type is (SpatialPoint)
             ! Make sure correct number of parameters are given
-            if (get_arraysize_double(node_space, "parameters") /= 3) then
+            if (node_word_count(node_space, "parameters") /= 3) then
               call fatal_error('Point spatial source must have &
                    &three parameters specified.')
             end if
@@ -531,7 +461,7 @@ contains
         if (check_for_node(node_source, "angle")) then
 
           ! Get pointer to angular distribution
-          call get_node_ptr(node_source, "angle", node_angle)
+          node_angle = node_source % child("angle")
 
           ! Check for type of angular distribution
           type = ''
@@ -554,7 +484,7 @@ contains
 
           ! Read reference directional unit vector
           if (check_for_node(node_angle, "reference_uvw")) then
-            n = get_arraysize_double(node_angle, "reference_uvw")
+            n = node_word_count(node_angle, "reference_uvw")
             if (n /= 3) then
               call fatal_error('Angular distribution reference direction must have &
                    &three parameters specified.')
@@ -574,7 +504,7 @@ contains
 
           type is (PolarAzimuthal)
             if (check_for_node(node_angle, "mu")) then
-              call get_node_ptr(node_angle, "mu", node_dist)
+              node_dist = node_angle % child("mu")
               call distribution_from_xml(angle%mu, node_dist)
             else
               allocate(Uniform :: angle%mu)
@@ -586,7 +516,7 @@ contains
             end if
 
             if (check_for_node(node_angle, "phi")) then
-              call get_node_ptr(node_angle, "phi", node_dist)
+              node_dist = node_angle % child("phi")
               call distribution_from_xml(angle%phi, node_dist)
             else
               allocate(Uniform :: angle%phi)
@@ -606,7 +536,7 @@ contains
 
         ! Determine external source energy distribution
         if (check_for_node(node_source, "energy")) then
-          call get_node_ptr(node_source, "energy", node_dist)
+          node_dist = node_source % child("energy")
           call distribution_from_xml(external_source(i)%energy, node_dist)
         else
           ! Default to a Watt spectrum with parameters 0.988 MeV and 2.249 MeV^-1
@@ -621,24 +551,18 @@ contains
     end do
 
     ! Survival biasing
-    if (check_for_node(doc, "survival_biasing")) then
-      call get_node_value(doc, "survival_biasing", temp_str)
-      temp_str = to_lower(temp_str)
-      if (trim(temp_str) == 'true' .or. trim(temp_str) == '1') &
-           survival_biasing = .true.
+    if (check_for_node(root, "survival_biasing")) then
+      call get_node_value(root, "survival_biasing", survival_biasing)
     end if
 
     ! Probability tables
-    if (check_for_node(doc, "ptables")) then
-      call get_node_value(doc, "ptables", temp_str)
-      temp_str = to_lower(temp_str)
-      if (trim(temp_str) == 'false' .or. trim(temp_str) == '0') &
-           urr_ptables_on = .false.
+    if (check_for_node(root, "ptables")) then
+      call get_node_value(root, "ptables", urr_ptables_on)
     end if
 
     ! Cutoffs
-    if (check_for_node(doc, "cutoff")) then
-      call get_node_ptr(doc, "cutoff", node_cutoff)
+    if (check_for_node(root, "cutoff")) then
+      node_cutoff = root % child("cutoff")
       if (check_for_node(node_cutoff, "weight")) then
         call get_node_value(node_cutoff, "weight", weight_cutoff)
       end if
@@ -651,17 +575,17 @@ contains
     end if
 
     ! Particle trace
-    if (check_for_node(doc, "trace")) then
-      call get_node_array(doc, "trace", temp_int_array3)
+    if (check_for_node(root, "trace")) then
+      call get_node_array(root, "trace", temp_int_array3)
       trace_batch    = temp_int_array3(1)
       trace_gen      = temp_int_array3(2)
       trace_particle = int(temp_int_array3(3), 8)
     end if
 
     ! Particle tracks
-    if (check_for_node(doc, "track")) then
+    if (check_for_node(root, "track")) then
       ! Make sure that there are three values per particle
-      n_tracks = get_arraysize_integer(doc, "track")
+      n_tracks = node_word_count(root, "track")
       if (mod(n_tracks, 3) /= 0) then
         call fatal_error("Number of integers specified in 'track' is not &
              &divisible by 3.  Please provide 3 integers per particle to be &
@@ -670,7 +594,7 @@ contains
 
       ! Allocate space and get list of tracks
       allocate(temp_int_array(n_tracks))
-      call get_node_array(doc, "track", temp_int_array)
+      call get_node_array(root, "track", temp_int_array)
 
       ! Reshape into track_identifiers
       allocate(track_identifiers(3, n_tracks/3))
@@ -678,16 +602,16 @@ contains
     end if
 
     ! Shannon Entropy mesh
-    if (check_for_node(doc, "entropy")) then
+    if (check_for_node(root, "entropy")) then
 
       ! Get pointer to entropy node
-      call get_node_ptr(doc, "entropy", node_entropy)
+      node_entropy = root % child("entropy")
 
       ! Check to make sure enough values were supplied
-      if (get_arraysize_double(node_entropy, "lower_left") /= 3) then
+      if (node_word_count(node_entropy, "lower_left") /= 3) then
         call fatal_error("Need to specify (x,y,z) coordinates of lower-left &
              &corner of Shannon entropy mesh.")
-      elseif (get_arraysize_double(node_entropy, "upper_right") /= 3) then
+      elseif (node_word_count(node_entropy, "upper_right") /= 3) then
         call fatal_error("Need to specify (x,y,z) coordinates of upper-right &
              &corner of Shannon entropy mesh.")
       end if
@@ -716,7 +640,7 @@ contains
       if (check_for_node(node_entropy, "dimension")) then
 
         ! If so, make sure proper number of values were given
-        if (get_arraysize_integer(node_entropy, "dimension") /= 3) then
+        if (node_word_count(node_entropy, "dimension") /= 3) then
           call fatal_error("Dimension of entropy mesh must be given as three &
                &integers.")
         end if
@@ -739,19 +663,19 @@ contains
     end if
 
     ! Uniform fission source weighting mesh
-    if (check_for_node(doc, "uniform_fs")) then
+    if (check_for_node(root, "uniform_fs")) then
 
       ! Get pointer to ufs node
-      call get_node_ptr(doc, "uniform_fs", node_ufs)
+      node_ufs = root % child("uniform_fs")
 
       ! Check to make sure enough values were supplied
-      if (get_arraysize_double(node_ufs, "lower_left") /= 3) then
+      if (node_word_count(node_ufs, "lower_left") /= 3) then
         call fatal_error("Need to specify (x,y,z) coordinates of lower-left &
              &corner of UFS mesh.")
-      elseif (get_arraysize_double(node_ufs, "upper_right") /= 3) then
+      elseif (node_word_count(node_ufs, "upper_right") /= 3) then
         call fatal_error("Need to specify (x,y,z) coordinates of upper-right &
              &corner of UFS mesh.")
-      elseif (get_arraysize_integer(node_ufs, "dimension") /= 3) then
+      elseif (node_word_count(node_ufs, "dimension") /= 3) then
         call fatal_error("Dimension of UFS mesh must be given as three &
              &integers.")
       end if
@@ -795,14 +719,14 @@ contains
     end if
 
     ! Check if the user has specified to write state points
-    if (check_for_node(doc, "state_point")) then
+    if (check_for_node(root, "state_point")) then
 
       ! Get pointer to state_point node
-      call get_node_ptr(doc, "state_point", node_sp)
+      node_sp = root % child("state_point")
 
       ! Determine number of batches at which to store state points
       if (check_for_node(node_sp, "batches")) then
-        n_state_points = get_arraysize_integer(node_sp, "batches")
+        n_state_points = node_word_count(node_sp, "batches")
       else
         n_state_points = 0
       end if
@@ -828,14 +752,14 @@ contains
     end if
 
     ! Check if the user has specified to write source points
-    if (check_for_node(doc, "source_point")) then
+    if (check_for_node(root, "source_point")) then
 
       ! Get pointer to source_point node
-      call get_node_ptr(doc, "source_point", node_sp)
+      node_sp = root % child("source_point")
 
       ! Determine number of batches at which to store source points
       if (check_for_node(node_sp, "batches")) then
-        n_source_points = get_arraysize_integer(node_sp, "batches")
+        n_source_points = node_word_count(node_sp, "batches")
       else
         n_source_points = 0
       end if
@@ -858,25 +782,14 @@ contains
 
       ! Check if the user has specified to write binary source file
       if (check_for_node(node_sp, "separate")) then
-        call get_node_value(node_sp, "separate", temp_str)
-        temp_str = to_lower(temp_str)
-        if (trim(temp_str) == 'true' .or. &
-             trim(temp_str) == '1') source_separate = .true.
+        call get_node_value(node_sp, "separate", source_separate)
       end if
       if (check_for_node(node_sp, "write")) then
-        call get_node_value(node_sp, "write", temp_str)
-        temp_str = to_lower(temp_str)
-        if (trim(temp_str) == 'false' .or. &
-             trim(temp_str) == '0') source_write = .false.
+        call get_node_value(node_sp, "write", source_write)
       end if
       if (check_for_node(node_sp, "overwrite_latest")) then
-        call get_node_value(node_sp, "overwrite_latest", temp_str)
-        temp_str = to_lower(temp_str)
-        if (trim(temp_str) == 'true' .or. &
-             trim(temp_str) == '1') then
-          source_latest = .true.
-          source_separate = .true.
-        end if
+        call get_node_value(node_sp, "overwrite_latest", source_latest)
+        source_separate = source_latest
       end if
     else
       ! If no <source_point> tag was present, by default we keep source bank in
@@ -903,68 +816,52 @@ contains
 
     ! Check if the user has specified to not reduce tallies at the end of every
     ! batch
-    if (check_for_node(doc, "no_reduce")) then
-      call get_node_value(doc, "no_reduce", temp_str)
-      temp_str = to_lower(temp_str)
-      if (trim(temp_str) == 'true' .or. trim(temp_str) == '1') &
-           reduce_tallies = .false.
+    if (check_for_node(root, "no_reduce")) then
+      call get_node_value(root, "no_reduce", reduce_tallies)
     end if
 
     ! Check if the user has specified to use confidence intervals for
     ! uncertainties rather than standard deviations
-    if (check_for_node(doc, "confidence_intervals")) then
-      call get_node_value(doc, "confidence_intervals", temp_str)
-      temp_str = to_lower(temp_str)
-      if (trim(temp_str) == 'true' .or. &
-           trim(temp_str) == '1') confidence_intervals = .true.
+    if (check_for_node(root, "confidence_intervals")) then
+      call get_node_value(root, "confidence_intervals", confidence_intervals)
     end if
 
     ! Check for output options
-    if (check_for_node(doc, "output")) then
+    if (check_for_node(root, "output")) then
 
       ! Get pointer to output node
-      call get_node_ptr(doc, "output", node_output)
+      node_output = root % child("output")
 
       ! Check for summary option
       if (check_for_node(node_output, "summary")) then
-        call get_node_value(node_output, "summary", temp_str)
-        temp_str = to_lower(temp_str)
-        if (trim(temp_str) == 'false' .or. &
-             trim(temp_str) == '0') output_summary = .false.
+        call get_node_value(node_output, "summary", output_summary)
       end if
 
       ! Check for ASCII tallies output option
       if (check_for_node(node_output, "tallies")) then
-        call get_node_value(node_output, "tallies", temp_str)
-        temp_str = to_lower(temp_str)
-        if (trim(temp_str) == 'false' .or. &
-             trim(temp_str) == '0') output_tallies = .false.
+        call get_node_value(node_output, "tallies", output_tallies)
       end if
     end if
 
     ! Check for cmfd run
-    if (check_for_node(doc, "run_cmfd")) then
-      call get_node_value(doc, "run_cmfd", temp_str)
-      temp_str = to_lower(temp_str)
-      if (trim(temp_str) == 'true' .or. trim(temp_str) == '1') then
-        cmfd_run = .true.
-      end if
+    if (check_for_node(root, "run_cmfd")) then
+      call get_node_value(root, "run_cmfd", cmfd_run)
     end if
 
     ! Resonance scattering parameters
-    if (check_for_node(doc, "resonance_scattering")) then
-      call get_node_ptr(doc, "resonance_scattering", node_res_scat)
+    if (check_for_node(root, "resonance_scattering")) then
+      node_res_scat = root % child("resonance_scattering")
       call get_node_list(node_res_scat, "scatterer", node_scat_list)
 
       ! check that a nuclide is specified
-      if (get_list_size(node_scat_list) >= 1) then
+      if (size(node_scat_list) >= 1) then
         treat_res_scat = .true.
-        n_res_scatterers_total = get_list_size(node_scat_list)
+        n_res_scatterers_total = size(node_scat_list)
 
         ! store 0K info for resonant scatterers
         allocate(nuclides_0K(n_res_scatterers_total))
         do i = 1, n_res_scatterers_total
-          call get_list_item(node_scat_list, i, node_scatterer)
+          node_scatterer = node_scat_list(i)
 
           ! check to make sure a nuclide is specified
           if (.not. check_for_node(node_scatterer, "nuclide")) then
@@ -1010,20 +907,20 @@ contains
       end if
     end if
 
-    call get_node_list(doc, "volume_calc", node_vol_list)
-    n = get_list_size(node_vol_list)
+    call get_node_list(root, "volume_calc", node_vol_list)
+    n = size(node_vol_list)
     allocate(volume_calcs(n))
     do i = 1, n
-      call get_list_item(node_vol_list, i, node_vol)
+      node_vol = node_vol_list(i)
       call volume_calcs(i) % from_xml(node_vol)
     end do
 
     ! Get temperature settings
-    if (check_for_node(doc, "temperature_default")) then
-      call get_node_value(doc, "temperature_default", temperature_default)
+    if (check_for_node(root, "temperature_default")) then
+      call get_node_value(root, "temperature_default", temperature_default)
     end if
-    if (check_for_node(doc, "temperature_method")) then
-      call get_node_value(doc, "temperature_method", temp_str)
+    if (check_for_node(root, "temperature_method")) then
+      call get_node_value(root, "temperature_method", temp_str)
       select case (to_lower(temp_str))
       case ('nearest')
         temperature_method = TEMPERATURE_NEAREST
@@ -1033,34 +930,22 @@ contains
         call fatal_error("Unknown temperature method: " // trim(temp_str))
       end select
     end if
-    if (check_for_node(doc, "temperature_tolerance")) then
-      call get_node_value(doc, "temperature_tolerance", temperature_tolerance)
+    if (check_for_node(root, "temperature_tolerance")) then
+      call get_node_value(root, "temperature_tolerance", temperature_tolerance)
     end if
-    if (check_for_node(doc, "temperature_multipole")) then
-      call get_node_value(doc, "temperature_multipole", temp_str)
-      select case (to_lower(temp_str))
-      case ('true', '1')
-        temperature_multipole = .true.
-      case ('false', '0')
-        temperature_multipole = .false.
-      case default
-        call fatal_error("Unrecognized value for <use_windowed_multipole> in &
-             &settings.xml")
-      end select
+    if (check_for_node(root, "temperature_multipole")) then
+      call get_node_value(root, "temperature_multipole", temperature_multipole)
     end if
 
     ! Check for tabular_legendre options
-    if (check_for_node(doc, "tabular_legendre")) then
+    if (check_for_node(root, "tabular_legendre")) then
 
       ! Get pointer to tabular_legendre node
-      call get_node_ptr(doc, "tabular_legendre", node_tab_leg)
+      node_tab_leg = root % child("tabular_legendre")
 
       ! Check for enable option
       if (check_for_node(node_tab_leg, "enable")) then
-        call get_node_value(node_tab_leg, "enable", temp_str)
-        temp_str = to_lower(temp_str)
-        if (trim(temp_str) == 'false' .or. &
-             trim(temp_str) == '0') legendre_to_tabular = .false.
+        call get_node_value(node_tab_leg, "enable", legendre_to_tabular)
       end if
 
       ! Check for the number of points
@@ -1076,21 +961,93 @@ contains
 
     ! Check whether create fission sites
     if (run_mode == MODE_FIXEDSOURCE) then
-      if (check_for_node(doc, "create_fission_neutrons")) then
-        call get_node_value(doc, "create_fission_neutrons", temp_str)
-        temp_str = to_lower(temp_str)
-        if (trim(temp_str) == 'true' .or. trim(temp_str) == '1') then
-          create_fission_neutrons = .true.
-        else if (trim(temp_str) == 'false' .or. trim(temp_str) == '0') then
-          create_fission_neutrons = .false.
-        end if
+      if (check_for_node(root, "create_fission_neutrons")) then
+        call get_node_value(root, "create_fission_neutrons", &
+             create_fission_neutrons)
       end if
     end if
 
     ! Close settings XML file
-    call close_xmldoc(doc)
+    call doc % clear()
 
   end subroutine read_settings_xml
+
+!===============================================================================
+! GET_RUN_PARAMETERS
+!===============================================================================
+
+  subroutine get_run_parameters(node_base)
+    type(XMLNode), intent(in) :: node_base
+
+    character(MAX_LINE_LEN) :: temp_str
+    type(XMLNode) :: node_keff_trigger
+
+    ! Check number of particles
+    if (.not. check_for_node(node_base, "particles")) then
+      call fatal_error("Need to specify number of particles.")
+    end if
+
+    ! Get number of particles if it wasn't specified as a command-line argument
+    if (n_particles == 0) then
+      call get_node_value(node_base, "particles", n_particles)
+    end if
+
+    ! Get number of basic batches
+    call get_node_value(node_base, "batches", n_batches)
+    if (.not. trigger_on) then
+      n_max_batches = n_batches
+    end if
+    n_inactive = 0
+    gen_per_batch = 1
+
+    ! Get number of inactive batches
+    if (run_mode == MODE_EIGENVALUE) then
+      call get_node_value(node_base, "inactive", n_inactive)
+      if (check_for_node(node_base, "generations_per_batch")) then
+        call get_node_value(node_base, "generations_per_batch", gen_per_batch)
+      end if
+
+      ! Allocate array for batch keff and entropy
+      allocate(k_generation(n_max_batches*gen_per_batch))
+      allocate(entropy(n_max_batches*gen_per_batch))
+      entropy = ZERO
+
+      ! Get the trigger information for keff
+      if (check_for_node(node_base, "keff_trigger")) then
+        node_keff_trigger = node_base % child("keff_trigger")
+
+        if (check_for_node(node_keff_trigger, "type")) then
+          call get_node_value(node_keff_trigger, "type", temp_str)
+          temp_str = trim(to_lower(temp_str))
+
+          select case (temp_str)
+          case ('std_dev')
+            keff_trigger % trigger_type = STANDARD_DEVIATION
+          case ('variance')
+            keff_trigger % trigger_type = VARIANCE
+          case ('rel_err')
+            keff_trigger % trigger_type = RELATIVE_ERROR
+          case default
+            call fatal_error("Unrecognized keff trigger type " // temp_str)
+          end select
+
+        else
+          call fatal_error("Specify keff trigger type in settings XML")
+        end if
+
+        if (check_for_node(node_keff_trigger, "threshold")) then
+          call get_node_value(node_keff_trigger, "threshold", &
+               keff_trigger % threshold)
+        else
+          call fatal_error("Specify keff trigger threshold in settings XML")
+        end if
+      end if
+    end if
+
+    ! Determine number of active batches
+    n_active = n_batches - n_inactive
+
+  end subroutine get_run_parameters
 
 !===============================================================================
 ! READ_GEOMETRY_XML reads data from a geometry.xml file and parses it, checking
@@ -1101,7 +1058,7 @@ contains
 
     integer :: i, j, k, m, i_x, i_a, input_index
     integer :: n, n_mats, n_x, n_y, n_z, n_rings, n_rlats, n_hlats
-    integer :: universe_num
+    integer :: univ_id
     integer :: n_cells_in_univ
     integer :: coeffs_reqd
     integer :: i_xmin, i_xmax, i_ymin, i_ymax, i_zmin, i_zmax
@@ -1114,20 +1071,26 @@ contains
     character(MAX_LINE_LEN) :: filename
     character(MAX_WORD_LEN) :: word
     character(MAX_WORD_LEN), allocatable :: sarray(:)
-    character(REGION_SPEC_LEN) :: region_spec
+    character(:), allocatable :: region_spec
     type(Cell),     pointer :: c
     class(Surface), pointer :: s
     class(Lattice), pointer :: lat
-    type(Node), pointer :: doc => null()
-    type(Node), pointer :: node_cell => null()
-    type(Node), pointer :: node_surf => null()
-    type(Node), pointer :: node_lat => null()
-    type(NodeList), pointer :: node_cell_list => null()
-    type(NodeList), pointer :: node_surf_list => null()
-    type(NodeList), pointer :: node_rlat_list => null()
-    type(NodeList), pointer :: node_hlat_list => null()
+    type(XMLDocument) :: doc
+    type(XMLNode) :: root
+    type(XMLNode) :: node_cell
+    type(XMLNode) :: node_surf
+    type(XMLNode) :: node_lat
+    type(XMLNode), allocatable :: node_cell_list(:)
+    type(XMLNode), allocatable :: node_surf_list(:)
+    type(XMLNode), allocatable :: node_rlat_list(:)
+    type(XMLNode), allocatable :: node_hlat_list(:)
     type(VectorInt) :: tokens
     type(VectorInt) :: rpn
+    type(VectorInt) :: fill_univ_ids ! List of fill universe IDs
+    type(VectorInt) :: univ_ids      ! List of all universe IDs
+    type(DictIntInt) :: cells_in_univ_dict ! Used to count how many cells each
+                                           ! universe contains
+
 
     ! Display output message
     call write_message("Reading geometry XML file...", 5)
@@ -1144,13 +1107,14 @@ contains
     end if
 
     ! Parse geometry.xml file
-    call open_xmldoc(doc, filename)
+    call doc % load_file(filename)
+    root = doc % document_element()
 
     ! Get pointer to list of XML <cell>
-    call get_node_list(doc, "cell", node_cell_list)
+    call get_node_list(root, "cell", node_cell_list)
 
     ! Get number of <cell> tags
-    n_cells = get_list_size(node_cell_list)
+    n_cells = size(node_cell_list)
 
     ! Check for no cells
     if (n_cells == 0) then
@@ -1174,7 +1138,7 @@ contains
       c % distribcell_index = NONE
 
       ! Get pointer to i-th cell node
-      call get_list_item(node_cell_list, i, node_cell)
+      node_cell = node_cell_list(i)
 
       ! Copy data into cells
       if (check_for_node(node_cell, "id")) then
@@ -1191,10 +1155,12 @@ contains
       if (check_for_node(node_cell, "universe")) then
         call get_node_value(node_cell, "universe", c % universe)
       else
-        c % universe = NONE
+        c % universe = 0
       end if
       if (check_for_node(node_cell, "fill")) then
         call get_node_value(node_cell, "fill", c % fill)
+        if (find(fill_univ_ids, c % fill) == -1) &
+             call fill_univ_ids % push_back(c % fill)
       else
         c % fill = NONE
       end if
@@ -1207,7 +1173,7 @@ contains
 
       ! Read material
       if (check_for_node(node_cell, "material")) then
-        n_mats = get_arraysize_string(node_cell, "material")
+        n_mats = node_word_count(node_cell, "material")
 
         if (n_mats > 0) then
           allocate(sarray(n_mats))
@@ -1254,15 +1220,17 @@ contains
       end if
 
       ! Check for region specification (also under deprecated name surfaces)
-      region_spec = ''
       if (check_for_node(node_cell, "surfaces")) then
         call warning("The use of 'surfaces' is deprecated and will be &
              &disallowed in a future release.  Use 'region' instead. The &
              &openmc-update-inputs utility can be used to automatically &
              &update geometry.xml files.")
+        region_spec = node_value_string(node_cell, "surfaces")
         call get_node_value(node_cell, "surfaces", region_spec)
       elseif (check_for_node(node_cell, "region")) then
-        call get_node_value(node_cell, "region", region_spec)
+        region_spec = node_value_string(node_cell, "region")
+      else
+        region_spec = ''
       end if
 
       if (len_trim(region_spec) > 0) then
@@ -1301,7 +1269,7 @@ contains
         end if
 
         ! Read number of rotation parameters
-        n = get_arraysize_double(node_cell, "rotation")
+        n = node_word_count(node_cell, "rotation")
         if (n /= 3) then
           call fatal_error("Incorrect number of rotation parameters on cell " &
                // to_str(c % id))
@@ -1337,7 +1305,7 @@ contains
         end if
 
         ! Read number of translation parameters
-        n = get_arraysize_double(node_cell, "translation")
+        n = node_word_count(node_cell, "translation")
         if (n /= 3) then
           call fatal_error("Incorrect number of translation parameters on &
                &cell " // to_str(c % id))
@@ -1352,7 +1320,7 @@ contains
       ! ERROR_REAL for now.  During initialization we'll replace ERROR_REAL with
       ! the temperature from the material data.
       if (check_for_node(node_cell, "temperature")) then
-        n = get_arraysize_double(node_cell, "temperature")
+        n = node_word_count(node_cell, "temperature")
         if (n > 0) then
           ! Make sure this is a "normal" cell.
           if (c % material(1) == NONE) call fatal_error("Cell " &
@@ -1388,15 +1356,16 @@ contains
       ! For cells, we also need to check if there's a new universe --
       ! also for every cell add 1 to the count of cells for the
       ! specified universe
-      universe_num = c % universe
-      if (.not. cells_in_univ_dict % has_key(universe_num)) then
+      univ_id = c % universe
+      if (.not. cells_in_univ_dict % has_key(univ_id)) then
         n_universes = n_universes + 1
         n_cells_in_univ = 1
-        call universe_dict % add_key(universe_num, n_universes)
+        call universe_dict % add_key(univ_id, n_universes)
+        call univ_ids % push_back(univ_id)
       else
-        n_cells_in_univ = 1 + cells_in_univ_dict % get_key(universe_num)
+        n_cells_in_univ = 1 + cells_in_univ_dict % get_key(univ_id)
       end if
-      call cells_in_univ_dict % add_key(universe_num, n_cells_in_univ)
+      call cells_in_univ_dict % add_key(univ_id, n_cells_in_univ)
 
     end do
 
@@ -1408,10 +1377,10 @@ contains
     boundary_exists = .false.
 
     ! get pointer to list of xml <surface>
-    call get_node_list(doc, "surface", node_surf_list)
+    call get_node_list(root, "surface", node_surf_list)
 
     ! Get number of <surface> tags
-    n_surfaces = get_list_size(node_surf_list)
+    n_surfaces = size(node_surf_list)
 
     ! Check for no surfaces
     if (n_surfaces == 0) then
@@ -1430,7 +1399,7 @@ contains
 
     do i = 1, n_surfaces
       ! Get pointer to i-th surface node
-      call get_list_item(node_surf_list, i, node_surf)
+      node_surf = node_surf_list(i)
 
       ! Copy and interpret surface type
       word = ''
@@ -1501,7 +1470,7 @@ contains
       ! have been specified for the given type of surface. Then copy
       ! surface coordinates.
 
-      n = get_arraysize_double(node_surf, "coeffs")
+      n = node_word_count(node_surf, "coeffs")
       if (n < coeffs_reqd) then
         call fatal_error("Not enough coefficients specified for surface: " &
              // trim(to_str(s%id)))
@@ -1694,12 +1663,12 @@ contains
     ! READ LATTICES FROM GEOMETRY.XML
 
     ! Get pointer to list of XML <lattice>
-    call get_node_list(doc, "lattice", node_rlat_list)
-    call get_node_list(doc, "hex_lattice", node_hlat_list)
+    call get_node_list(root, "lattice", node_rlat_list)
+    call get_node_list(root, "hex_lattice", node_hlat_list)
 
     ! Allocate lattices array
-    n_rlats = get_list_size(node_rlat_list)
-    n_hlats = get_list_size(node_hlat_list)
+    n_rlats = size(node_rlat_list)
+    n_hlats = size(node_hlat_list)
     n_lattices = n_rlats + n_hlats
     allocate(lattices(n_lattices))
 
@@ -1710,7 +1679,7 @@ contains
       type is (RectLattice)
 
       ! Get pointer to i-th lattice
-      call get_list_item(node_rlat_list, i, node_lat)
+      node_lat = node_rlat_list(i)
 
       ! ID of lattice
       if (check_for_node(node_lat, "id")) then
@@ -1731,7 +1700,7 @@ contains
       end if
 
       ! Read number of lattice cells in each dimension
-      n = get_arraysize_integer(node_lat, "dimension")
+      n = node_word_count(node_lat, "dimension")
       if (n == 2) then
         call get_node_array(node_lat, "dimension", lat % n_cells(1:2))
         lat % n_cells(3) = 1
@@ -1744,7 +1713,7 @@ contains
       end if
 
       ! Read lattice lower-left location
-      if (get_arraysize_double(node_lat, "lower_left") /= n) then
+      if (node_word_count(node_lat, "lower_left") /= n) then
         call fatal_error("Number of entries on <lower_left> must be the same &
              &as the number of entries on <dimension>.")
       end if
@@ -1759,12 +1728,12 @@ contains
              &in a future release.  Use 'pitch' instead.  The utility openmc/&
              &src/utils/update_inputs.py can be used to automatically update &
              &geometry.xml files.")
-        if (get_arraysize_double(node_lat, "width") /= n) then
+        if (node_word_count(node_lat, "width") /= n) then
           call fatal_error("Number of entries on <pitch> must be the same as &
                &the number of entries on <dimension>.")
         end if
 
-      else if (get_arraysize_double(node_lat, "pitch") /= n) then
+      else if (node_word_count(node_lat, "pitch") /= n) then
         call fatal_error("Number of entries on <pitch> must be the same as &
              &the number of entries on <dimension>.")
       end if
@@ -1791,7 +1760,7 @@ contains
       allocate(lat % universes(n_x, n_y, n_z))
 
       ! Check that number of universes matches size
-      n = get_arraysize_integer(node_lat, "universes")
+      n = node_word_count(node_lat, "universes")
       if (n /= n_x*n_y*n_z) then
         call fatal_error("Number of universes on <universes> does not match &
              &size of lattice " // trim(to_str(lat % id)) // ".")
@@ -1805,7 +1774,9 @@ contains
         do k = 0, n_y - 1
           do j = 1, n_x
             lat % universes(j, n_y - k, m) = &
-                 &temp_int_array(j + n_x*k + n_x*n_y*(m-1))
+                 temp_int_array(j + n_x*k + n_x*n_y*(m-1))
+            if (find(fill_univ_ids, lat % universes(j, n_y - k, m)) == -1) &
+                 call fill_univ_ids % push_back(lat % universes(j, n_y - k, m))
           end do
         end do
       end do
@@ -1815,6 +1786,8 @@ contains
       lat % outer = NO_OUTER_UNIVERSE
       if (check_for_node(node_lat, "outer")) then
         call get_node_value(node_lat, "outer", lat % outer)
+        if (find(fill_univ_ids, lat % outer) == -1) &
+             call fill_univ_ids % push_back(lat % outer)
       end if
 
       ! Check for 'outside' nodes which are no longer supported.
@@ -1838,7 +1811,7 @@ contains
       type is (HexLattice)
 
       ! Get pointer to i-th lattice
-      call get_list_item(node_hlat_list, i, node_lat)
+      node_lat = node_hlat_list(i)
 
       ! ID of lattice
       if (check_for_node(node_lat, "id")) then
@@ -1869,7 +1842,7 @@ contains
       end if
 
       ! Read lattice lower-left location
-      n = get_arraysize_double(node_lat, "center")
+      n = node_word_count(node_lat, "center")
       if (lat % is_3d .and. n /= 3) then
         call fatal_error("A hexagonal lattice with <n_axial> must have &
              &<center> specified by 3 numbers.")
@@ -1882,7 +1855,7 @@ contains
       call get_node_array(node_lat, "center", lat % center)
 
       ! Read lattice pitches
-      n = get_arraysize_double(node_lat, "pitch")
+      n = node_word_count(node_lat, "pitch")
       if (lat % is_3d .and. n /= 2) then
         call fatal_error("A hexagonal lattice with <n_axial> must have <pitch> &
               &specified by 2 numbers.")
@@ -1900,7 +1873,7 @@ contains
       allocate(lat % universes(2*n_rings - 1, 2*n_rings - 1, n_z))
 
       ! Check that number of universes matches size
-      n = get_arraysize_integer(node_lat, "universes")
+      n = node_word_count(node_lat, "universes")
       if (n /= (3*n_rings**2 - 3*n_rings + 1)*n_z) then
         call fatal_error("Number of universes on <universes> does not match &
              &size of lattice " // trim(to_str(lat % id)) // ".")
@@ -1931,7 +1904,9 @@ contains
           do j = 1, k
             ! Place universe in array.
             lat % universes(i_x + n_rings, i_a + n_rings, m) = &
-                 &temp_int_array(input_index)
+                 temp_int_array(input_index)
+            if (find(fill_univ_ids, temp_int_array(input_index)) == -1) &
+                 call fill_univ_ids % push_back(temp_int_array(input_index))
             ! Walk index to closest non-adjacent right neighbor.
             i_x = i_x + 2
             i_a = i_a - 1
@@ -1956,7 +1931,9 @@ contains
           do j = 1, n_rings - mod(k-1, 2)
             ! Place universe in array.
             lat % universes(i_x + n_rings, i_a + n_rings, m) = &
-                 &temp_int_array(input_index)
+                 temp_int_array(input_index)
+            if (find(fill_univ_ids, temp_int_array(input_index)) == -1) &
+                 call fill_univ_ids % push_back(temp_int_array(input_index))
             ! Walk index to closest non-adjacent right neighbor.
             i_x = i_x + 2
             i_a = i_a - 1
@@ -1976,7 +1953,9 @@ contains
           do j = 1, n_rings - k
             ! Place universe in array.
             lat % universes(i_x + n_rings, i_a + n_rings, m) = &
-                 &temp_int_array(input_index)
+                 temp_int_array(input_index)
+            if (find(fill_univ_ids, temp_int_array(input_index)) == -1) &
+                 call fill_univ_ids % push_back(temp_int_array(input_index))
             ! Walk index to closest non-adjacent right neighbor.
             i_x = i_x + 2
             i_a = i_a - 1
@@ -1994,6 +1973,8 @@ contains
       lat % outer = NO_OUTER_UNIVERSE
       if (check_for_node(node_lat, "outer")) then
         call get_node_value(node_lat, "outer", lat % outer)
+        if (find(fill_univ_ids, lat % outer) == -1) &
+             call fill_univ_ids % push_back(lat % outer)
       end if
 
       ! Check for 'outside' nodes which are no longer supported.
@@ -2010,8 +1991,49 @@ contains
       end select
     end do HEX_LATTICES
 
+    ! ==========================================================================
+    ! SETUP UNIVERSES
+
+    ! Allocate universes, universe cell arrays, and assign base universe
+    allocate(universes(n_universes))
+    do i = 1, n_universes
+      associate (u => universes(i))
+        u % id = univ_ids % data(i)
+
+        ! Allocate cell list
+        n_cells_in_univ = cells_in_univ_dict % get_key(u % id)
+        allocate(u % cells(n_cells_in_univ))
+        u % cells(:) = 0
+
+        ! Check whether universe is a fill universe
+        if (find(fill_univ_ids, u % id) == -1) then
+          if (root_universe > 0) then
+            call fatal_error("Two or more universes are not used as fill &
+                 &universes, so it is not possible to distinguish which one &
+                 &is the root universe.")
+          else
+            root_universe = i
+          end if
+        end if
+      end associate
+    end do
+
+    do i = 1, n_cells
+      ! Get index in universes array
+      j = universe_dict % get_key(cells(i) % universe)
+
+      ! Set the first zero entry in the universe cells array to the index in the
+      ! global cells array
+      associate (u => universes(j))
+        u % cells(find(u % cells, 0)) = i
+      end associate
+    end do
+
+    ! Clear dictionary
+    call cells_in_univ_dict%clear()
+
     ! Close geometry XML file
-    call close_xmldoc(doc)
+    call doc % clear()
 
   end subroutine read_geometry_xml
 
@@ -2030,7 +2052,8 @@ contains
     logical                 :: file_exists
     character(MAX_FILE_LEN) :: env_variable
     character(MAX_LINE_LEN) :: filename
-    type(Node), pointer     :: doc => null()
+    type(XMLDocument)       :: doc
+    type(XMLNode)           :: root
 
     ! Display output message
     call write_message("Reading materials XML file...", 5)
@@ -2044,12 +2067,13 @@ contains
     end if
 
     ! Parse materials.xml file
-    call open_xmldoc(doc, filename)
+    call doc % load_file(filename)
+    root = doc % document_element()
 
     ! Find cross_sections.xml file -- the first place to look is the
     ! materials.xml file. If no file is found there, then we check the
     ! OPENMC_CROSS_SECTIONS environment variable
-    if (.not. check_for_node(doc, "cross_sections")) then
+    if (.not. check_for_node(root, "cross_sections")) then
       ! No cross_sections.xml file specified in settings.xml, check
       ! environment variable
       if (run_CE) then
@@ -2088,25 +2112,25 @@ contains
         end if
       end if
     else
-      call get_node_value(doc, "cross_sections", path_cross_sections)
+      call get_node_value(root, "cross_sections", path_cross_sections)
     end if
 
     ! Find the windowed multipole library
     if (run_mode /= MODE_PLOTTING) then
-      if (.not. check_for_node(doc, "multipole_library")) then
+      if (.not. check_for_node(root, "multipole_library")) then
         ! No library location specified in materials.xml, check
         ! environment variable
         call get_environment_variable("OPENMC_MULTIPOLE_LIBRARY", env_variable)
         path_multipole = trim(env_variable)
       else
-        call get_node_value(doc, "multipole_library", path_multipole)
+        call get_node_value(root, "multipole_library", path_multipole)
       end if
       if (.not. ends_with(path_multipole, "/")) &
            path_multipole = trim(path_multipole) // "/"
     end if
 
     ! Close materials XML file
-    call close_xmldoc(doc)
+    call doc % clear()
 
     ! Now that the cross_sections.xml or mgxs.h5 has been located, read it in
     if (run_CE) then
@@ -2179,16 +2203,17 @@ contains
     type(VectorInt)         :: list_iso_lab ! temporary list of isotropic lab scatterers
     type(VectorReal)        :: densities    ! temporary list of nuclide densities
     type(Material), pointer :: mat => null()
-    type(Node), pointer :: doc => null()
-    type(Node), pointer :: node_mat => null()
-    type(Node), pointer :: node_dens => null()
-    type(Node), pointer :: node_nuc => null()
-    type(Node), pointer :: node_sab => null()
-    type(NodeList), pointer :: node_mat_list => null()
-    type(NodeList), pointer :: node_nuc_list => null()
-    type(NodeList), pointer :: node_ele_list => null()
-    type(NodeList), pointer :: node_macro_list => null()
-    type(NodeList), pointer :: node_sab_list => null()
+    type(XMLDocument) :: doc
+    type(XMLNode) :: root
+    type(XMLNode) :: node_mat
+    type(XMLNode) :: node_dens
+    type(XMLNode) :: node_nuc
+    type(XMLNode) :: node_sab
+    type(XMLNode), allocatable :: node_mat_list(:)
+    type(XMLNode), allocatable :: node_nuc_list(:)
+    type(XMLNode), allocatable :: node_ele_list(:)
+    type(XMLNode), allocatable :: node_macro_list(:)
+    type(XMLNode), allocatable :: node_sab_list(:)
 
     ! Check is materials.xml exists
     filename = trim(path_input) // "materials.xml"
@@ -2199,13 +2224,14 @@ contains
     end if
 
     ! Parse materials.xml file
-    call open_xmldoc(doc, filename)
+    call doc % load_file(filename)
+    root = doc % document_element()
 
     ! Get pointer to list of XML <material>
-    call get_node_list(doc, "material", node_mat_list)
+    call get_node_list(root, "material", node_mat_list)
 
     ! Allocate cells array
-    n_materials = get_list_size(node_mat_list)
+    n_materials = size(node_mat_list)
     allocate(materials(n_materials))
     allocate(material_temps(n_materials))
 
@@ -2217,13 +2243,20 @@ contains
       mat => materials(i)
 
       ! Get pointer to i-th material node
-      call get_list_item(node_mat_list, i, node_mat)
+      node_mat = node_mat_list(i)
 
       ! Copy material id
       if (check_for_node(node_mat, "id")) then
         call get_node_value(node_mat, "id", mat % id)
       else
         call fatal_error("Must specify id of material in materials XML file")
+      end if
+
+      ! Check if material is depletable
+      if (check_for_node(node_mat, "depletable")) then
+        call get_node_value(node_mat, "depletable", temp_str)
+        if (to_lower(temp_str) == "true" .or. temp_str == "1") &
+             mat % depletable = .true.
       end if
 
       ! Check to make sure 'id' hasn't been used
@@ -2246,7 +2279,7 @@ contains
 
       ! Get pointer to density element
       if (check_for_node(node_mat, "density")) then
-        call get_node_ptr(node_mat, "density", node_dens)
+        node_dens = node_mat % child("density")
       else
         call fatal_error("Must specify density element in material " &
              // trim(to_str(mat % id)))
@@ -2301,7 +2334,7 @@ contains
       ! Issue error if elements are provided
       call get_node_list(node_mat, "element", node_ele_list)
 
-      if (get_list_size(node_ele_list) > 0) then
+      if (size(node_ele_list) > 0) then
         call fatal_error("Unable to add an element to material " &
              // trim(to_str(mat % id)) // " since the element option has &
              &been removed from the xml input. Elements can only be added via &
@@ -2325,15 +2358,15 @@ contains
       ! as nuclides internally.
       ! Get pointer list of XML <macroscopic>
       call get_node_list(node_mat, "macroscopic", node_macro_list)
-      if (run_CE .and. (get_list_size(node_macro_list) > 0)) then
+      if (run_CE .and. (size(node_macro_list) > 0)) then
         call fatal_error("Macroscopic can not be used in continuous-energy&
                          & mode!")
-      else if (get_list_size(node_macro_list) > 1) then
+      else if (size(node_macro_list) > 1) then
         call fatal_error("Only one macroscopic object permitted per material, " &
              // trim(to_str(mat % id)))
-      else if (get_list_size(node_macro_list) == 1) then
+      else if (size(node_macro_list) == 1) then
 
-        call get_list_item(node_macro_list, 1, node_nuc)
+        node_nuc = node_macro_list(1)
 
         ! Check for empty name on nuclide
         if (.not. check_for_node(node_nuc, "name")) then
@@ -2361,9 +2394,9 @@ contains
         call get_node_list(node_mat, "nuclide", node_nuc_list)
 
         ! Create list of nuclides based on those specified
-        INDIVIDUAL_NUCLIDES: do j = 1, get_list_size(node_nuc_list)
+        INDIVIDUAL_NUCLIDES: do j = 1, size(node_nuc_list)
           ! Combine nuclide identifier and cross section and copy into names
-          call get_list_item(node_nuc_list, j, node_nuc)
+          node_nuc = node_nuc_list(j)
 
           ! Check for empty name on nuclide
           if (.not. check_for_node(node_nuc, "name")) then
@@ -2498,7 +2531,7 @@ contains
         ! Get pointer list to XML <sab>
         call get_node_list(node_mat, "sab", node_sab_list)
 
-        n_sab = get_list_size(node_sab_list)
+        n_sab = size(node_sab_list)
         if (n_sab > 0) then
           ! Set number of S(a,b) tables
           mat % n_sab = n_sab
@@ -2512,7 +2545,7 @@ contains
 
           do j = 1, n_sab
             ! Get pointer to S(a,b) table
-            call get_list_item(node_sab_list, j, node_sab)
+            node_sab = node_sab_list(j)
 
             ! Determine name of S(a,b) table
             if (.not. check_for_node(node_sab, "name")) then
@@ -2562,7 +2595,7 @@ contains
     n_sab_tables     = index_sab
 
     ! Close materials XML file
-    call close_xmldoc(doc)
+    call doc % clear()
 
   end subroutine read_materials_xml
 
@@ -2610,17 +2643,18 @@ contains
     type(TallyObject),    pointer :: t
     type(RegularMesh), pointer :: m
     type(TallyFilterContainer), allocatable :: filters(:) ! temporary filters
-    type(Node), pointer :: doc => null()
-    type(Node), pointer :: node_mesh => null()
-    type(Node), pointer :: node_tal => null()
-    type(Node), pointer :: node_filt => null()
-    type(Node), pointer :: node_trigger => null()
-    type(Node), pointer :: node_deriv => null()
-    type(NodeList), pointer :: node_mesh_list => null()
-    type(NodeList), pointer :: node_tal_list => null()
-    type(NodeList), pointer :: node_filt_list => null()
-    type(NodeList), pointer :: node_trigger_list => null()
-    type(NodeList), pointer :: node_deriv_list => null()
+    type(XMLDocument) :: doc
+    type(XMLNode) :: root
+    type(XMLNode) :: node_mesh
+    type(XMLNode) :: node_tal
+    type(XMLNode) :: node_filt
+    type(XMLNode) :: node_trigger
+    type(XMLNode) :: node_deriv
+    type(XMLNode), allocatable :: node_mesh_list(:)
+    type(XMLNode), allocatable :: node_tal_list(:)
+    type(XMLNode), allocatable :: node_filt_list(:)
+    type(XMLNode), allocatable :: node_trigger_list(:)
+    type(XMLNode), allocatable :: node_deriv_list(:)
     type(ElemKeyValueCI), pointer :: scores
     type(ElemKeyValueCI), pointer :: next
 
@@ -2642,19 +2676,20 @@ contains
     call write_message("Reading tallies XML file...", 5)
 
     ! Parse tallies.xml file
-    call open_xmldoc(doc, filename)
+    call doc % load_file(filename)
+    root = doc % document_element()
 
     ! ==========================================================================
     ! DETERMINE SIZE OF ARRAYS AND ALLOCATE
 
     ! Get pointer list to XML <mesh>
-    call get_node_list(doc, "mesh", node_mesh_list)
+    call get_node_list(root, "mesh", node_mesh_list)
 
     ! Get pointer list to XML <tally>
-    call get_node_list(doc, "tally", node_tal_list)
+    call get_node_list(root, "tally", node_tal_list)
 
     ! Check for user meshes
-    n_user_meshes = get_list_size(node_mesh_list)
+    n_user_meshes = size(node_mesh_list)
     if (cmfd_run) then
       n_meshes = n_user_meshes + n_cmfd_meshes
     else
@@ -2665,7 +2700,7 @@ contains
     if (n_meshes > 0) allocate(meshes(n_meshes))
 
     ! Check for user tallies
-    n_user_tallies = get_list_size(node_tal_list)
+    n_user_tallies = size(node_tal_list)
     if (n_user_tallies == 0) then
       if (master) call warning("No tallies present in tallies.xml file!")
     end if
@@ -2676,11 +2711,8 @@ contains
     end if
 
     ! Check for <assume_separate> setting
-    if (check_for_node(doc, "assume_separate")) then
-      call get_node_value(doc, "assume_separate", temp_str)
-      temp_str = to_lower(temp_str)
-      if (trim(temp_str) == 'true' .or. trim(temp_str) == '1') &
-           assume_separate = .true.
+    if (check_for_node(root, "assume_separate")) then
+      call get_node_value(root, "assume_separate", assume_separate)
     end if
 
     ! ==========================================================================
@@ -2690,7 +2722,7 @@ contains
       m => meshes(i)
 
       ! Get pointer to mesh node
-      call get_list_item(node_mesh_list, i, node_mesh)
+      node_mesh = node_mesh_list(i)
 
       ! Copy mesh id
       if (check_for_node(node_mesh, "id")) then
@@ -2721,7 +2753,7 @@ contains
       end select
 
       ! Determine number of dimensions for mesh
-      n = get_arraysize_integer(node_mesh, "dimension")
+      n = node_word_count(node_mesh, "dimension")
       if (n /= 1 .and. n /= 2 .and. n /= 3) then
         call fatal_error("Mesh must be one, two, or three dimensions.")
       end if
@@ -2744,7 +2776,7 @@ contains
       m % dimension = iarray3(1:n)
 
       ! Read mesh lower-left corner location
-      if (m % n_dimension /= get_arraysize_double(node_mesh, "lower_left")) then
+      if (m % n_dimension /= node_word_count(node_mesh, "lower_left")) then
         call fatal_error("Number of entries on <lower_left> must be the same &
              &as the number of entries on <dimension>.")
       end if
@@ -2766,8 +2798,8 @@ contains
 
       if (check_for_node(node_mesh, "width")) then
         ! Check to ensure width has same dimensions
-        if (get_arraysize_double(node_mesh, "width") /= &
-             get_arraysize_double(node_mesh, "lower_left")) then
+        if (node_word_count(node_mesh, "width") /= &
+             node_word_count(node_mesh, "lower_left")) then
           call fatal_error("Number of entries on <width> must be the same as &
                &the number of entries on <lower_left>.")
         end if
@@ -2784,8 +2816,8 @@ contains
 
       elseif (check_for_node(node_mesh, "upper_right")) then
         ! Check to ensure width has same dimensions
-        if (get_arraysize_double(node_mesh, "upper_right") /= &
-             get_arraysize_double(node_mesh, "lower_left")) then
+        if (node_word_count(node_mesh, "upper_right") /= &
+             node_word_count(node_mesh, "lower_left")) then
           call fatal_error("Number of entries on <upper_right> must be the &
                &same as the number of entries on <lower_left>.")
         end if
@@ -2817,21 +2849,21 @@ contains
 
     ! Get pointer list to XML <derivative> nodes and allocate global array.
     ! The array is threadprivate so it must be allocated in parallel.
-    call get_node_list(doc, "derivative", node_deriv_list)
+    call get_node_list(root, "derivative", node_deriv_list)
 !$omp parallel
-    allocate(tally_derivs(get_list_size(node_deriv_list)))
+    allocate(tally_derivs(size(node_deriv_list)))
 !$omp end parallel
 
     ! Make sure this is not an MG run.
-    if (.not. run_CE .and. get_list_size(node_deriv_list) > 0) then
+    if (.not. run_CE .and. size(node_deriv_list) > 0) then
       call fatal_error("Differential tallies not supported in multi-group mode")
     end if
 
     ! Read derivative attributes.
-    do i = 1, get_list_size(node_deriv_list)
+    do i = 1, size(node_deriv_list)
       associate(deriv => tally_derivs(i))
         ! Get pointer to derivative node.
-        call get_list_item(node_deriv_list, i, node_deriv)
+        node_deriv = node_deriv_list(i)
 
         ! Copy the derivative id.
         if (check_for_node(node_deriv, "id")) then
@@ -2908,7 +2940,7 @@ contains
       t => tallies(i)
 
       ! Get pointer to tally xml node
-      call get_list_item(node_tal_list, i, node_tal)
+      node_tal = node_tal_list(i)
 
       ! Set tally type to volume by default
       t % type = TALLY_VOLUME
@@ -2943,14 +2975,14 @@ contains
 
       ! Get pointer list to XML <filter> and get number of filters
       call get_node_list(node_tal, "filter", node_filt_list)
-      n_filters = get_list_size(node_filt_list)
+      n_filters = size(node_filt_list)
 
       ! Allocate filters array
       allocate(t % filters(n_filters))
 
       READ_FILTERS: do j = 1, n_filters
         ! Get pointer to filter xml node
-        call get_list_item(node_filt_list, j, node_filt)
+        node_filt = node_filt_list(j)
 
         ! Convert filter type to lower case
         temp_str = ''
@@ -2965,14 +2997,14 @@ contains
             call fatal_error("Bins not set in filter on tally " &
                  // trim(to_str(t % id)))
           end if
-          n_words = get_arraysize_double(node_filt, "bins")
+          n_words = node_word_count(node_filt, "bins")
         case ("mesh", "universe", "material", "cell", "distribcell", &
               "cellborn", "surface", "delayedgroup")
           if (.not. check_for_node(node_filt, "bins")) then
             call fatal_error("Bins not set in filter on tally " &
                  // trim(to_str(t % id)))
           end if
-          n_words = get_arraysize_integer(node_filt, "bins")
+          n_words = node_word_count(node_filt, "bins")
         end select
 
         ! Determine type of filter
@@ -3228,7 +3260,7 @@ contains
                 end do
                 filt % bins(Nangle + 1) = PI
               else
-                call fatal_error("Number of bins for mu filter must be&
+                call fatal_error("Number of bins for polar filter must be&
                      & greater than 1 on tally " &
                      // trim(to_str(t % id)) // ".")
               end if
@@ -3262,7 +3294,7 @@ contains
                 end do
                 filt % bins(Nangle + 1) = PI
               else
-                call fatal_error("Number of bins for mu filter must be&
+                call fatal_error("Number of bins for azimuthal filter must be&
                      & greater than 1 on tally " &
                      // trim(to_str(t % id)) // ".")
               end if
@@ -3288,7 +3320,7 @@ contains
               call fatal_error("Energy grid not specified for EnergyFunction &
                    &filter on tally " // trim(to_str(t % id)))
             end if
-            n_words = get_arraysize_double(node_filt, "energy")
+            n_words = node_word_count(node_filt, "energy")
             allocate(filt % energy(n_words))
             call get_node_array(node_filt, "energy", filt % energy)
 
@@ -3297,7 +3329,7 @@ contains
               call fatal_error("y values not specified for EnergyFunction &
                    &filter on tally " // trim(to_str(t % id)))
             end if
-            n_words = get_arraysize_double(node_filt, "y")
+            n_words = node_word_count(node_filt, "y")
             allocate(filt % y(n_words))
             call get_node_array(node_filt, "y", filt % y)
           end select
@@ -3327,7 +3359,7 @@ contains
       if (check_for_node(node_tal, "nuclides")) then
 
         ! Allocate a temporary string array for nuclides and copy values over
-        allocate(sarray(get_arraysize_string(node_tal, "nuclides")))
+        allocate(sarray(node_word_count(node_tal, "nuclides")))
         call get_node_array(node_tal, "nuclides", sarray)
 
         if (trim(sarray(1)) == 'all') then
@@ -3346,7 +3378,7 @@ contains
           t % all_nuclides = .true.
         else
           ! Any other case, e.g. <nuclides>U-235 Pu-239</nuclides>
-          n_words = get_arraysize_string(node_tal, "nuclides")
+          n_words = node_word_count(node_tal, "nuclides")
           allocate(t % nuclide_bins(n_words))
           do j = 1, n_words
 
@@ -3402,7 +3434,7 @@ contains
       ! READ DATA FOR SCORES
 
       if (check_for_node(node_tal, "scores")) then
-        n_words = get_arraysize_string(node_tal, "scores")
+        n_words = node_word_count(node_tal, "scores")
         allocate(sarray(n_words))
         call get_node_array(node_tal, "scores", sarray)
 
@@ -3927,18 +3959,18 @@ contains
         call get_node_list(node_tal, "trigger", node_trigger_list)
 
         ! Initialize the number of triggers
-        n_user_trig = get_list_size(node_trigger_list)
+        n_user_trig = size(node_trigger_list)
 
         ! Count the number of triggers needed for all scores including "all"
         t % n_triggers = 0
         COUNT_TRIGGERS: do user_trig_ind = 1, n_user_trig
 
           ! Get pointer to trigger node
-          call get_list_item(node_trigger_list, user_trig_ind, node_trigger)
+          node_trigger = node_trigger_list(user_trig_ind)
 
           ! Get scores for this trigger
           if (check_for_node(node_trigger, "scores")) then
-            n_words = get_arraysize_string(node_trigger, "scores")
+            n_words = node_word_count(node_trigger, "scores")
             allocate(sarray(n_words))
             call get_node_array(node_trigger, "scores", sarray)
           else
@@ -3983,7 +4015,7 @@ contains
         TRIGGER_LOOP: do user_trig_ind = 1, n_user_trig
 
           ! Get pointer to trigger node
-          call get_list_item(node_trigger_list, user_trig_ind, node_trigger)
+          node_trigger = node_trigger_list(user_trig_ind)
 
           ! Get the trigger type - "variance", "std_dev" or "rel_err"
           if (check_for_node(node_trigger, "type")) then
@@ -4004,7 +4036,7 @@ contains
 
           ! Get list scores for this trigger
           if (check_for_node(node_trigger, "scores")) then
-            n_words = get_arraysize_string(node_trigger, "scores")
+            n_words = node_word_count(node_trigger, "scores")
             allocate(sarray(n_words))
             call get_node_array(node_trigger, "scores", sarray)
           else
@@ -4143,7 +4175,7 @@ contains
     end do READ_TALLIES
 
     ! Close XML document
-    call close_xmldoc(doc)
+    call doc % clear()
 
   end subroutine read_tallies_xml
 
@@ -4163,15 +4195,16 @@ contains
     character(MAX_LINE_LEN) :: temp_str
     character(MAX_WORD_LEN) :: meshtype
     type(ObjectPlot), pointer :: pl => null()
-    type(Node), pointer :: doc => null()
-    type(Node), pointer :: node_plot => null()
-    type(Node), pointer :: node_col => null()
-    type(Node), pointer :: node_mask => null()
-    type(Node), pointer :: node_meshlines => null()
-    type(NodeList), pointer :: node_plot_list => null()
-    type(NodeList), pointer :: node_col_list => null()
-    type(NodeList), pointer :: node_mask_list => null()
-    type(NodeList), pointer :: node_meshline_list => null()
+    type(XMLDocument) :: doc
+    type(XMLNode) :: root
+    type(XMLNode) :: node_plot
+    type(XMLNode) :: node_col
+    type(XMLNode) :: node_mask
+    type(XMLNode) :: node_meshlines
+    type(XMLNode), allocatable :: node_plot_list(:)
+    type(XMLNode), allocatable :: node_col_list(:)
+    type(XMLNode), allocatable :: node_mask_list(:)
+    type(XMLNode), allocatable :: node_meshline_list(:)
 
     ! Check if plots.xml exists
     filename = trim(path_input) // "plots.xml"
@@ -4185,20 +4218,21 @@ contains
     call write_message("Reading plot XML file...", 5)
 
     ! Parse plots.xml file
-    call open_xmldoc(doc, filename)
+    call doc % load_file(filename)
+    root = doc % document_element()
 
     ! Get list pointer to XML <plot>
-    call get_node_list(doc, "plot", node_plot_list)
+    call get_node_list(root, "plot", node_plot_list)
 
     ! Allocate plots array
-    n_plots = get_list_size(node_plot_list)
+    n_plots = size(node_plot_list)
     allocate(plots(n_plots))
 
     READ_PLOTS: do i = 1, n_plots
       pl => plots(i)
 
       ! Get pointer to plot XML node
-      call get_list_item(node_plot_list, i, node_plot)
+      node_plot = node_plot_list(i)
 
       ! Copy data into plots
       if (check_for_node(node_plot, "id")) then
@@ -4229,26 +4263,26 @@ contains
       end select
 
       ! Set output file path
-      filename = trim(to_str(pl % id)) // "_plot"
+      filename = "plot_" // trim(to_str(pl % id))
       if (check_for_node(node_plot, "filename")) &
            call get_node_value(node_plot, "filename", filename)
       select case (pl % type)
       case (PLOT_TYPE_SLICE)
         pl % path_plot = trim(path_input) // trim(filename) // ".ppm"
       case (PLOT_TYPE_VOXEL)
-        pl % path_plot = trim(path_input) // trim(filename) // ".voxel"
+        pl % path_plot = trim(path_input) // trim(filename) // ".h5"
       end select
 
       ! Copy plot pixel size
       if (pl % type == PLOT_TYPE_SLICE) then
-        if (get_arraysize_integer(node_plot, "pixels") == 2) then
+        if (node_word_count(node_plot, "pixels") == 2) then
           call get_node_array(node_plot, "pixels", pl % pixels(1:2))
         else
           call fatal_error("<pixels> must be length 2 in slice plot " &
                // trim(to_str(pl % id)))
         end if
       else if (pl % type == PLOT_TYPE_VOXEL) then
-        if (get_arraysize_integer(node_plot, "pixels") == 3) then
+        if (node_word_count(node_plot, "pixels") == 3) then
           call get_node_array(node_plot, "pixels", pl % pixels(1:3))
         else
           call fatal_error("<pixels> must be length 3 in voxel plot " &
@@ -4262,7 +4296,7 @@ contains
           if (master) call warning("Background color ignored in voxel plot " &
                // trim(to_str(pl % id)))
         end if
-        if (get_arraysize_integer(node_plot, "background") == 3) then
+        if (node_word_count(node_plot, "background") == 3) then
           call get_node_array(node_plot, "background", pl % not_found % rgb)
         else
           call fatal_error("Bad background RGB in plot " &
@@ -4292,7 +4326,7 @@ contains
       end if
 
       ! Copy plotting origin
-      if (get_arraysize_double(node_plot, "origin") == 3) then
+      if (node_word_count(node_plot, "origin") == 3) then
         call get_node_array(node_plot, "origin", pl % origin)
       else
         call fatal_error("Origin must be length 3 in plot " &
@@ -4301,14 +4335,14 @@ contains
 
       ! Copy plotting width
       if (pl % type == PLOT_TYPE_SLICE) then
-        if (get_arraysize_double(node_plot, "width") == 2) then
+        if (node_word_count(node_plot, "width") == 2) then
           call get_node_array(node_plot, "width", pl % width(1:2))
         else
           call fatal_error("<width> must be length 2 in slice plot " &
                // trim(to_str(pl % id)))
         end if
       else if (pl % type == PLOT_TYPE_VOXEL) then
-        if (get_arraysize_double(node_plot, "width") == 3) then
+        if (node_word_count(node_plot, "width") == 3) then
           call get_node_array(node_plot, "width", pl % width(1:3))
         else
           call fatal_error("<width> must be length 3 in voxel plot " &
@@ -4361,7 +4395,7 @@ contains
 
       ! Get the number of <col_spec> nodes and get a list of them
       call get_node_list(node_plot, "col_spec", node_col_list)
-      n_cols = get_list_size(node_col_list)
+      n_cols = size(node_col_list)
 
       ! Copy user specified colors
       if (n_cols /= 0) then
@@ -4374,10 +4408,10 @@ contains
         do j = 1, n_cols
 
           ! Get pointer to color spec XML node
-          call get_list_item(node_col_list, j, node_col)
+          node_col = node_col_list(j)
 
           ! Check and make sure 3 values are specified for RGB
-          if (get_arraysize_double(node_col, "rgb") /= 3) then
+          if (node_word_count(node_col, "rgb") /= 3) then
             call fatal_error("Bad RGB in plot " &
                  // trim(to_str(pl % id)))
           end if
@@ -4418,7 +4452,7 @@ contains
 
       ! Deal with meshlines
       call get_node_list(node_plot, "meshlines", node_meshline_list)
-      n_meshlines = get_list_size(node_meshline_list)
+      n_meshlines = size(node_meshline_list)
       if (n_meshlines /= 0) then
 
         if (pl % type == PLOT_TYPE_VOXEL) then
@@ -4432,7 +4466,7 @@ contains
           case (1)
 
             ! Get pointer to meshlines
-            call get_list_item(node_meshline_list, 1, node_meshlines)
+            node_meshlines = node_meshline_list(1)
 
             ! Check mesh type
             if (check_for_node(node_meshlines, "meshtype")) then
@@ -4455,7 +4489,7 @@ contains
             if (check_for_node(node_meshlines, "color")) then
 
               ! Check and make sure 3 values are specified for RGB
-              if (get_arraysize_double(node_meshlines, "color") /= 3) then
+              if (node_word_count(node_meshlines, "color") /= 3) then
                 call fatal_error("Bad RGB for meshlines color in plot " &
                      // trim(to_str(pl % id)))
               end if
@@ -4544,7 +4578,7 @@ contains
 
       ! Deal with masks
       call get_node_list(node_plot, "mask", node_mask_list)
-      n_masks = get_list_size(node_mask_list)
+      n_masks = size(node_mask_list)
       if (n_masks /= 0) then
 
         if (pl % type == PLOT_TYPE_VOXEL) then
@@ -4559,11 +4593,11 @@ contains
           case (1)
 
             ! Get pointer to mask
-            call get_list_item(node_mask_list, 1, node_mask)
+            node_mask = node_mask_list(1)
 
             ! Determine how many components there are and allocate
             n_comp = 0
-            n_comp = get_arraysize_integer(node_mask, "components")
+            n_comp = node_word_count(node_mask, "components")
             if (n_comp == 0) then
               call fatal_error("Missing <components> in mask of plot " &
                    // trim(to_str(pl % id)))
@@ -4623,7 +4657,7 @@ contains
     end do READ_PLOTS
 
     ! Close plots XML file
-    call close_xmldoc(doc)
+    call doc % clear()
 
   end subroutine read_plots_xml
 
@@ -4642,9 +4676,10 @@ contains
     character(MAX_WORD_LEN) :: directory ! directory with cross sections
     character(MAX_WORD_LEN) :: words(MAX_WORDS)
     character(10000) :: temp_str
-    type(Node), pointer :: doc
-    type(Node), pointer :: node_library
-    type(NodeList), pointer :: node_library_list
+    type(XMLDocument) :: doc
+    type(XMLNode) :: root
+    type(XMLNode) :: node_library
+    type(XMLNode), allocatable :: node_library_list(:)
 
     ! Check if cross_sections.xml exists
     inquire(FILE=path_cross_sections, EXIST=file_exists)
@@ -4657,11 +4692,12 @@ contains
     call write_message("Reading cross sections XML file...", 5)
 
     ! Parse cross_sections.xml file
-    call open_xmldoc(doc, path_cross_sections)
+    call doc % load_file(path_cross_sections)
+    root = doc % document_element()
 
-    if (check_for_node(doc, "directory")) then
+    if (check_for_node(root, "directory")) then
       ! Copy directory information if present
-      call get_node_value(doc, "directory", directory)
+      call get_node_value(root, "directory", directory)
     else
       ! If no directory is listed in cross_sections.xml, by default select the
       ! directory in which the cross_sections.xml file resides
@@ -4670,8 +4706,8 @@ contains
     end if
 
     ! Get node list of all <library>
-    call get_node_list(doc, "library", node_library_list)
-    n_libraries = get_list_size(node_library_list)
+    call get_node_list(root, "library", node_library_list)
+    n_libraries = size(node_library_list)
 
     ! Allocate xs_listings array
     if (n_libraries == 0) then
@@ -4683,7 +4719,7 @@ contains
 
     do i = 1, n_libraries
       ! Get pointer to ace table XML node
-      call get_list_item(node_library_list, i, node_library)
+      node_library = node_library_list(i)
 
       ! Get list of materials
       if (check_for_node(node_library, "materials")) then
@@ -4731,7 +4767,7 @@ contains
     end do
 
     ! Close cross sections XML file
-    call close_xmldoc(doc)
+    call doc % clear()
 
   end subroutine read_ce_cross_sections_xml
 
@@ -5182,7 +5218,7 @@ contains
            == energy_max_neutron) then
         call write_message("Maximum neutron transport energy: " // &
              trim(to_str(energy_max_neutron)) // " eV for " // &
-             trim(adjustl(nuclides(i) % name)), 6)
+             trim(adjustl(nuclides(i) % name)), 7)
         exit
       end if
     end do
@@ -5380,16 +5416,16 @@ contains
 
     if (attribute_exists(file_id, 'version')) then
       call read_attribute(version, file_id, 'version')
-      if (version(1) /= HDF5_VERSION_MAJOR) then
+      if (version(1) /= HDF5_VERSION(1)) then
         call fatal_error("HDF5 data format uses version " // trim(to_str(&
              version(1))) // "." // trim(to_str(version(2))) // " whereas &
              &your installation of OpenMC expects version " // trim(to_str(&
-             HDF5_VERSION_MAJOR)) // ".x data.")
+             HDF5_VERSION(1))) // ".x data.")
       end if
     else
       call fatal_error("HDF5 data does not indicate a version. Your &
            &installation of OpenMC expects version " // trim(to_str(&
-           HDF5_VERSION_MAJOR)) // ".x data.")
+           HDF5_VERSION(1))) // ".x data.")
     end if
   end subroutine check_data_version
 

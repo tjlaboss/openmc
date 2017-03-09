@@ -6,11 +6,12 @@ module output
   use endf,            only: reaction_name
   use error,           only: fatal_error, warning
   use geometry_header, only: Cell, Universe, Lattice, RectLattice, &
-                             HexLattice, BASE_UNIVERSE
+                             HexLattice
   use global
   use math,            only: t_percentile
   use mesh_header,     only: RegularMesh
   use mesh,            only: mesh_indices_to_bin, bin_to_mesh_indices
+  use message_passing, only: master, n_procs
   use nuclide_header
   use particle_header, only: LocalCoord, Particle
   use plot_header
@@ -90,6 +91,7 @@ contains
     write(UNIT=OUTPUT_UNIT, FMT='(4X,"OpenMP Threads | ",A)') &
          trim(to_str(omp_get_max_threads()))
 #endif
+    write(UNIT=OUTPUT_UNIT, FMT=*)
 
   end subroutine title
 
@@ -111,26 +113,18 @@ contains
 
 !===============================================================================
 ! HEADER displays a header block according to a specified level. If no level is
-! specified, it is assumed to be a minor header block (H3).
+! specified, it is assumed to be a minor header block.
 !===============================================================================
 
-  subroutine header(msg, unit, level)
+  subroutine header(msg, level, unit)
     character(*), intent(in)      :: msg   ! header message
+    integer, intent(in)           :: level
     integer, intent(in), optional :: unit  ! unit to write to
-    integer, intent(in), optional :: level ! specified header level
 
     integer :: n            ! number of = signs on left
     integer :: m            ! number of = signs on right
     integer :: unit_        ! unit to write to
-    integer :: header_level ! actual header level
     character(MAX_LINE_LEN) :: line
-
-    ! set default level
-    if (present(level)) then
-      header_level = level
-    else
-      header_level = 3
-    end if
 
     ! set default unit
     if (present(unit)) then
@@ -148,17 +142,10 @@ contains
     line = to_upper(msg)
 
     ! print header based on level
-    select case (header_level)
-    case (1)
-      write(UNIT=unit_, FMT='(/3(1X,A/))') repeat('=', 75), &
-           repeat('=', n) // '>     ' // trim(line) // '     <' // &
-           repeat('=', m), repeat('=', 75)
-    case (2)
-      write(UNIT=unit_, FMT='(/2(1X,A/))') trim(line), repeat('-', 75)
-    case (3)
+    if (verbosity >= level) then
       write(UNIT=unit_, FMT='(/1X,A/)') repeat('=', n) // '>     ' // &
            trim(line) // '     <' // repeat('=', m)
-    end select
+    end if
 
   end subroutine header
 
@@ -172,10 +159,13 @@ contains
     if (master) then
       write(UNIT=OUTPUT_UNIT, FMT='(1X,A,1X,I1,".",I1,".",I1)') &
            "OpenMC version", VERSION_MAJOR, VERSION_MINOR, VERSION_RELEASE
+#ifdef GIT_SHA1
+      write(UNIT=OUTPUT_UNIT, FMT='(1X,A,A)') "Git SHA1: ", GIT_SHA1
+#endif
       write(UNIT=OUTPUT_UNIT, FMT=*) "Copyright (c) 2011-2015 &
            &Massachusetts Institute of Technology"
       write(UNIT=OUTPUT_UNIT, FMT=*) "MIT/X license at &
-           &<http://mit-crpg.github.io/openmc/license.html>"
+           &<http://openmc.readthedocs.io/en/latest/license.html>"
     end if
 
   end subroutine print_version
@@ -190,7 +180,8 @@ contains
       write(OUTPUT_UNIT,*) 'Usage: openmc [options] [directory]'
       write(OUTPUT_UNIT,*)
       write(OUTPUT_UNIT,*) 'Options:'
-      write(OUTPUT_UNIT,*) '  -g, --geometry-debug   Run in geometry debugging mode'
+      write(OUTPUT_UNIT,*) '  -c, --volume           Run in stochastic volume calculation mode'
+      write(OUTPUT_UNIT,*) '  -g, --geometry-debug   Run with geometry debugging on'
       write(OUTPUT_UNIT,*) '  -n, --particles        Number of particles per generation'
       write(OUTPUT_UNIT,*) '  -p, --plot             Run in plotting mode'
       write(OUTPUT_UNIT,*) '  -r, --restart          Restart a previous run from a state point'
@@ -455,7 +446,7 @@ contains
     type(ObjectPlot), pointer :: pl
 
     ! Display header for plotting
-    call header("PLOTTING SUMMARY")
+    call header("PLOTTING SUMMARY", 5)
 
     do i = 1, n_plots
       pl => plots(i)
@@ -530,7 +521,7 @@ contains
     character(15) :: string
 
     ! display header block
-    call header("Timing Statistics")
+    call header("Timing Statistics", 6)
 
     ! display time elapsed for various sections
     write(ou,100) "Total time for initialization", time_initialize % elapsed
@@ -603,7 +594,7 @@ contains
     real(8) :: t_value ! t-value for confidence intervals
 
     ! display header block for results
-    call header("Results")
+    call header("Results", 4)
 
     if (confidence_intervals) then
       ! Calculate t-value for confidence intervals
@@ -661,7 +652,7 @@ contains
     integer :: num_sparse = 0
 
     ! display header block for geometry debugging section
-    call header("Cell Overlap Check Summary")
+    call header("Cell Overlap Check Summary", 1)
 
     write(ou,100) 'Cell ID','No. Overlap Checks'
 
@@ -770,11 +761,10 @@ contains
 
       ! Write header block
       if (t % name == "") then
-        call header("TALLY " // trim(to_str(t % id)), unit=unit_tally, &
-             level=3)
+        call header("TALLY " // trim(to_str(t % id)), 1, unit=unit_tally)
       else
         call header("TALLY " // trim(to_str(t % id)) // ": " &
-             // trim(t % name), unit=unit_tally, level=3)
+             // trim(t % name), 1, unit=unit_tally)
       endif
 
       ! Write derivative information.

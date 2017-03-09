@@ -1,5 +1,7 @@
-from collections import OrderedDict
+from collections import OrderedDict, Iterable
 from xml.etree import ElementTree as ET
+
+from six import string_types
 
 import openmc
 from openmc.clean_xml import sort_xml_elements, clean_xml_indentation
@@ -42,12 +44,6 @@ class Geometry(object):
     @root_universe.setter
     def root_universe(self, root_universe):
         check_type('root universe', root_universe, openmc.Universe)
-        if root_universe.id != 0:
-            msg = 'Unable to add root Universe "{0}" to Geometry since ' \
-                  'it has ID="{1}" instead of ' \
-                  'ID=0'.format(root_universe, root_universe.id)
-            raise ValueError(msg)
-
         self._root_universe = root_universe
 
     def add_volume_information(self, volume_calc):
@@ -61,8 +57,16 @@ class Geometry(object):
         """
         if volume_calc.domain_type == 'cell':
             for cell in self.get_all_cells():
-                if cell.id in volume_calc.results:
+                if cell.id in volume_calc.volumes:
                     cell.add_volume_information(volume_calc)
+        elif volume_calc.domain_type == 'material':
+            for material in self.get_all_materials():
+                if material.id in volume_calc.volumes:
+                    material.add_volume_information(volume_calc)
+        elif volume_calc.domain_type == 'universe':
+            for universe in self.get_all_universes():
+                if universe.id in volume_calc.volumes:
+                    universe.add_volume_information(volume_calc)
 
     def export_to_xml(self, path='geometry.xml'):
         """Export geometry to an XML file.
@@ -102,151 +106,131 @@ class Geometry(object):
         """
         return self.root_universe.find(point)
 
-    def get_cell_instance(self, path):
-        """Return the instance number for the final cell in a geometry path.
+    def get_instances(self, paths):
+        """Return the instance number(s) for a cell/material in a geometry path.
 
-        The instance is an index into tally distribcell filter arrays.
+        The instance numbers are used as indices into distributed
+        material/temperature arrays and tally distribcell filter arrays.
 
         Parameters
         ----------
-        path : list
-            A list of IDs that form the path to the target. It should begin with
-            0 for the base universe, and should cover every universe, cell, and
-            lattice passed through. For the case of the lattice, a tuple should
-            be provided to indicate which coordinates in the lattice should be
-            entered. This should be in the form: (lat_id, i_x, i_y, i_z)
+        paths : str or iterable of str
+            The path traversed through the CSG tree to reach a cell or material
+            instance. For example, 'u0->c10->l20(2,2,1)->u5->c5' would indicate
+            the cell instance whose first level is universe 0 and cell 10,
+            second level is lattice 20 position (2,2,1), and third level is
+            universe 5 and cell 5.
 
         Returns
         -------
-        instance : int
-            Index in tally results array for distribcell filters
+        int or list of int
+            Instance number(s) for the given path(s)
 
         """
+        # Make sure we are working with an iterable
+        return_list = (isinstance(paths, Iterable) and
+                       not isinstance(paths, string_types))
+        path_list = paths if return_list else [paths]
 
-        # Extract the cell id from the path
-        last_index = path.rfind('>')
-        cell_id = int(path[last_index+1:])
+        indices = []
+        for p in path_list:
+            # Extract the cell id from the path
+            last_index = p.rfind('>')
+            last_path = p[last_index+1:]
+            uid = int(last_path[1:])
 
-        # Find the distribcell index of the cell.
-        cells = self.get_all_cells()
-        for cell in cells:
-            if cell.id == cell_id:
-                distribcell_index = cell.distribcell_index
-                break
-        else:
-            raise RuntimeError('Could not find cell {} specified in a \
-                                distribcell filter'.format(cell_id))
+            # Get corresponding cell/material
+            if last_path[0] == 'c':
+                obj = self.get_all_cells()[uid]
+            elif last_path[0] == 'm':
+                obj = self.get_all_materials()[uid]
 
-        # Return memoize'd offset if possible
-        if (path, distribcell_index) in self._offsets:
-            offset = self._offsets[(path, distribcell_index)]
+            # Determine index in paths array
+            try:
+                indices.append(obj.paths.index(p))
+            except ValueError:
+                indices.append(None)
 
-        # Begin recursive call to compute offset starting with the base Universe
-        else:
-            offset = self._root_universe.get_cell_instance(path,
-                                                           distribcell_index)
-            self._offsets[(path, distribcell_index)] = offset
-
-        # Return the final offset
-        return offset
+        return indices if return_list else indices[0]
 
     def get_all_cells(self):
-        """Return all cells defined
+        """Return all cells in the geometry.
 
         Returns
         -------
-        list of openmc.Cell
-            Cells in the geometry
+        collections.OrderedDict
+            Dictionary mapping cell IDs to :class:`openmc.Cell` instances
 
         """
-
-        all_cells = self.root_universe.get_all_cells()
-        cells = list(set(all_cells.values()))
-        cells.sort(key=lambda x: x.id)
-        return cells
+        return self.root_universe.get_all_cells()
 
     def get_all_universes(self):
-        """Return all universes defined
+        """Return all universes in the geometry.
 
         Returns
         -------
-        list of openmc.Universe
-            Universes in the geometry
+        collections.OrderedDict
+            Dictionary mapping universe IDs to :class:`openmc.Universe`
+            instances
 
         """
-
-        all_universes = self._root_universe.get_all_universes()
-        universes = list(set(all_universes.values()))
-        universes.sort(key=lambda x: x.id)
+        universes = OrderedDict()
+        universes[self.root_universe.id] = self.root_universe
+        universes.update(self.root_universe.get_all_universes())
         return universes
 
     def get_all_materials(self):
-        """Return all materials assigned to a cell
+        """Return all materials within the geometry.
 
         Returns
         -------
-        list of openmc.Material
-            Materials in the geometry
+        collections.OrderedDict
+            Dictionary mapping material IDs to :class:`openmc.Material`
+            instances
 
         """
-
-        material_cells = self.get_all_material_cells()
-        materials = []
-
-        for cell in material_cells:
-            if cell.fill_type == 'distribmat':
-                for m in cell.fill:
-                    if m is not None and m not in materials:
-                        materials.append(m)
-            elif cell.fill_type == 'material':
-                if cell.fill not in materials:
-                    materials.append(cell.fill)
-
-        materials.sort(key=lambda x: x.id)
-        return materials
+        return self.root_universe.get_all_materials()
 
     def get_all_material_cells(self):
         """Return all cells filled by a material
 
         Returns
         -------
-        list of openmc.Cell
-            Cells filled by Materials in the geometry
+        collections.OrderedDict
+            Dictionary mapping cell IDs to :class:`openmc.Cell` instances that
+            are filled with materials or distributed materials.
 
         """
+        material_cells = OrderedDict()
 
-        all_cells = self.get_all_cells()
-        material_cells = []
-
-        for cell in all_cells:
+        for cell in self.get_all_cells().values():
             if cell.fill_type in ('material', 'distribmat'):
                 if cell not in material_cells:
-                    material_cells.append(cell)
+                    material_cells[cell.id] = cell
 
-        material_cells.sort(key=lambda x: x.id)
         return material_cells
 
     def get_all_material_universes(self):
-        """Return all universes composed of at least one non-fill cell
+        """Return all universes having at least one material-filled cell.
+
+        This method can be used to find universes that have at least one cell
+        that is filled with a material or is void.
 
         Returns
         -------
-        list of openmc.Universe
-            Universes with non-fill cells
+        collections.OrderedDict
+            Dictionary mapping universe IDs to :class:`openmc.Universe`
+            instances with at least one material-filled cell
 
         """
+        material_universes = OrderedDict()
 
-        all_universes = self.get_all_universes()
-        material_universes = []
-
-        for universe in all_universes:
-            cells = universe.cells
-            for cell in cells:
+        for universe in self.get_all_universes().values():
+            for cell in universe.cells.values():
                 if cell.fill_type in ('material', 'distribmat', 'void'):
                     if universe not in material_universes:
-                        material_universes.append(universe)
+                        material_universes[universe.id] = universe
 
-        material_universes.sort(key=lambda x: x.id)
         return material_universes
 
     def get_all_lattices(self):
@@ -254,20 +238,17 @@ class Geometry(object):
 
         Returns
         -------
-        list of openmc.Lattice
-            Lattices in the geometry
+        collections.OrderedDict
+            Dictionary mapping lattice IDs to :class:`openmc.Lattice` instances
 
         """
+        lattices = OrderedDict()
 
-        cells = self.get_all_cells()
-        lattices = []
-
-        for cell in cells:
+        for cell in self.get_all_cells().values():
             if cell.fill_type == 'lattice':
                 if cell.fill not in lattices:
-                    lattices.append(cell.fill)
+                    lattices[cell.fill.id] = cell.fill
 
-        lattices.sort(key=lambda x: x.id)
         return lattices
 
     def get_materials_by_name(self, name, case_sensitive=False, matching=False):
@@ -293,7 +274,7 @@ class Geometry(object):
         if not case_sensitive:
             name = name.lower()
 
-        all_materials = self.get_all_materials()
+        all_materials = self.get_all_materials().values()
         materials = set()
 
         for material in all_materials:
@@ -333,7 +314,7 @@ class Geometry(object):
         if not case_sensitive:
             name = name.lower()
 
-        all_cells = self.get_all_cells()
+        all_cells = self.get_all_cells().values()
         cells = set()
 
         for cell in all_cells:
@@ -373,7 +354,7 @@ class Geometry(object):
         if not case_sensitive:
             name = name.lower()
 
-        all_cells = self.get_all_cells()
+        all_cells = self.get_all_cells().values()
         cells = set()
 
         for cell in all_cells:
@@ -413,7 +394,7 @@ class Geometry(object):
         if not case_sensitive:
             name = name.lower()
 
-        all_universes = self.get_all_universes()
+        all_universes = self.get_all_universes().values()
         universes = set()
 
         for universe in all_universes:
@@ -453,7 +434,7 @@ class Geometry(object):
         if not case_sensitive:
             name = name.lower()
 
-        all_lattices = self.get_all_lattices()
+        all_lattices = self.get_all_lattices().values()
         lattices = set()
 
         for lattice in all_lattices:
@@ -469,3 +450,20 @@ class Geometry(object):
         lattices = list(lattices)
         lattices.sort(key=lambda x: x.id)
         return lattices
+
+    def determine_paths(self):
+        """Determine paths through CSG tree for cells and materials.
+
+        This method recursively traverses the CSG tree to determine each unique
+        path that reaches every cell and material. The paths are stored in the
+        :attr:`Cell.paths` and :attr:`Material.paths` attributes.
+
+        """
+        # (Re-)initialize all cell instances to 0
+        for cell in self.get_all_cells().values():
+            cell._paths = []
+        for material in self.get_all_materials().values():
+            material._paths = []
+
+        # Recursively traverse the CSG tree to count all cell instances
+        self.root_universe._determine_paths()

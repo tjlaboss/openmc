@@ -5,7 +5,6 @@ from collections import OrderedDict, Iterable
 from math import sqrt, floor
 from numbers import Real, Integral
 from xml.etree import ElementTree as ET
-import sys
 
 from six import add_metaclass, string_types
 import numpy as np
@@ -110,6 +109,145 @@ class Lattice(object):
     def outer(self, outer):
         cv.check_type('outer universe', outer, openmc.Universe)
         self._outer = outer
+
+    @staticmethod
+    def from_hdf5(group, universes):
+        """Create lattice from HDF5 group
+
+        Parameters
+        ----------
+        group : h5py.Group
+            Group in HDF5 file
+        universes : dict
+            Dictionary mapping universe IDs to instances of
+            :class:`openmc.Universe`.
+
+        Returns
+        -------
+        openmc.Lattice
+            Instance of lattice subclass
+
+        """
+        lattice_id = int(group.name.split('/')[-1].lstrip('lattice '))
+        name = group['name'].value.decode() if 'name' in group else ''
+        lattice_type = group['type'].value.decode()
+
+        if lattice_type == 'rectangular':
+            dimension = group['dimension'][...]
+            lower_left = group['lower_left'][...]
+            pitch = group['pitch'][...]
+            outer = group['outer'].value
+            universe_ids = group['universes'][...]
+
+            # Create the Lattice
+            lattice = openmc.RectLattice(lattice_id, name)
+            lattice.lower_left = lower_left
+            lattice.pitch = pitch
+
+            # If the Universe specified outer the Lattice is not void
+            if outer >= 0:
+                lattice.outer = universes[outer]
+
+            # Build array of Universe pointers for the Lattice
+            uarray = np.empty(universe_ids.shape, dtype=openmc.Universe)
+
+            for z in range(universe_ids.shape[0]):
+                for y in range(universe_ids.shape[1]):
+                    for x in range(universe_ids.shape[2]):
+                        uarray[z, y, x] = universes[universe_ids[z, y, x]]
+
+            # Use 2D NumPy array to store lattice universes for 2D lattices
+            if len(dimension) == 2:
+                uarray = np.squeeze(uarray)
+                uarray = np.atleast_2d(uarray)
+
+            # Set the universes for the lattice
+            lattice.universes = uarray
+
+        elif lattice_type == 'hexagonal':
+            n_rings = group['n_rings'].value
+            n_axial = group['n_axial'].value
+            center = group['center'][...]
+            pitch = group['pitch'][...]
+            outer = group['outer'].value
+
+            universe_ids = group['universes'][...]
+
+            # Create the Lattice
+            lattice = openmc.HexLattice(lattice_id, name)
+            lattice.center = center
+            lattice.pitch = pitch
+
+            # If the Universe specified outer the Lattice is not void
+            if outer >= 0:
+                lattice.outer = universes[outer]
+
+            # Build array of Universe pointers for the Lattice.  Note that
+            # we need to convert between the HDF5's square array of
+            # (x, alpha, z) to the Python API's format of a ragged nested
+            # list of (z, ring, theta).
+            uarray = []
+            for z in range(n_axial):
+                # Add a list for this axial level.
+                uarray.append([])
+                x = n_rings - 1
+                a = 2*n_rings - 2
+                for r in range(n_rings - 1, 0, -1):
+                    # Add a list for this ring.
+                    uarray[-1].append([])
+
+                    # Climb down the top-right.
+                    for i in range(r):
+                        uarray[-1][-1].append(universe_ids[z, a, x])
+                        x += 1
+                        a -= 1
+
+                    # Climb down the right.
+                    for i in range(r):
+                        uarray[-1][-1].append(universe_ids[z, a, x])
+                        a -= 1
+
+                    # Climb down the bottom-right.
+                    for i in range(r):
+                        uarray[-1][-1].append(universe_ids[z, a, x])
+                        x -= 1
+
+                    # Climb up the bottom-left.
+                    for i in range(r):
+                        uarray[-1][-1].append(universe_ids[z, a, x])
+                        x -= 1
+                        a += 1
+
+                    # Climb up the left.
+                    for i in range(r):
+                        uarray[-1][-1].append(universe_ids[z, a, x])
+                        a += 1
+
+                    # Climb up the top-left.
+                    for i in range(r):
+                        uarray[-1][-1].append(universe_ids[z, a, x])
+                        x += 1
+
+                    # Move down to the next ring.
+                    a -= 1
+
+                    # Convert the ids into Universe objects.
+                    uarray[-1][-1] = [universes[u_id]
+                                      for u_id in uarray[-1][-1]]
+
+                # Handle the degenerate center ring separately.
+                u_id = universe_ids[z, a, x]
+                uarray[-1].append([universes[u_id]])
+
+            # Add the universes to the lattice.
+            if len(pitch) == 2:
+                # Lattice is 3D
+                lattice.universes = uarray
+            else:
+                # Lattice is 2D; extract the only axial level
+                lattice.universes = uarray[0]
+
+        return lattice
 
     def get_unique_universes(self):
         """Determine all unique universes in the lattice
@@ -228,6 +366,54 @@ class Lattice(object):
 
         return all_universes
 
+    def get_universe(self, idx):
+        """Return universe corresponding to a lattice element index
+
+        Parameters
+        ----------
+        idx : Iterable of int
+            Lattice element indices. For a rectangular lattice, the indices are
+            given in the :math:`(x,y)` or :math:`(x,y,z)` coordinate system. For
+            hexagonal lattices, they are given in the :math:`x,\alpha` or
+            :math:`x,\alpha,z` coordinate systems.
+
+        Returns
+        -------
+        openmc.Universe
+            Universe with given indices
+
+        """
+        idx_u = self.get_universe_index(idx)
+        if self.ndim == 2:
+            return self.universes[idx_u[0]][idx_u[1]]
+        else:
+            return self.universes[idx_u[0]][idx_u[1]][idx_u[2]]
+
+    def find(self, point):
+        """Find cells/universes/lattices which contain a given point
+
+        Parameters
+        ----------
+        point : 3-tuple of float
+            Cartesian coordinates of the point
+
+        Returns
+        -------
+        list
+            Sequence of universes, cells, and lattices which are traversed to
+            find the given point
+
+        """
+        idx, p = self.find_element(point)
+        if self.is_valid_index(idx):
+            u = self.get_universe(idx)
+        else:
+            if self.outer is not None:
+                u = self.outer
+            else:
+                return []
+        return [(self, idx)] + u.find(p)
+
 
 class RectLattice(Lattice):
     """A lattice consisting of rectangular prisms.
@@ -293,7 +479,6 @@ class RectLattice(Lattice):
 
         # Initialize Lattice class attributes
         self._lower_left = None
-        self._offsets = None
 
     def __eq__(self, other):
         if not isinstance(other, RectLattice):
@@ -342,19 +527,6 @@ class RectLattice(Lattice):
 
         string = string.rstrip('\n')
 
-        if self._offsets is not None:
-            string += '{0: <16}\n'.format('\tOffsets')
-
-            # Lattice cell offsets
-            for i, offset in enumerate(np.ravel(self._offsets)):
-                string += '{0} '.format(offset)
-
-                # Add a newline character when we reach end of row of cells
-                if (i+1) % self.shape[0] == 0:
-                    string += '\n'
-
-            string = string.rstrip('\n')
-
         return string
 
     @property
@@ -367,16 +539,28 @@ class RectLattice(Lattice):
                 :self.shape[2], :self.shape[1], :self.shape[0]]))
 
     @property
+    def _natural_indices(self):
+        """Iterate over all possible (x,y) or (x,y,z) lattice element indices.
+
+        This property is used when constructing distributed cell and material
+        paths. Most importantly, the iteration order matches that used on the
+        Fortran side.
+
+        """
+        if self.ndim == 2:
+            nx, ny = self.shape
+            return np.broadcast(*np.ogrid[:nx, :ny])
+        else:
+            nx, ny, nz = self.shape
+            return np.broadcast(*np.ogrid[:nx, :ny, :nz])
+
+    @property
     def lower_left(self):
         return self._lower_left
 
     @property
     def ndim(self):
         return len(self.pitch)
-
-    @property
-    def offsets(self):
-        return self._offsets
 
     @property
     def shape(self):
@@ -387,11 +571,6 @@ class RectLattice(Lattice):
         cv.check_type('lattice lower left corner', lower_left, Iterable, Real)
         cv.check_length('lattice lower left corner', lower_left, 2, 3)
         self._lower_left = lower_left
-
-    @offsets.setter
-    def offsets(self, offsets):
-        cv.check_type('lattice offsets', offsets, Iterable)
-        self._offsets = offsets
 
     @Lattice.pitch.setter
     def pitch(self, pitch):
@@ -406,34 +585,6 @@ class RectLattice(Lattice):
         cv.check_iterable_type('lattice universes', universes, openmc.Universe,
                                min_depth=2, max_depth=3)
         self._universes = np.asarray(universes)
-
-    def get_cell_instance(self, path, distribcell_index):
-        # Extract the lattice element from the path
-        next_index = path.index('-')
-        lat_id_indices = path[:next_index]
-        path = path[next_index+2:]
-
-        # Extract the lattice cell indices from the path
-        i1 = lat_id_indices.index('(')
-        i2 = lat_id_indices.index(')')
-        i = lat_id_indices[i1+1:i2]
-        lat_x = int(i.split(',')[0]) - 1
-        lat_y = int(i.split(',')[1]) - 1
-        lat_z = int(i.split(',')[2]) - 1
-
-        # For 2D Lattices
-        if self.ndim == 2:
-            offset = self._offsets[lat_z, lat_y, lat_x, distribcell_index-1]
-            offset += self._universes[lat_x][lat_y].get_cell_instance(
-                path, distribcell_index)
-
-        # For 3D Lattices
-        else:
-            offset = self._offsets[lat_z, lat_y, lat_x, distribcell_index-1]
-            offset += self._universes[lat_z][lat_y][lat_x].get_cell_instance(
-                path, distribcell_index)
-
-        return offset
 
     def find_element(self, point):
         """Determine index of lattice element and local coordinates for a point
@@ -530,32 +681,6 @@ class RectLattice(Lattice):
             return (0 <= idx[0] < self.shape[0] and
                     0 <= idx[1] < self.shape[1] and
                     0 <= idx[2] < self.shape[2])
-
-    def find(self, point):
-        """Find cells/universes/lattices which contain a given point
-
-        Parameters
-        ----------
-        point : 3-tuple of float
-            Cartesian coordinatesof the point
-
-        Returns
-        -------
-        list
-            Sequence of universes, cells, and lattices which are traversed to
-            find the given point
-
-        """
-        idx, p = self.find_element(point)
-        if self.is_valid_index(idx):
-            idx_u = self.get_universe_index(idx)
-            u = self.universes[idx_u]
-        else:
-            if self.outer is not None:
-                u = self.outer
-            else:
-                return []
-        return [(self, idx)] + u.find(p)
 
     def create_xml_subelement(self, xml_element):
 
@@ -772,6 +897,35 @@ class HexLattice(Lattice):
                     for r in range(self.num_rings)
                     for i in range(max(6*(self.num_rings - 1 - r), 1))]
 
+    @property
+    def _natural_indices(self):
+        """Iterate over all possible (x,alpha) or (x,alpha,z) lattice element
+        indices.
+
+        This property is used when constructing distributed cell and material
+        paths. Most importantly, the iteration order matches that used on the
+        Fortran side.
+
+        """
+        r = self.num_rings
+        if self.num_axial is None:
+            for a in range(-r + 1, r):
+                for x in range(-r + 1, r):
+                    idx = (x, a)
+                    if self.is_valid_index(idx):
+                        yield idx
+        else:
+            for z in range(self.num_axial):
+                for a in range(-r + 1, r):
+                    for x in range(-r + 1, r):
+                        idx = (x, a, z)
+                        if self.is_valid_index(idx):
+                            yield idx
+
+    @property
+    def ndim(self):
+        return 2 if isinstance(self.universes[0][0], openmc.Universe) else 3
+
     @center.setter
     def center(self, center):
         cv.check_type('lattice center', center, Iterable, Real)
@@ -798,28 +952,15 @@ class HexLattice(Lattice):
         # The Universes within each sub-list are ordered from the "top" in a
         # clockwise fashion.
 
-        # Check to see if the given universes look like a 2D or a 3D array.
-        if isinstance(self._universes[0][0], openmc.Universe):
-            n_dims = 2
-
-        elif isinstance(self._universes[0][0][0], openmc.Universe):
-            n_dims = 3
-
-        else:
-            msg = 'HexLattice ID={0:d} does not appear to be either 2D or ' \
-                  '3D.  Make sure set_universes was given a two-deep or ' \
-                  'three-deep iterable of universes.'.format(self._id)
-            raise RuntimeError(msg)
-
         # Set the number of axial positions.
-        if n_dims == 3:
+        if self.ndim == 3:
             self._num_axial = len(self._universes)
         else:
             self._num_axial = None
 
         # Set the number of rings and make sure this number is consistent for
         # all axial positions.
-        if n_dims == 3:
+        if self.ndim == 3:
             self._num_rings = len(self._universes[0])
             for rings in self._universes:
                 if len(rings) != self._num_rings:
@@ -831,7 +972,7 @@ class HexLattice(Lattice):
             self._num_rings = len(self._universes)
 
         # Make sure there are the correct number of elements in each ring.
-        if n_dims == 3:
+        if self.ndim == 3:
             for axial_slice in self._universes:
                 # Check the center ring.
                 if len(axial_slice[-1]) != 1:
@@ -1002,36 +1143,6 @@ class HexLattice(Lattice):
             return g < self.num_rings
         else:
             return g < self.num_rings and 0 <= idx[2] < self.num_axial
-
-    def find(self, point):
-        """Find cells/universes/lattices which contain a given point
-
-        Parameters
-        ----------
-        point : 3-tuple of float
-            Cartesian coordinatesof the point
-
-        Returns
-        -------
-        list
-            Sequence of universes, cells, and lattices which are traversed to
-            find the given point
-
-        """
-        idx, p = self.find_element(point)
-        if self.is_valid_index(idx):
-            idx_u = self.get_universe_index(idx)
-            if self.num_axial is None:
-                u = self.universes[idx_u[0]][idx_u[1]]
-            else:
-                u = self.universes[idx_u[0]][idx_u[1]][idx_u[2]]
-        else:
-            if self.outer is not None:
-                u = self.outer
-            else:
-                return []
-
-        return [(self, idx)] + u.find(p)
 
     def create_xml_subelement(self, xml_element):
         # Determine if XML element already contains subelement for this Lattice

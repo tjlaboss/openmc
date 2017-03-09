@@ -25,7 +25,7 @@ except ImportError:
 
 
 MOCK_MODULES = ['numpy', 'numpy.polynomial', 'numpy.polynomial.polynomial',
-                'h5py', 'pandas', 'uncertainties', 'opencg']
+                'h5py', 'pandas', 'uncertainties', 'openmoc']
 sys.modules.update((mod_name, MagicMock()) for mod_name in MOCK_MODULES)
 
 import numpy as np
@@ -248,7 +248,7 @@ napoleon_use_ivar = True
 
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3', None),
-    'numpy': ('http://docs.scipy.org/doc/numpy/', None),
+    'numpy': ('https://docs.scipy.org/doc/numpy/', None),
     'pandas': ('http://pandas.pydata.org/pandas-docs/stable/', None),
     'matplotlib': ('http://matplotlib.org/', None)
 }

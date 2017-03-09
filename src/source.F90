@@ -12,9 +12,9 @@ module source
   use distribution_multivariate, only: SpatialBox
   use error,            only: fatal_error
   use geometry,         only: find_cell
-  use geometry_header,  only: BASE_UNIVERSE
   use global
   use hdf5_interface,   only: file_create, file_open, file_close, read_dataset
+  use message_passing,  only: rank
   use output,           only: write_message
   use particle_header,  only: Particle
   use random_lcg,       only: prn, set_particle_seed, prn_set_stream
@@ -39,7 +39,7 @@ contains
     character(MAX_FILE_LEN) :: filename
     type(Bank), pointer :: src ! source bank site
 
-    call write_message("Initializing source particles...", 6)
+    call write_message("Initializing source particles...", 5)
 
     if (path_source /= '') then
       ! Read the source from a binary file instead of sampling from some
@@ -83,7 +83,7 @@ contains
 
     ! Write out initial source
     if (write_initial_source) then
-      call write_message('Writing out initial source...', 1)
+      call write_message('Writing out initial source...', 5)
       filename = trim(path_output) // 'initial_source.h5'
       file_id = file_create(filename, parallel=.true.)
       call write_source_bank(file_id)

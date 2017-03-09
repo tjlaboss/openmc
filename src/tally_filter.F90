@@ -3,7 +3,7 @@ module tally_filter
   use algorithm,           only: binary_search
   use constants,           only: ONE, NO_BIN_FOUND, FP_PRECISION, ERROR_REAL
   use dict_header,         only: DictIntInt
-  use geometry_header,     only: BASE_UNIVERSE, RectLattice, HexLattice
+  use geometry_header,     only: root_universe, RectLattice, HexLattice
   use global
   use hdf5_interface
   use mesh_header,         only: RegularMesh
@@ -262,6 +262,9 @@ contains
       ! A track can span multiple mesh bins so we need to handle a lot of
       ! intersection logic for tracklength tallies.
 
+      ! ========================================================================
+      ! Determine if the track intersects the tally mesh.
+
       ! Copy the starting and ending coordinates of the particle.  Offset these
       ! just a bit for the purposes of determining if there was an intersection
       ! in case the mesh surfaces coincide with lattice/geometric surfaces which
@@ -296,6 +299,9 @@ contains
         end if
       end if
 
+      ! ========================================================================
+      ! Figure out which mesh cell to tally.
+
       ! Copy the un-modified coordinates the particle direction.
       xyz0 = p % last_xyz
       xyz1 = p % coord(1) % xyz
@@ -304,11 +310,20 @@ contains
       ! Compute the length of the entire track.
       total_distance = sqrt(sum((xyz1 - xyz0)**2))
 
-      ! If we're looking for the first valid bin, check to see if the particle
-      ! starts inside the mesh.
       if (current_bin == NO_BIN_FOUND) then
+        ! We are looking for the first valid mesh bin.  Check to see if the
+        ! particle starts inside the mesh.
         if (any(ijk0(:m % n_dimension) < 1) &
              .or. any(ijk0(:m % n_dimension) > m % dimension)) then
+          ! The particle does not start in the mesh.  Note that we nudged the
+          ! start and end coordinates by a TINY_BIT each so we will have
+          ! difficulty resolving tracks that are less than 2*TINY_BIT in length.
+          ! If the track is that short, it is also insignificant so we can
+          ! safely ignore it in the tallies.
+          if (total_distance < 2*TINY_BIT) then
+            next_bin = NO_BIN_FOUND
+            return
+          end if
 
           ! The particle does not start in the mesh so keep iterating the ijk0
           ! indices to cross the nearest mesh surface until we've found a valid
@@ -347,14 +362,12 @@ contains
           xyz0 = xyz0 + distance * uvw
 
         end if
-      end if
 
-      ! ========================================================================
-      ! If we've already scored some mesh bins, figure out which mesh cell is
-      ! next and where the particle enters that cell.
+      else
+        ! We have already scored some mesh bins for this track.  Pick up where
+        ! we left off and find the next mesh cell that the particle enters.
 
-      if (current_bin /= NO_BIN_FOUND) then
-        ! Get the indices to the last bin.
+        ! Get the indices to the last bin we scored.
         call bin_to_mesh_indices(m, current_bin, ijk0(:m % n_dimension))
 
         ! If the particle track ends in that bin, then we are done.
@@ -401,7 +414,10 @@ contains
         end if
       end if
 
-      ! Compute the length of the track segment in this mesh cell.
+      ! ========================================================================
+      ! Compute the length of the track segment in the appropiate mesh cell and
+      ! return.
+
       if (all(ijk0(:m % n_dimension) == ijk1(:m % n_dimension))) then
         ! The track ends in this cell.  Use the particle end location rather
         ! than the mesh surface.
@@ -422,7 +438,7 @@ contains
         distance = minval(d(:m % n_dimension))
       end if
 
-      ! Assign the next tally bin and the score
+      ! Assign the next tally bin and the score.
       next_bin = mesh_indices_to_bin(m, ijk0(:m % n_dimension))
       weight = distance / total_distance
     endif
@@ -501,9 +517,17 @@ contains
     class(UniverseFilter), intent(in) :: this
     integer(HID_T),        intent(in) :: filter_group
 
+    integer :: i
+    integer, allocatable :: universe_ids(:)
+
     call write_dataset(filter_group, "type", "universe")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % universes )
+
+    allocate(universe_ids(size(this % universes)))
+    do i = 1, size(this % universes)
+      universe_ids(i) = universes(this % universes(i)) % id
+    end do
+    call write_dataset(filter_group, "bins", universe_ids)
   end subroutine to_statepoint_universe
 
   subroutine initialize_universe(this)
@@ -562,9 +586,17 @@ contains
     class(MaterialFilter), intent(in) :: this
     integer(HID_T),        intent(in) :: filter_group
 
+    integer :: i
+    integer, allocatable :: material_ids(:)
+
     call write_dataset(filter_group, "type", "material")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % materials )
+
+    allocate(material_ids(size(this % materials)))
+    do i = 1, size(this % materials)
+      material_ids(i) = materials(this % materials(i)) % id
+    end do
+    call write_dataset(filter_group, "bins", material_ids)
   end subroutine to_statepoint_material
 
   subroutine initialize_material(this)
@@ -639,9 +671,17 @@ contains
     class(CellFilter), intent(in) :: this
     integer(HID_T),    intent(in) :: filter_group
 
+    integer :: i
+    integer, allocatable :: cell_ids(:)
+
     call write_dataset(filter_group, "type", "cell")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % cells )
+
+    allocate(cell_ids(size(this % cells)))
+    do i = 1, size(this % cells)
+      cell_ids(i) = cells(this % cells(i)) % id
+    end do
+    call write_dataset(filter_group, "bins", cell_ids)
   end subroutine to_statepoint_cell
 
   subroutine initialize_cell(this)
@@ -692,10 +732,10 @@ contains
       distribcell_index = cells(this % cell) % distribcell_index
       offset = 0
       do i = 1, p % n_coord
-        if (cells(p % coord(i) % cell) % type == CELL_FILL) then
+        if (cells(p % coord(i) % cell) % type == FILL_UNIVERSE) then
           offset = offset + cells(p % coord(i) % cell) % &
                offset(distribcell_index)
-        elseif (cells(p % coord(i) % cell) % type == CELL_LATTICE) then
+        elseif (cells(p % coord(i) % cell) % type == FILL_LATTICE) then
           if (lattices(p % coord(i + 1) % lattice) % obj &
                % are_valid_indices([&
                p % coord(i + 1) % lattice_x, &
@@ -725,7 +765,7 @@ contains
 
     call write_dataset(filter_group, "type", "distribcell")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % cell )
+    call write_dataset(filter_group, "bins", cells(this % cell) % id)
   end subroutine to_statepoint_distribcell
 
   subroutine initialize_distribcell(this)
@@ -751,7 +791,7 @@ contains
     integer                 :: offset
     type(Universe), pointer :: univ
 
-    univ => universes(BASE_UNIVERSE)
+    univ => universes(root_universe)
     offset = 0
     label = ''
     call find_offset(this % cell, univ, bin-1, offset, label)
@@ -784,9 +824,16 @@ contains
     class(CellbornFilter), intent(in) :: this
     integer(HID_T),        intent(in) :: filter_group
 
+    integer :: i
+    integer, allocatable :: cell_ids(:)
+
     call write_dataset(filter_group, "type", "cellborn")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % cells )
+    allocate(cell_ids(size(this % cells)))
+    do i = 1, size(this % cells)
+      cell_ids(i) = cells(this % cells(i)) % id
+    end do
+    call write_dataset(filter_group, "bins", cell_ids)
   end subroutine to_statepoint_cellborn
 
   subroutine initialize_cellborn(this)
@@ -852,7 +899,7 @@ contains
 
     call write_dataset(filter_group, "type", "surface")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % surfaces )
+    call write_dataset(filter_group, "bins", this % surfaces)
   end subroutine to_statepoint_surface
 
   subroutine initialize_surface(this)
@@ -941,7 +988,7 @@ contains
 
     call write_dataset(filter_group, "type", "energy")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % bins )
+    call write_dataset(filter_group, "bins", this % bins)
   end subroutine to_statepoint_energy
 
   function text_label_energy(this, bin) result(label)
@@ -1006,7 +1053,7 @@ contains
 
     call write_dataset(filter_group, "type", "energyout")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % bins )
+    call write_dataset(filter_group, "bins", this % bins)
   end subroutine to_statepoint_energyout
 
   function text_label_energyout(this, bin) result(label)
@@ -1048,7 +1095,7 @@ contains
 
     call write_dataset(filter_group, "type", "delayedgroup")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % groups )
+    call write_dataset(filter_group, "bins", this % groups)
   end subroutine to_statepoint_dg
 
   function text_label_dg(this, bin) result(label)
@@ -1097,7 +1144,7 @@ contains
 
     call write_dataset(filter_group, "type", "mu")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % bins )
+    call write_dataset(filter_group, "bins", this % bins)
   end subroutine to_statepoint_mu
 
   function text_label_mu(this, bin) result(label)
@@ -1160,7 +1207,7 @@ contains
 
     call write_dataset(filter_group, "type", "polar")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % bins )
+    call write_dataset(filter_group, "bins", this % bins)
   end subroutine to_statepoint_polar
 
   function text_label_polar(this, bin) result(label)
@@ -1223,7 +1270,7 @@ contains
 
     call write_dataset(filter_group, "type", "azimuthal")
     call write_dataset(filter_group, "n_bins", this % n_bins)
-    call write_dataset(filter_group, "bins", this % bins )
+    call write_dataset(filter_group, "bins", this % bins)
   end subroutine to_statepoint_azimuthal
 
   function text_label_azimuthal(this, bin) result(label)
@@ -1323,11 +1370,11 @@ contains
 ! the target cell with the given offset
 !===============================================================================
 
-  recursive subroutine find_offset(goal, univ, final, offset, path)
+  recursive subroutine find_offset(i_cell, univ, target_offset, offset, path)
 
-    integer, intent(in) :: goal         ! The target cell index
+    integer, intent(in) :: i_cell         ! The target cell index
     type(Universe), intent(in) :: univ  ! Universe to begin search
-    integer, intent(in) :: final        ! Target offset
+    integer, intent(in) :: target_offset        ! Target offset
     integer, intent(inout) :: offset    ! Current offset
     character(*), intent(inout) :: path ! Path to offset
 
@@ -1340,6 +1387,7 @@ contains
     integer :: cell_index           ! Index in cells array
     integer :: lat_offset           ! Offset from lattice
     integer :: temp_offset          ! Looped sum of offsets
+    integer :: i_univ               ! index in universes array
     logical :: this_cell = .false.  ! Advance in this cell?
     logical :: later_cell = .false. ! Fill cells after this one?
     type(Cell), pointer :: c           ! Pointer to current cell
@@ -1347,24 +1395,25 @@ contains
     class(Lattice), pointer :: lat        ! Pointer to current lattice
 
     ! Get the distribcell index for this cell
-    map = cells(goal) % distribcell_index
+    map = cells(i_cell) % distribcell_index
 
-    n = univ % n_cells
+    n = size(univ % cells)
 
     ! Write to the geometry stack
-    if (univ%id == 0) then
-      path = trim(path) // to_str(univ%id)
+    i_univ = universe_dict % get_key(univ % id)
+    if (i_univ == root_universe) then
+      path = trim(path) // "u" // to_str(univ%id)
     else
-      path = trim(path) // "->" // to_str(univ%id)
+      path = trim(path) // "->u" // to_str(univ%id)
     end if
 
     ! Look through all cells in this universe
     do i = 1, n
       ! If the cell matches the goal and the offset matches final, write to the
       ! geometry stack
-      if (univ % cells(i) == goal .and. offset == final) then
+      if (univ % cells(i) == i_cell .and. offset == target_offset) then
         c => cells(univ % cells(i))
-        path = trim(path) // "->" // to_str(c % id)
+        path = trim(path) // "->c" // to_str(c % id)
         return
       end if
     end do
@@ -1374,8 +1423,7 @@ contains
 
       later_cell = .false.
 
-      cell_index = univ % cells(i)
-      c => cells(cell_index)
+      c => cells(univ % cells(i))
 
       this_cell = .false.
 
@@ -1386,26 +1434,23 @@ contains
 
         do j = i+1, n
 
-          cell_index = univ % cells(j)
-          c => cells(cell_index)
+          c => cells(univ % cells(j))
 
           ! Skip normal cells which do not have offsets
-          if (c % type == CELL_NORMAL) then
-            cycle
-          end if
+          if (c % type == FILL_MATERIAL) cycle
 
           ! Break loop once we've found the next cell with an offset
           exit
         end do
 
         ! Ensure we didn't just end the loop by iteration
-        if (c % type /= CELL_NORMAL) then
+        if (c % type /= FILL_MATERIAL) then
 
           ! There are more cells in this universe that it could be in
           later_cell = .true.
 
           ! Two cases, lattice or fill cell
-          if (c % type == CELL_FILL) then
+          if (c % type == FILL_UNIVERSE) then
             temp_offset = c % offset(map)
 
           ! Get the offset of the first lattice location
@@ -1416,13 +1461,13 @@ contains
 
           ! If the final offset is in the range of offset - temp_offset+offset
           ! then the goal is in this cell
-          if (final < temp_offset + offset) then
+          if (target_offset < temp_offset + offset) then
             this_cell = .true.
           end if
         end if
       end if
 
-      if (n == 1 .and. c % type /= CELL_NORMAL) then
+      if (n == 1 .and. c % type /= FILL_MATERIAL) then
         this_cell = .true.
       end if
 
@@ -1436,22 +1481,22 @@ contains
         cell_index = univ % cells(i)
         c => cells(cell_index)
 
-        path = trim(path) // "->" // to_str(c%id)
+        path = trim(path) // "->c" // to_str(c%id)
 
         ! ====================================================================
         ! CELL CONTAINS LOWER UNIVERSE, RECURSIVELY FIND CELL
-        if (c % type == CELL_FILL) then
+        if (c % type == FILL_UNIVERSE) then
 
           ! Enter this cell to update the current offset
           offset = c % offset(map) + offset
 
           next_univ => universes(c % fill)
-          call find_offset(goal, next_univ, final, offset, path)
+          call find_offset(i_cell, next_univ, target_offset, offset, path)
           return
 
         ! ====================================================================
         ! CELL CONTAINS LATTICE, RECURSIVELY FIND CELL
-        elseif (c % type == CELL_LATTICE) then
+        elseif (c % type == FILL_LATTICE) then
 
           ! Set current lattice
           lat => lattices(c % fill) % obj
@@ -1463,7 +1508,7 @@ contains
           type is (RectLattice)
 
             ! Write to the geometry stack
-            path = trim(path) // "->" // to_str(lat%id)
+            path = trim(path) // "->l" // to_str(lat%id)
 
             n_x = lat % n_cells(1)
             n_y = lat % n_cells(2)
@@ -1477,16 +1522,21 @@ contains
               do l = 1, n_y
                 do m = 1, n_z
 
-                  if (final >= lat % offset(map, k, l, m) + offset) then
+                  if (target_offset >= lat % offset(map, k, l, m) + offset) then
                     if (k == n_x .and. l == n_y .and. m == n_z) then
                       ! This is last lattice cell, so target must be here
                       lat_offset = lat % offset(map, k, l, m)
                       offset = offset + lat_offset
                       next_univ => universes(lat % universes(k, l, m))
-                      path = trim(path) // "(" // trim(to_str(k)) // &
-                           "," // trim(to_str(l)) // "," // &
-                           trim(to_str(m)) // ")"
-                      call find_offset(goal, next_univ, final, offset, path)
+                      if (lat % is_3d) then
+                        path = trim(path) // "(" // trim(to_str(k-1)) // &
+                             "," // trim(to_str(l-1)) // "," // &
+                             trim(to_str(m-1)) // ")"
+                      else
+                        path = trim(path) // "(" // trim(to_str(k-1)) // &
+                             "," // trim(to_str(l-1)) // ")"
+                      end if
+                      call find_offset(i_cell, next_univ, target_offset, offset, path)
                       return
                     else
                       old_m = m
@@ -1499,10 +1549,15 @@ contains
                     lat_offset = lat % offset(map, old_k, old_l, old_m)
                     offset = offset + lat_offset
                     next_univ => universes(lat % universes(old_k, old_l, old_m))
-                    path = trim(path) // "(" // trim(to_str(old_k)) // &
-                         "," // trim(to_str(old_l)) // "," // &
-                         trim(to_str(old_m)) // ")"
-                    call find_offset(goal, next_univ, final, offset, path)
+                    if (lat % is_3d) then
+                      path = trim(path) // "(" // trim(to_str(old_k-1)) // &
+                           "," // trim(to_str(old_l-1)) // "," // &
+                           trim(to_str(old_m-1)) // ")"
+                    else
+                      path = trim(path) // "(" // trim(to_str(old_k-1)) // &
+                           "," // trim(to_str(old_l-1)) // ")"
+                    end if
+                    call find_offset(i_cell, next_univ, target_offset, offset, path)
                     return
                   end if
 
@@ -1515,7 +1570,7 @@ contains
           type is (HexLattice)
 
             ! Write to the geometry stack
-            path = trim(path) // "->" // to_str(lat%id)
+            path = trim(path) // "->l" // to_str(lat%id)
 
             n_z = lat % n_axial
             n_y = 2 * lat % n_rings - 1
@@ -1537,17 +1592,23 @@ contains
                     cycle
                   end if
 
-                  if (final >= lat % offset(map, k, l, m) + offset) then
+                  if (target_offset >= lat % offset(map, k, l, m) + offset) then
                     if (k == lat % n_rings .and. l == n_y .and. m == n_z) then
                       ! This is last lattice cell, so target must be here
                       lat_offset = lat % offset(map, k, l, m)
                       offset = offset + lat_offset
                       next_univ => universes(lat % universes(k, l, m))
-                      path = trim(path) // "(" // &
-                           trim(to_str(k - lat % n_rings)) // "," // &
-                           trim(to_str(l - lat % n_rings)) // "," // &
-                           trim(to_str(m)) // ")"
-                      call find_offset(goal, next_univ, final, offset, path)
+                      if (lat % is_3d) then
+                        path = trim(path) // "(" // &
+                             trim(to_str(k - lat % n_rings)) // "," // &
+                             trim(to_str(l - lat % n_rings)) // "," // &
+                             trim(to_str(m - 1)) // ")"
+                      else
+                        path = trim(path) // "(" // &
+                             trim(to_str(k - lat % n_rings)) // "," // &
+                             trim(to_str(l - lat % n_rings)) // ")"
+                      end if
+                      call find_offset(i_cell, next_univ, target_offset, offset, path)
                       return
                     else
                       old_m = m
@@ -1560,11 +1621,17 @@ contains
                     lat_offset = lat % offset(map, old_k, old_l, old_m)
                     offset = offset + lat_offset
                     next_univ => universes(lat % universes(old_k, old_l, old_m))
-                    path = trim(path) // "(" // &
-                         trim(to_str(old_k - lat % n_rings)) // "," // &
-                         trim(to_str(old_l - lat % n_rings)) // "," // &
-                         trim(to_str(old_m)) // ")"
-                    call find_offset(goal, next_univ, final, offset, path)
+                    if (lat % is_3d) then
+                      path = trim(path) // "(" // &
+                           trim(to_str(old_k - lat % n_rings)) // "," // &
+                           trim(to_str(old_l - lat % n_rings)) // "," // &
+                           trim(to_str(old_m - 1)) // ")"
+                    else
+                      path = trim(path) // "(" // &
+                           trim(to_str(old_k - lat % n_rings)) // "," // &
+                           trim(to_str(old_l - lat % n_rings)) // ")"
+                    end if
+                    call find_offset(i_cell, next_univ, target_offset, offset, path)
                     return
                   end if
 

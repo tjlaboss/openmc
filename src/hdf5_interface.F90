@@ -17,7 +17,7 @@ module hdf5_interface
 
   use error, only: fatal_error
 #ifdef PHDF5
-  use message_passing, only: MPI_COMM_WORLD, MPI_INFO_NULL
+  use message_passing, only: mpi_intracomm, MPI_INFO_NULL
 #endif
 
   implicit none
@@ -75,6 +75,8 @@ module hdf5_interface
     module procedure write_attribute_double
     module procedure write_attribute_double_1D
     module procedure write_attribute_integer
+    module procedure write_attribute_integer_1D
+    module procedure write_attribute_string
   end interface write_attribute
 
   public :: write_dataset
@@ -93,7 +95,6 @@ module hdf5_interface
   public :: close_dataset
   public :: get_shape
   public :: get_ndims
-  public :: write_attribute_string
   public :: get_groups
   public :: get_datasets
   public :: get_name
@@ -124,10 +125,10 @@ contains
       call h5pcreate_f(H5P_FILE_ACCESS_F, plist, hdf5_err)
 #ifdef PHDF5
 #ifdef MPIF08
-      call h5pset_fapl_mpio_f(plist, MPI_COMM_WORLD%MPI_VAL, &
+      call h5pset_fapl_mpio_f(plist, mpi_intracomm%MPI_VAL, &
            MPI_INFO_NULL%MPI_VAL, hdf5_err)
 #else
-      call h5pset_fapl_mpio_f(plist, MPI_COMM_WORLD, MPI_INFO_NULL, hdf5_err)
+      call h5pset_fapl_mpio_f(plist, mpi_intracomm, MPI_INFO_NULL, hdf5_err)
 #endif
 #endif
 
@@ -174,10 +175,10 @@ contains
       call h5pcreate_f(H5P_FILE_ACCESS_F, plist, hdf5_err)
 #ifdef PHDF5
 #ifdef MPIF08
-      call h5pset_fapl_mpio_f(plist, MPI_COMM_WORLD%MPI_VAL, &
+      call h5pset_fapl_mpio_f(plist, mpi_intracomm%MPI_VAL, &
            MPI_INFO_NULL%MPI_VAL, hdf5_err)
 #else
-      call h5pset_fapl_mpio_f(plist, MPI_COMM_WORLD, MPI_INFO_NULL, hdf5_err)
+      call h5pset_fapl_mpio_f(plist, mpi_intracomm, MPI_INFO_NULL, hdf5_err)
 #endif
 #endif
 
@@ -1757,8 +1758,8 @@ contains
     integer(HID_T) :: dset    ! data set handle
     integer(HID_T) :: dspace  ! data or file space handle
     integer(HID_T) :: filetype
-    integer(HID_T) :: memtype
-    integer(SIZE_T) :: n
+    integer(SIZE_T) :: i, n
+    character(kind=C_CHAR), allocatable, target :: temp_buffer(:)
     type(c_ptr) :: f_ptr
 
     ! Set up collective vs. independent I/O
@@ -1769,35 +1770,38 @@ contains
 
     ! Create datatype for HDF5 file based on C char
     n = len_trim(buffer)
-    call h5tcopy_f(H5T_C_S1, filetype, hdf5_err)
-    call h5tset_size_f(filetype, n + 1, hdf5_err)
+    if (n > 0) then
+      call h5tcopy_f(H5T_C_S1, filetype, hdf5_err)
+      call h5tset_size_f(filetype, n, hdf5_err)
 
-    ! Create datatype in memory based on Fortran character
-    call h5tcopy_f(H5T_FORTRAN_S1, memtype, hdf5_err)
-    if (n > 0) call h5tset_size_f(memtype, n, hdf5_err)
+      ! Create dataspace/dataset
+      call h5screate_f(H5S_SCALAR_F, dspace, hdf5_err)
+      call h5dcreate_f(group_id, trim(name), filetype, dspace, dset, hdf5_err)
 
-    ! Create dataspace/dataset
-    call h5screate_f(H5S_SCALAR_F, dspace, hdf5_err)
-    call h5dcreate_f(group_id, trim(name), filetype, dspace, dset, hdf5_err)
+      ! Copy string to temporary buffer
+      allocate(temp_buffer(n))
+      do i = 1, n
+        temp_buffer(i) = buffer(i:i)
+      end do
 
-    ! Get pointer to start of string
-    f_ptr = c_loc(buffer(1:1))
+      ! Get pointer to start of string
+      f_ptr = c_loc(temp_buffer(1))
 
-    if (using_mpio_device(group_id)) then
+      if (using_mpio_device(group_id)) then
 #ifdef PHDF5
-      call h5pcreate_f(H5P_DATASET_XFER_F, plist, hdf5_err)
-      call h5pset_dxpl_mpio_f(plist, data_xfer_mode, hdf5_err)
-      if (n > 0) call h5dwrite_f(dset, memtype, f_ptr, hdf5_err, xfer_prp=plist)
-      call h5pclose_f(plist, hdf5_err)
+        call h5pcreate_f(H5P_DATASET_XFER_F, plist, hdf5_err)
+        call h5pset_dxpl_mpio_f(plist, data_xfer_mode, hdf5_err)
+        call h5dwrite_f(dset, filetype, f_ptr, hdf5_err, xfer_prp=plist)
+        call h5pclose_f(plist, hdf5_err)
 #endif
-    else
-      if (n > 0) call h5dwrite_f(dset, memtype, f_ptr, hdf5_err)
-    end if
+      else
+        call h5dwrite_f(dset, filetype, f_ptr, hdf5_err)
+      end if
 
-    call h5dclose_f(dset, hdf5_err)
-    call h5sclose_f(dspace, hdf5_err)
-    call h5tclose_f(memtype, hdf5_err)
-    call h5tclose_f(filetype, hdf5_err)
+      call h5dclose_f(dset, hdf5_err)
+      call h5sclose_f(dspace, hdf5_err)
+      call h5tclose_f(filetype, hdf5_err)
+    end if
   end subroutine write_string
 
 !===============================================================================
@@ -1816,11 +1820,10 @@ contains
     integer(HID_T) :: plist   ! property list
 #endif
     integer(HID_T) :: dset_id
-    integer(HID_T) :: space_id
     integer(HID_T) :: filetype
     integer(HID_T) :: memtype
-    integer(SIZE_T) :: size
-    integer(SIZE_T) :: n
+    integer(SIZE_T) :: i, n
+    character(kind=C_CHAR), allocatable, target :: temp_buffer(:)
     type(c_ptr) :: f_ptr
 
     if (present(name)) then
@@ -1835,40 +1838,41 @@ contains
       if (indep) data_xfer_mode = H5FD_MPIO_INDEPENDENT_F
     end if
 
-    ! Get dataspace
-    call h5dget_space_f(dset_id, space_id, hdf5_err)
-
     ! Make sure buffer is large enough
     call h5dget_type_f(dset_id, filetype, hdf5_err)
-    call h5tget_size_f(filetype, size, hdf5_err)
-    if (size > len(buffer) + 1) then
+    call h5tget_size_f(filetype, n, hdf5_err)
+    if (n > len(buffer)) then
       call fatal_error("Character buffer is not long enough to &
            &read HDF5 string.")
     end if
 
     ! Get datatype in memory based on Fortran character
-    n = len(buffer)
-    call h5tcopy_f(H5T_FORTRAN_S1, memtype, hdf5_err)
-    call h5tset_size_f(memtype, n, hdf5_err)
+    call h5tcopy_f(H5T_C_S1, memtype, hdf5_err)
+    call h5tset_size_f(memtype, n + 1, hdf5_err)
 
     ! Get pointer to start of string
-    f_ptr = c_loc(buffer(1:1))
+    allocate(temp_buffer(n))
+    f_ptr = c_loc(temp_buffer(1))
 
     if (using_mpio_device(dset_id)) then
 #ifdef PHDF5
       call h5pcreate_f(H5P_DATASET_XFER_F, plist, hdf5_err)
       call h5pset_dxpl_mpio_f(plist, data_xfer_mode, hdf5_err)
-      call h5dread_f(dset_id, memtype, f_ptr, hdf5_err, &
-           mem_space_id=space_id, xfer_prp=plist)
+      call h5dread_f(dset_id, memtype, f_ptr, hdf5_err, xfer_prp=plist)
       call h5pclose_f(plist, hdf5_err)
 #endif
     else
-      call h5dread_f(dset_id, memtype, f_ptr, hdf5_err, mem_space_id=space_id)
+      call h5dread_f(dset_id, memtype, f_ptr, hdf5_err)
     end if
+
+    buffer = ''
+    do i = 1, n
+      if (temp_buffer(i) == C_NULL_CHAR) cycle
+      buffer(i:i) = temp_buffer(i)
+    end do
 
     if (present(name)) call h5dclose_f(dset_id, hdf5_err)
 
-    call h5sclose_f(space_id, hdf5_err)
     call h5tclose_f(filetype, hdf5_err)
     call h5tclose_f(memtype, hdf5_err)
   end subroutine read_string
@@ -2046,15 +2050,46 @@ contains
 ! WRITE_ATTRIBUTE_STRING
 !===============================================================================
 
-  subroutine write_attribute_string(group_id, var, attr_type, attr_str)
-    integer(HID_T), intent(in) :: group_id
-    character(*), intent(in)   :: var       ! variable name for attr
-    character(*), intent(in)   :: attr_type ! attr identifier type
-    character(*), intent(in)   :: attr_str  ! string for attr id type
+  subroutine write_attribute_string(obj_id, name, buffer)
+    integer(HID_T), intent(in)       :: obj_id    ! object to write attribute to
+    character(*), intent(in)         :: name      ! name of attribute
+    character(*), intent(in), target :: buffer    ! string to write
 
-    integer :: hdf5_err
+    integer        :: hdf5_err
+    integer(HID_T) :: dspace_id
+    integer(HID_T) :: attr_id
+    integer(HID_T) :: filetype
+    integer(SIZE_T) :: i
+    integer(SIZE_T) :: n
+    character(kind=C_CHAR), allocatable, target :: temp_buffer(:)
+    type(c_ptr) :: f_ptr
 
-    call h5ltset_attribute_string_f(group_id, var, attr_type, attr_str, hdf5_err)
+    ! Create datatype for HDF5 file based on C char
+    n = len_trim(buffer)
+    if (n > 0) then
+      call h5tcopy_f(H5T_C_S1, filetype, hdf5_err)
+      call h5tset_size_f(filetype, n, hdf5_err)
+
+      ! Create memory space and attribute
+      call h5screate_f(H5S_SCALAR_F, dspace_id, hdf5_err)
+      call h5acreate_f(obj_id, trim(name), filetype, dspace_id, &
+           attr_id, hdf5_err)
+
+      ! Copy string to temporary buffer
+      allocate(temp_buffer(n))
+      do i = 1, n
+        temp_buffer(i) = buffer(i:i)
+      end do
+
+      ! Write attribute
+      f_ptr = c_loc(buffer(1:1))
+      call h5awrite_f(attr_id, filetype, f_ptr, hdf5_err)
+
+      ! Close attribute
+      call h5aclose_f(attr_id, hdf5_err)
+      call h5sclose_f(dspace_id, hdf5_err)
+      call h5tclose_f(filetype, hdf5_err)
+    end if
   end subroutine write_attribute_string
 
   subroutine read_attribute_double(buffer, obj_id, name)
@@ -2270,6 +2305,37 @@ contains
     call h5aread_f(attr_id, H5T_NATIVE_INTEGER, f_ptr, hdf5_err)
   end subroutine read_attribute_integer_1D_explicit
 
+  subroutine write_attribute_integer_1D(obj_id, name, buffer)
+    integer(HID_T),  intent(in) :: obj_id
+    character(*),    intent(in) :: name
+    integer, target, intent(in) :: buffer(:)
+
+    integer(HSIZE_T) :: dims(1)
+
+    dims(:) = shape(buffer)
+    call write_attribute_integer_1D_explicit(obj_id, dims, name, buffer)
+  end subroutine write_attribute_integer_1D
+
+  subroutine write_attribute_integer_1D_explicit(obj_id, dims, name, buffer)
+    integer(HID_T),   intent(in) :: obj_id
+    integer(HSIZE_T), intent(in) :: dims(1)
+    character(*),     intent(in) :: name
+    integer, target,  intent(in) :: buffer(dims(1))
+
+    integer        :: hdf5_err
+    integer(HID_T) :: dspace_id
+    integer(HID_T) :: attr_id
+    type(C_PTR)    :: f_ptr
+
+    call h5screate_simple_f(1, dims, dspace_id, hdf5_err)
+    call h5acreate_f(obj_id, trim(name), H5T_NATIVE_INTEGER, dspace_id, &
+         attr_id, hdf5_err)
+    f_ptr = c_loc(buffer)
+    call h5awrite_f(attr_id, H5T_NATIVE_INTEGER, f_ptr, hdf5_err)
+    call h5aclose_f(attr_id, hdf5_err)
+    call h5sclose_f(dspace_id, hdf5_err)
+  end subroutine write_attribute_integer_1D_explicit
+
   subroutine read_attribute_integer_2D(buffer, obj_id, name)
     integer, target, allocatable, intent(inout) :: buffer(:,:)
     integer(HID_T),  intent(in)    :: obj_id
@@ -2309,9 +2375,9 @@ contains
   end subroutine read_attribute_integer_2D_explicit
 
   subroutine read_attribute_string(buffer, obj_id, name)
-    character(*),   intent(inout), target :: buffer  ! read data to here
-    integer(HID_T), intent(in)            :: obj_id
-    character(*),   intent(in)            :: name    ! name for data
+    character(*),   intent(inout) :: buffer  ! read data to here
+    integer(HID_T), intent(in)    :: obj_id
+    character(*),   intent(in)    :: name    ! name for data
 
     integer         :: hdf5_err
     integer(HID_T)  :: attr_id ! data set handle
@@ -2344,9 +2410,9 @@ contains
     call h5aread_f(attr_id, memtype, f_ptr, hdf5_err)
     buffer = ''
     do i = 1, size
+      if (temp_buffer(i) == C_NULL_CHAR) cycle
       buffer(i:i) = temp_buffer(i)
     end do
-    deallocate(temp_buffer)
 
     call h5aclose_f(attr_id, hdf5_err)
     call h5tclose_f(filetype, hdf5_err)

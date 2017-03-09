@@ -2,10 +2,6 @@ module tally
 
   use, intrinsic :: ISO_C_BINDING
 
-#ifdef MPI
-  use message_passing
-#endif
-
   use algorithm,        only: binary_search
   use constants
   use cross_section,    only: multipole_deriv_eval
@@ -18,6 +14,7 @@ module tally
                               mesh_intersects_1d, mesh_intersects_2d, &
                               mesh_intersects_3d
   use mesh_header,      only: RegularMesh
+  use message_passing
   use output,           only: header
   use particle_header,  only: LocalCoord, Particle
   use string,           only: to_str
@@ -446,7 +443,7 @@ contains
             if (micro_xs(p % event_nuclide) % absorption > ZERO) then
                 score = p % absorb_wgt * micro_xs(p % event_nuclide) % fission &
                      * nuclides(p % event_nuclide) % nu(E, EMISSION_PROMPT) &
-                     / micro_xs(p % event_nuclide) % absorption
+                     / micro_xs(p % event_nuclide) % absorption * flux
             else
               score = ZERO
             end if
@@ -459,7 +456,7 @@ contains
             ! bank as prompt neutrons. Since this was weighted by 1/keff, we
             ! multiply by keff to get the proper score.
             score = keff * p % wgt_bank * (ONE - sum(p % n_delayed_bank) &
-                 / real(p % n_bank, 8))
+                 / real(p % n_bank, 8)) * flux
           end if
 
         else
@@ -537,7 +534,7 @@ contains
                     ! Compute the score and tally to bin
                     score = p % absorb_wgt * yield &
                          * micro_xs(p % event_nuclide) % fission &
-                         / micro_xs(p % event_nuclide) % absorption
+                         / micro_xs(p % event_nuclide) % absorption * flux
                     call score_fission_delayed_dg(t, d_bin, score, score_index)
                   end do
                   cycle SCORE_LOOP
@@ -548,7 +545,7 @@ contains
                 ! delayed-nu-fission xs to the absorption xs
                 score = p % absorb_wgt * micro_xs(p % event_nuclide) % fission &
                      * nuclides(p % event_nuclide) % nu(E, EMISSION_DELAYED) &
-                     / micro_xs(p % event_nuclide) % absorption
+                     / micro_xs(p % event_nuclide) % absorption * flux
               end if
             end if
           else
@@ -577,7 +574,7 @@ contains
 
                   ! Compute the score and tally to bin
                   score = keff * p % wgt_bank / p % n_bank * &
-                       p % n_delayed_bank(d)
+                       p % n_delayed_bank(d) * flux
 
                   call score_fission_delayed_dg(t, d_bin, score, score_index)
                 end do
@@ -586,7 +583,8 @@ contains
             else
 
               ! Add the contribution from all delayed groups
-              score = keff * p % wgt_bank / p % n_bank * sum(p % n_delayed_bank)
+              score = keff * p % wgt_bank / p % n_bank * &
+                   sum(p % n_delayed_bank) * flux
             end if
           end if
         else
@@ -722,7 +720,7 @@ contains
                       score = p % absorb_wgt * yield * &
                            micro_xs(p % event_nuclide) % fission &
                            / micro_xs(p % event_nuclide) % absorption &
-                           * rxn % products(1 + d) % decay_rate
+                           * rxn % products(1 + d) % decay_rate * flux
                     end associate
 
                     ! Tally to bin
@@ -750,7 +748,7 @@ contains
                     score = score + rxn % products(1 + d) % decay_rate * &
                          p % absorb_wgt * micro_xs(p % event_nuclide) % fission *&
                          nuclides(p % event_nuclide) % nu(E, EMISSION_DELAYED, d)&
-                         / micro_xs(p % event_nuclide) % absorption
+                         / micro_xs(p % event_nuclide) % absorption * flux
                   end do
                 end associate
               end if
@@ -785,7 +783,7 @@ contains
 
                   ! determine score based on bank site weight and keff.
                   score = score + keff * fission_bank(n_bank - p % n_bank + k) &
-                       % wgt * rxn % products(1 + g) % decay_rate
+                       % wgt * rxn % products(1 + g) % decay_rate * flux
                 end associate
 
                 ! if the delayed group filter is present, tally to corresponding
@@ -1641,7 +1639,7 @@ contains
             ! bank. Since this was weighted by 1/keff, we multiply by keff
             ! to get the proper score.
             score = keff * p % wgt_bank * (ONE - sum(p % n_delayed_bank) &
-                 / real(p % n_bank, 8))
+                 / real(p % n_bank, 8)) * flux
             if (i_nuclide > 0) then
               score = score * atom_density * &
                    nucxs % get_xs('fission', p_g, UVW=p_uvw) / &
@@ -1741,7 +1739,7 @@ contains
                   d = filt % groups(d_bin)
 
                   score = keff * p % wgt_bank / p % n_bank * &
-                       p % n_delayed_bank(d)
+                       p % n_delayed_bank(d) * flux
 
                   if (i_nuclide > 0) then
                     score = score * atom_density * &
@@ -1754,7 +1752,7 @@ contains
                 cycle SCORE_LOOP
               end select
             else
-              score = keff * p % wgt_bank / p % n_bank * sum(p % n_delayed_bank)
+              score = keff * p % wgt_bank / p % n_bank * sum(p % n_delayed_bank) * flux
               if (i_nuclide > 0) then
                 score = score * atom_density * &
                      nucxs % get_xs('fission', p_g, UVW=p_uvw) / &
@@ -1854,12 +1852,12 @@ contains
                     score = score + p % absorb_wgt * &
                          nucxs % get_xs('decay rate', p_g, UVW=p_uvw, dg=d) * &
                          nucxs % get_xs('delayed-nu-fission', p_g, UVW=p_uvw, &
-                         dg=d) / matxs % get_xs('absorption', p_g, UVW=p_uvw)
+                         dg=d) / matxs % get_xs('absorption', p_g, UVW=p_uvw) * flux
                   else
                     score = score + p % absorb_wgt * &
                          matxs % get_xs('decay rate', p_g, UVW=p_uvw, dg=d) * &
                          matxs % get_xs('delayed-nu-fission', p_g, UVW=p_uvw, &
-                         dg=d) / matxs % get_xs('absorption', p_g, UVW=p_uvw)
+                         dg=d) / matxs % get_xs('absorption', p_g, UVW=p_uvw) * flux
                   end if
                 end do
               end if
@@ -1890,11 +1888,11 @@ contains
                        fission_bank(n_bank - p % n_bank + k) % wgt * &
                        nucxs % get_xs('decay rate', p_g, UVW=p_uvw, dg=g) * &
                        nucxs % get_xs('fission', p_g, UVW=p_uvw) / &
-                       matxs % get_xs('fission', p_g, UVW=p_uvw)
+                       matxs % get_xs('fission', p_g, UVW=p_uvw) * flux
                 else
                   score = score + keff * &
                        fission_bank(n_bank - p % n_bank + k) % wgt * &
-                       matxs % get_xs('decay rate', p_g, UVW=p_uvw, dg=g)
+                       matxs % get_xs('decay rate', p_g, UVW=p_uvw, dg=g) * flux
                 end if
 
                 ! if the delayed group filter is present, tally to corresponding
@@ -2030,7 +2028,7 @@ contains
 
     end do SCORE_LOOP
 
-    nullify(matxs,nucxs)
+    nullify(matxs, nucxs)
   end subroutine score_general_mg
 
 !===============================================================================
@@ -2526,8 +2524,12 @@ contains
 
         if (.not. run_CE .and. eo_filt % matches_transport_groups) then
 
-          ! determine outgoing energy from fission bank
+          ! determine outgoing energy group from fission bank
           g_out = int(fission_bank(n_bank - p % n_bank + k) % E)
+
+          ! modify the value so that g_out = 1 corresponds to the highest
+          ! energy bin
+          g_out = size(eo_filt % bins) - g_out
 
           ! change outgoing energy bin
           matching_bins(i) = g_out
@@ -2557,12 +2559,11 @@ contains
           ! determine scoring index and weight for this filter combination
           i_filter = sum((matching_bins(1:size(t%filters)) - 1) * t % stride) &
                + 1
-          filter_weight = product(filter_weights(:size(t % filters)))
 
           ! Add score to tally
 !$omp atomic
           t % results(RESULT_VALUE, i_score, i_filter) = &
-               t % results(RESULT_VALUE, i_score, i_filter) + score * filter_weight
+               t % results(RESULT_VALUE, i_score, i_filter) + score
 
         ! Case for tallying delayed emissions
         else if (score_bin == SCORE_DELAYED_NU_FISSION .and. g /= 0) then
@@ -2586,7 +2587,15 @@ contains
                 ! check whether the delayed group of the particle is equal to
                 ! the delayed group of this bin
                 if (d == g) then
-                  call score_fission_delayed_dg(t, d_bin, score, i_score)
+
+                  ! determine scoring index and weight for this filter
+                  ! combination
+                  i_filter = sum((matching_bins(1:size(t%filters)) - 1) * &
+                       t % stride) + 1
+                  filter_weight = product(filter_weights(:size(t % filters)))
+
+                  call score_fission_delayed_dg(t, d_bin, &
+                       score * filter_weight, i_score)
                 end if
               end do
             end select
@@ -2627,7 +2636,6 @@ contains
 
     integer :: bin_original  ! original bin index
     integer :: filter_index  ! index for matching filter bin combination
-    real(8) :: filter_weight ! combined weight of all filters
 
     ! save original delayed group bin
     bin_original = matching_bins(t % find_filter(FILTER_DELAYEDGROUP))
@@ -2636,11 +2644,10 @@ contains
     ! determine scoring index and weight on the modified matching_bins
     filter_index = sum((matching_bins(1:size(t % filters)) - 1) * t % stride) &
          + 1
-    filter_weight = product(filter_weights(:size(t % filters)))
 
 !$omp atomic
     t % results(RESULT_VALUE, score_index, filter_index) = &
-         t % results(RESULT_VALUE, score_index, filter_index) + score * filter_weight
+         t % results(RESULT_VALUE, score_index, filter_index) + score
 
     ! reset original delayed group bin
     matching_bins(t % find_filter(FILTER_DELAYEDGROUP)) = bin_original
@@ -4073,14 +4080,14 @@ contains
         ! The MPI_IN_PLACE specifier allows the master to copy values into
         ! a receive buffer without having a temporary variable
         call MPI_REDUCE(MPI_IN_PLACE, tally_temp, n_bins, MPI_REAL8, &
-             MPI_SUM, 0, MPI_COMM_WORLD, mpi_err)
+             MPI_SUM, 0, mpi_intracomm, mpi_err)
 
         ! Transfer values to value on master
         t % results(RESULT_VALUE,:,:) = tally_temp
       else
         ! Receive buffer not significant at other processors
         call MPI_REDUCE(tally_temp, dummy, n_bins, MPI_REAL8, &
-             MPI_SUM, 0, MPI_COMM_WORLD, mpi_err)
+             MPI_SUM, 0, mpi_intracomm, mpi_err)
 
         ! Reset value on other processors
         t % results(RESULT_VALUE,:,:) = ZERO
@@ -4094,14 +4101,14 @@ contains
 
     if (master) then
       call MPI_REDUCE(MPI_IN_PLACE, global_temp, N_GLOBAL_TALLIES, &
-           MPI_REAL8, MPI_SUM, 0, MPI_COMM_WORLD, mpi_err)
+           MPI_REAL8, MPI_SUM, 0, mpi_intracomm, mpi_err)
 
       ! Transfer values back to global_tallies on master
       global_tallies(RESULT_VALUE, :) = global_temp
     else
       ! Receive buffer not significant at other processors
       call MPI_REDUCE(global_temp, dummy, N_GLOBAL_TALLIES, &
-           MPI_REAL8, MPI_SUM, 0, MPI_COMM_WORLD, mpi_err)
+           MPI_REAL8, MPI_SUM, 0, mpi_intracomm, mpi_err)
 
       ! Reset value on other processors
       global_tallies(RESULT_VALUE, :) = ZERO
@@ -4111,11 +4118,11 @@ contains
     ! last realization
     if (master) then
       call MPI_REDUCE(MPI_IN_PLACE, total_weight, 1, MPI_REAL8, MPI_SUM, &
-           0, MPI_COMM_WORLD, mpi_err)
+           0, mpi_intracomm, mpi_err)
     else
       ! Receive buffer not significant at other processors
       call MPI_REDUCE(total_weight, dummy, 1, MPI_REAL8, MPI_SUM, &
-           0, MPI_COMM_WORLD, mpi_err)
+           0, mpi_intracomm, mpi_err)
     end if
 
   end subroutine reduce_tally_results

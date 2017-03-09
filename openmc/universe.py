@@ -1,5 +1,5 @@
 from collections import OrderedDict, Iterable
-from numbers import Integral
+from numbers import Integral, Real
 import random
 import sys
 
@@ -42,6 +42,10 @@ class Universe(object):
     cells : collections.OrderedDict
         Dictionary whose keys are cell IDs and values are :class:`Cell`
         instances
+    volume : float
+        Volume of the universe in cm^3. This can either be set manually or
+        calculated in a stochastic volume calculation and added via the
+        :meth:`Universe.add_volume_information` method.
 
     """
 
@@ -49,14 +53,12 @@ class Universe(object):
         # Initialize Cell class attributes
         self.id = universe_id
         self.name = name
+        self._volume = None
+        self._atoms = {}
 
         # Keys     - Cell IDs
         # Values - Cells
         self._cells = OrderedDict()
-
-        # Keys     - Cell IDs
-        # Values - Offsets
-        self._cell_offsets = OrderedDict()
 
         if cells is not None:
             self.add_cells(cells)
@@ -99,6 +101,10 @@ class Universe(object):
     def cells(self):
         return self._cells
 
+    @property
+    def volume(self):
+        return self._volume
+
     @id.setter
     def id(self, universe_id):
         if universe_id is None:
@@ -117,6 +123,59 @@ class Universe(object):
             self._name = name
         else:
             self._name = ''
+
+    @volume.setter
+    def volume(self, volume):
+        if volume is not None:
+            cv.check_type('universe volume', volume, Real)
+        self._volume = volume
+
+    @classmethod
+    def from_hdf5(cls, group, cells):
+        """Create universe from HDF5 group
+
+        Parameters
+        ----------
+        group : h5py.Group
+            Group in HDF5 file
+        cells : dict
+            Dictionary mapping cell IDs to instances of :class:`openmc.Cell`.
+
+        Returns
+        -------
+        openmc.Universe
+            Universe instance
+
+        """
+        universe_id = int(group.name.split('/')[-1].lstrip('universe '))
+        cell_ids = group['cells'].value
+
+        # Create this Universe
+        universe = cls(universe_id)
+
+        # Add each Cell to the Universe
+        for cell_id in cell_ids:
+            universe.add_cell(cells[cell_id])
+
+        return universe
+
+    def add_volume_information(self, volume_calc):
+        """Add volume information to a universe.
+
+        Parameters
+        ----------
+        volume_calc : openmc.VolumeCalculation
+            Results from a stochastic volume calculation
+
+        """
+        if volume_calc.domain_type == 'cell':
+            if self.id in volume_calc.volumes:
+                self._volume = volume_calc.volumes[self.id]
+                self._atoms = volume_calc.atoms[self.id]
+            else:
+                raise ValueError('No volume information found for this universe.')
+        else:
+            raise ValueError('No volume information found for this universe.')
 
     def find(self, point):
         """Find cells/universes/lattices which contain a given point
@@ -329,27 +388,6 @@ class Universe(object):
 
         self._cells.clear()
 
-    def get_cell_instance(self, path, distribcell_index):
-
-        # Pop off the root Universe ID from the path
-        next_index = path.index('-')
-        path = path[next_index+2:]
-
-        # Extract the Cell ID from the path
-        if '-' in path:
-            next_index = path.index('-')
-            cell_id = int(path[:next_index])
-            path = path[next_index+2:]
-        else:
-            cell_id = int(path)
-            path = ''
-
-        # Make a recursive call to the Cell within this Universe
-        offset = self.cells[cell_id].get_cell_instance(path, distribcell_index)
-
-        # Return the offset computed at all nested Universe levels
-        return offset
-
     def get_nuclides(self):
         """Returns all nuclides in the universe
 
@@ -411,7 +449,7 @@ class Universe(object):
 
         Returns
         -------
-        materials : Collections.OrderedDict
+        materials : collections.OrderedDict
             Dictionary whose keys are material IDs and values are
             :class:`Material` instances
 
@@ -436,14 +474,9 @@ class Universe(object):
             :class:`Universe` instances
 
         """
-
-        # Get all Cells in this Universe
-        cells = self.get_all_cells()
-
+        # Append all Universes within each Cell to the dictionary
         universes = OrderedDict()
-
-        # Append all Universes containing each Cell to the dictionary
-        for cell in cells.values():
+        for cell in self.get_all_cells().values():
             universes.update(cell.get_all_universes())
 
         return universes
@@ -461,3 +494,41 @@ class Universe(object):
                 # Append the Universe ID to the subelement and add to Element
                 cell_element.set("universe", str(self._id))
                 xml_element.append(cell_element)
+
+    def _determine_paths(self, path=''):
+        """Count the number of instances for each cell in the universe, and
+        record the count in the :attr:`Cell.num_instances` properties."""
+
+        univ_path = path + 'u{}'.format(self.id)
+
+        for cell in self.cells.values():
+            cell_path = '{}->c{}'.format(univ_path, cell.id)
+
+            # If universe-filled, recursively count cells in filling universe
+            if cell.fill_type == 'universe':
+                cell.fill._determine_paths(cell_path + '->')
+
+            # If lattice-filled, recursively call for all universes in lattice
+            elif cell.fill_type == 'lattice':
+                latt = cell.fill
+
+                # Count instances in each universe in the lattice
+                for index in latt._natural_indices:
+                    latt_path = '{}->l{}({})->'.format(
+                        cell_path, latt.id, ",".join(str(x) for x in index))
+                    univ = latt.get_universe(index)
+                    univ._determine_paths(latt_path)
+
+            else:
+                if cell.fill_type == 'material':
+                    mat = cell.fill
+                elif cell.fill_type == 'distribmat':
+                    mat = cell.fill[len(cell._paths)]
+                else:
+                    mat = None
+
+                if mat is not None:
+                    mat._paths.append('{}->m{}'.format(cell_path, mat.id))
+
+            # Append current path
+            cell._paths.append(cell_path)

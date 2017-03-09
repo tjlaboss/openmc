@@ -1,23 +1,31 @@
 module initialize
 
+  use, intrinsic :: ISO_C_BINDING, only: c_loc
+
+  use hdf5
+#ifdef _OPENMP
+  use omp_lib
+#endif
+
   use bank_header,     only: Bank
   use constants
   use dict_header,     only: DictIntInt, ElemKeyValueII
   use set_header,      only: SetInt
   use energy_grid,     only: logarithmic_grid, grid_method
   use error,           only: fatal_error, warning
-  use geometry,        only: neighbor_lists, count_instance, calc_offsets,    &
+  use geometry,        only: neighbor_lists, count_instance, calc_offsets, &
                              maximum_levels
   use geometry_header, only: Cell, Universe, Lattice, RectLattice, HexLattice,&
-                             &BASE_UNIVERSE
+                             root_universe
   use global
-  use hdf5_interface,  only: file_open, read_dataset, file_close, hdf5_bank_t,&
-                             hdf5_integer8_t
-  use input_xml,       only: read_input_xml, cells_in_univ_dict, read_plots_xml
+  use hdf5_interface,  only: file_open, read_attribute, file_close, &
+                             hdf5_bank_t, hdf5_integer8_t
+  use input_xml,       only: read_input_xml, read_plots_xml
   use material_header, only: Material
+  use message_passing
   use mgxs_data,       only: read_mgxs, create_macro_xs
-  use output,          only: title, header, print_version, write_message,     &
-                             print_usage, print_plot
+  use output,          only: print_version, write_message, print_usage, &
+                             print_plot
   use random_lcg,      only: initialize_prng
   use state_point,     only: load_state_point
   use string,          only: to_str, starts_with, ends_with, str_to_int
@@ -27,30 +35,23 @@ module initialize
   use tally_filter
   use tally,           only: init_tally_routines
 
-#ifdef MPI
-  use message_passing
-#endif
-
-#ifdef _OPENMP
-  use omp_lib
-#endif
-
-  use hdf5
-
-  use, intrinsic :: ISO_C_BINDING, only: c_loc
-
   implicit none
 
 contains
 
 !===============================================================================
-! INITIALIZE_RUN takes care of all initialization tasks, i.e. reading
+! OPENMC_INIT takes care of all initialization tasks, i.e. reading
 ! from command line, reading xml input files, initializing random
 ! number seeds, reading cross sections, initializing starting source,
 ! setting up timers, etc.
 !===============================================================================
 
-  subroutine initialize_run()
+  subroutine openmc_init(intracomm)
+#ifdef MPIF08
+    type(MPI_Comm), intent(in) :: intracomm     ! MPI intracommunicator
+#else
+    integer, intent(in), optional :: intracomm  ! MPI intracommunicator
+#endif
 
     ! Start total and initialization timer
     call time_total%start()
@@ -58,7 +59,7 @@ contains
 
 #ifdef MPI
     ! Setup MPI
-    call initialize_mpi()
+    call initialize_mpi(intracomm)
 #endif
 
     ! Initialize HDF5 interface
@@ -66,12 +67,6 @@ contains
 
     ! Read command line arguments
     call read_command_line()
-
-    if (master) then
-      ! Display title and initialization header
-      call title()
-      call header("INITIALIZATION", level=1)
-    end if
 
     ! Read XML input files
     call read_input_xml()
@@ -86,9 +81,6 @@ contains
     ! XML files because we need the PRNG to be initialized first
     if (run_mode == MODE_PLOTTING) call read_plots_xml()
 
-    ! Set up universe structures
-    call prepare_universes()
-
     ! Use dictionaries to redefine index pointers
     call adjust_indices()
 
@@ -102,7 +94,7 @@ contains
     ! Check to make sure there are not too many nested coordinate levels in the
     ! geometry since the coordinate list is statically allocated for performance
     ! reasons
-    if (maximum_levels(universes(BASE_UNIVERSE)) > MAX_COORD) then
+    if (maximum_levels(universes(root_universe)) > MAX_COORD) then
       call fatal_error("Too many nested coordinate levels in the geometry. &
            &Try increasing the maximum number of coordinate levels by &
            &providing the CMake -Dmaxcoord= option.")
@@ -136,7 +128,7 @@ contains
     if (master) then
       if (run_mode == MODE_PLOTTING) then
         ! Display plotting information
-        call print_plot()
+        if (verbosity >= 5) call print_plot()
       else
         ! Write summary information
         if (output_summary) call write_summary()
@@ -147,15 +139,14 @@ contains
     if (particle_restart_run) run_mode = MODE_PARTICLE
 
     ! Warn if overlap checking is on
-    if (master .and. check_overlaps) then
-      call write_message("")
-      call warning("Cell overlap checking is ON")
+    if (master .and. check_overlaps .and. run_mode /= MODE_PLOTTING) then
+      call warning("Cell overlap checking is ON.")
     end if
 
     ! Stop initialization timer
     call time_initialize%stop()
 
-  end subroutine initialize_run
+  end subroutine openmc_init
 
 #ifdef MPI
 !===============================================================================
@@ -164,7 +155,12 @@ contains
 ! each processor.
 !===============================================================================
 
-  subroutine initialize_mpi()
+  subroutine initialize_mpi(intracomm)
+#ifdef MPIF08
+    type(MPI_Comm), intent(in) :: intracomm  ! MPI intracommunicator
+#else
+    integer, intent(in) :: intracomm         ! MPI intracommunicator
+#endif
 
     integer                   :: bank_blocks(5)   ! Count for each datatype
 #ifdef MPIF08
@@ -173,17 +169,20 @@ contains
     integer                   :: bank_types(5)    ! Datatypes
 #endif
     integer(MPI_ADDRESS_KIND) :: bank_disp(5)     ! Displacements
-    type(Bank)       :: b
+    logical    :: init_called
+    type(Bank) :: b
 
     ! Indicate that MPI is turned on
     mpi_enabled = .true.
 
     ! Initialize MPI
-    call MPI_INIT(mpi_err)
+    call MPI_INITIALIZED(init_called, mpi_err)
+    if (.not. init_called) call MPI_INIT(mpi_err)
 
     ! Determine number of processors and rank of each processor
-    call MPI_COMM_SIZE(MPI_COMM_WORLD, n_procs, mpi_err)
-    call MPI_COMM_RANK(MPI_COMM_WORLD, rank, mpi_err)
+    mpi_intracomm = intracomm
+    call MPI_COMM_SIZE(mpi_intracomm, n_procs, mpi_err)
+    call MPI_COMM_RANK(mpi_intracomm, rank, mpi_err)
 
     ! Determine master
     if (rank == 0) then
@@ -300,11 +299,11 @@ contains
 
           ! Check what type of file this is
           file_id = file_open(argv(i), 'r', parallel=.true.)
-          call read_dataset(filetype, file_id, 'filetype')
+          call read_attribute(filetype, file_id, 'filetype')
           call file_close(file_id)
 
           ! Set path and flag for type of run
-          select case (filetype)
+          select case (trim(filetype))
           case ('statepoint')
             path_state_point = argv(i)
             restart_run = .true.
@@ -312,7 +311,7 @@ contains
             path_particle_restart = argv(i)
             particle_restart_run = .true.
           case default
-            call fatal_error("Unrecognized file after restart flag.")
+            call fatal_error("Unrecognized file after restart flag: " // filetype // ".")
           end select
 
           ! If its a restart run check for additional source file
@@ -326,7 +325,7 @@ contains
 
               ! Check file type is a source file
               file_id = file_open(argv(i), 'r', parallel=.true.)
-              call read_dataset(filetype, file_id, 'filetype')
+              call read_attribute(filetype, file_id, 'filetype')
               call file_close(file_id)
               if (filetype /= 'source') then
                 call fatal_error("Second file after restart flag must be a &
@@ -355,6 +354,9 @@ contains
 
         case ('-g', '-geometry-debug', '--geometry-debug')
           check_overlaps = .true.
+
+        case ('-c', '--volume')
+          run_mode = MODE_VOLUME
 
         case ('-s', '--threads')
           ! Read number of threads
@@ -410,79 +412,6 @@ contains
     ! TODO: Check that directory exists
 
   end subroutine read_command_line
-
-!===============================================================================
-! PREPARE_UNIVERSES allocates the universes array and determines the cells array
-! for each universe.
-!===============================================================================
-
-  subroutine prepare_universes()
-
-    integer              :: i                     ! index in cells array
-    integer              :: i_univ                ! index in universes array
-    integer              :: n_cells_in_univ       ! number of cells in a universe
-    integer, allocatable :: index_cell_in_univ(:) ! the index in the univ%cells
-                                                  ! array for each universe
-    type(ElemKeyValueII), pointer :: pair_list => null()
-    type(ElemKeyValueII), pointer :: current => null()
-    type(ElemKeyValueII), pointer :: next => null()
-    type(Universe),       pointer :: univ => null()
-    type(Cell),           pointer :: c => null()
-
-    allocate(universes(n_universes))
-
-    ! We also need to allocate the cell count lists for each universe. The logic
-    ! for this is a little more convoluted. In universe_dict, the (key,value)
-    ! pairs are the id of the universe and the index in the array. In
-    ! cells_in_univ_dict, it's the id of the universe and the number of cells.
-
-    pair_list => universe_dict%keys()
-    current => pair_list
-    do while (associated(current))
-      ! Find index of universe in universes array
-      i_univ = current%value
-      univ => universes(i_univ)
-      univ%id = current%key
-
-      ! Check for lowest level universe
-      if (univ%id == 0) BASE_UNIVERSE = i_univ
-
-      ! Find cell count for this universe
-      n_cells_in_univ = cells_in_univ_dict%get_key(univ%id)
-
-      ! Allocate cell list for universe
-      allocate(univ%cells(n_cells_in_univ))
-      univ%n_cells = n_cells_in_univ
-
-      ! Move to next universe
-      next => current%next
-      deallocate(current)
-      current => next
-    end do
-
-    ! Also allocate a list for keeping track of where cells have been assigned
-    ! in each universe
-
-    allocate(index_cell_in_univ(n_universes))
-    index_cell_in_univ = 0
-
-    do i = 1, n_cells
-      c => cells(i)
-
-      ! Get pointer to corresponding universe
-      i_univ = universe_dict%get_key(c%universe)
-      univ => universes(i_univ)
-
-      ! Increment the index for the cells array within the Universe object and
-      ! then store the index of the Cell object in that array
-      index_cell_in_univ(i_univ) = index_cell_in_univ(i_univ) + 1
-      univ%cells(index_cell_in_univ(i_univ)) = i
-    end do
-
-    ! Clear dictionary
-    call cells_in_univ_dict%clear()
-
-  end subroutine prepare_universes
 
 !===============================================================================
 ! ADJUST_INDICES changes the values for 'surfaces' for each cell and the
@@ -553,11 +482,11 @@ contains
       if (c % material(1) == NONE) then
         id = c % fill
         if (universe_dict % has_key(id)) then
-          c % type = CELL_FILL
+          c % type = FILL_UNIVERSE
           c % fill = universe_dict % get_key(id)
         elseif (lattice_dict % has_key(id)) then
           lid = lattice_dict % get_key(id)
-          c % type = CELL_LATTICE
+          c % type = FILL_LATTICE
           c % fill = lid
         else
           call fatal_error("Specified fill " // trim(to_str(id)) // " on cell "&
@@ -568,9 +497,9 @@ contains
         do j = 1, size(c % material)
           id = c % material(j)
           if (id == MATERIAL_VOID) then
-            c % type = CELL_NORMAL
+            c % type = FILL_MATERIAL
           else if (material_dict % has_key(id)) then
-            c % type = CELL_NORMAL
+            c % type = FILL_MATERIAL
             c % material(j) = material_dict % get_key(id)
           else
             call fatal_error("Could not find material " // trim(to_str(id)) &
@@ -789,7 +718,7 @@ contains
     if (.not. distribcell_active) return
 
     ! Count the number of instances of each cell.
-    call count_instance(universes(BASE_UNIVERSE))
+    call count_instance(universes(root_universe))
 
     ! Set the number of bins in all distribcell filters.
     do i = 1, n_tallies
@@ -876,7 +805,7 @@ contains
     ! Compute the number of unique universes containing these distribcells
     ! to determine the number of offset tables to allocate
     do i = 1, n_universes
-      do j = 1, universes(i) % n_cells
+      do j = 1, size(universes(i) % cells)
         if (cell_list % contains(universes(i) % cells(j))) then
           n_maps = n_maps + 1
         end if
@@ -899,7 +828,7 @@ contains
     ! unique distribcell array index.
     k = 1
     do i = 1, n_universes
-      do j = 1, universes(i) % n_cells
+      do j = 1, size(universes(i) % cells)
         if (cell_list % contains(universes(i) % cells(j))) then
           cells(universes(i) % cells(j)) % distribcell_index = k
           univ_list(k) = universes(i) % id
@@ -927,7 +856,7 @@ contains
 
     ! Allocate offset table for fill cells
     do i = 1, n_cells
-      if (cells(i) % type /= CELL_NORMAL) then
+      if (cells(i) % type /= FILL_MATERIAL) then
         allocate(cells(i) % offset(n_maps))
       end if
     end do

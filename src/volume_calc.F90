@@ -9,8 +9,8 @@ module volume_calc
   use geometry,     only: find_cell
   use global
   use hdf5_interface, only: file_create, file_close, write_attribute, &
-       create_group, close_group, write_dataset, write_attribute_string
-  use output,       only: write_message, header
+       create_group, close_group, write_dataset
+  use output,       only: write_message, header, time_stamp
   use message_passing
   use particle_header, only: Particle
   use random_lcg,   only: prn, prn_set_stream, set_particle_seed
@@ -42,7 +42,7 @@ contains
     type(VectorReal), allocatable :: uncertainty_vec(:) ! uncertainty of total # of atoms
 
     if (master) then
-      call header("STOCHASTIC VOLUME CALCULATION", level=1)
+      call header("STOCHASTIC VOLUME CALCULATION", 3)
       call time_volume % start()
     end if
 
@@ -54,7 +54,7 @@ contains
 
       if (master) then
         call write_message("Running volume calculation " // trim(to_str(i)) &
-             // "...")
+             // "...", 4)
       end if
 
       call get_volume(volume_calcs(i), volume, nuclide_vec, atoms_vec, &
@@ -74,9 +74,10 @@ contains
         do j = 1, size(volume_calcs(i) % domain_id)
           call write_message(trim(domain_type) // " " // trim(to_str(&
                volume_calcs(i) % domain_id(j))) // ": " // trim(to_str(&
-               volume(1,j))) // " +/- " // trim(to_str(volume(2,j))) // " cm^3")
+               volume(1,j))) // " +/- " // trim(to_str(volume(2,j))) // &
+               " cm^3", 4)
         end do
-        call write_message("")
+        call write_message("", 4)
 
         filename = trim(path_output) // 'volume_' // trim(to_str(i)) // '.h5'
         call write_volume(volume_calcs(i), filename, volume, nuclide_vec, &
@@ -90,7 +91,7 @@ contains
     if (master) then
       call time_volume % stop()
       call write_message("Elapsed time: " // trim(to_str(time_volume % &
-           get_value())) // " s")
+           get_value())) // " s", 6)
     end if
   end subroutine run_volume_calculations
 
@@ -272,11 +273,11 @@ contains
       if (master) then
 #ifdef MPI
         do j = 1, n_procs - 1
-          call MPI_RECV(n, 1, MPI_INTEGER, j, 0, MPI_COMM_WORLD, &
+          call MPI_RECV(n, 1, MPI_INTEGER, j, 0, mpi_intracomm, &
                MPI_STATUS_IGNORE, mpi_err)
 
           allocate(data(2*n))
-          call MPI_RECV(data, 2*n, MPI_INTEGER, j, 1, MPI_COMM_WORLD, &
+          call MPI_RECV(data, 2*n, MPI_INTEGER, j, 1, mpi_intracomm, &
                MPI_STATUS_IGNORE, mpi_err)
           do k = 0, n - 1
             do m = 1, master_indices(i_domain) % size()
@@ -340,8 +341,8 @@ contains
           data(2*k + 2) = master_hits(i_domain) % data(k + 1)
         end do
 
-        call MPI_SEND(n, 1, MPI_INTEGER, 0, 0, MPI_COMM_WORLD, mpi_err)
-        call MPI_SEND(data, 2*n, MPI_INTEGER, 0, 1, MPI_COMM_WORLD, mpi_err)
+        call MPI_SEND(n, 1, MPI_INTEGER, 0, 0, mpi_intracomm, mpi_err)
+        call MPI_SEND(data, 2*n, MPI_INTEGER, 0, 1, mpi_intracomm, mpi_err)
         deallocate(data)
 #endif
       end if
@@ -426,14 +427,25 @@ contains
     ! Create HDF5 file
     file_id = file_create(filename)
 
+    ! Write header info
+    call write_attribute(file_id, "filetype", "volume")
+    call write_attribute(file_id, "version", VERSION_VOLUME)
+    call write_attribute(file_id, "openmc_version", VERSION)
+#ifdef GIT_SHA1
+    call write_attribute(file_id, "git_sha1", GIT_SHA1)
+#endif
+
+    ! Write current date and time
+    call write_attribute(file_id, "date_and_time", time_stamp())
+
     ! Write basic metadata
     select case (this % domain_type)
     case (FILTER_CELL)
-      call write_attribute_string(file_id, ".", "domain_type", "cell")
+      call write_attribute(file_id, "domain_type", "cell")
     case (FILTER_MATERIAL)
-      call write_attribute_string(file_id, ".", "domain_type", "material")
+      call write_attribute(file_id, "domain_type", "material")
     case (FILTER_UNIVERSE)
-      call write_attribute_string(file_id, ".", "domain_type", "universe")
+      call write_attribute(file_id, "domain_type", "universe")
     end select
     call write_attribute(file_id, "samples", this % samples)
     call write_attribute(file_id, "lower_left", this % lower_left)

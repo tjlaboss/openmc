@@ -1,9 +1,5 @@
 module simulation
 
-#ifdef MPI
-  use message_passing
-#endif
-
   use cmfd_execute,    only: cmfd_init_batch, execute_cmfd
   use constants,       only: ZERO
   use eigenvalue,      only: count_source_for_ufs, calculate_average_keff, &
@@ -13,14 +9,17 @@ module simulation
   use eigenvalue,      only: join_bank_from_threads
 #endif
   use global
+  use message_passing
   use output,          only: write_message, header, print_columns, &
-                             print_batch_keff, print_generation
+                             print_batch_keff, print_generation, print_runtime, &
+                             print_results, print_overlap_check, write_tallies
   use particle_header, only: Particle
   use random_lcg,      only: set_particle_seed
   use source,          only: initialize_source, sample_external_source
   use state_point,     only: write_state_point, write_source_point
   use string,          only: to_str
-  use tally,           only: synchronize_tallies, setup_active_usertallies
+  use tally,           only: synchronize_tallies, setup_active_usertallies, &
+                             tally_statistics
   use trigger,         only: check_triggers
   use tracking,        only: transport
   use volume_calc,     only: run_volume_calculations
@@ -42,18 +41,15 @@ contains
     type(Particle) :: p
     integer(8)     :: i_work
 
-    ! Volume calculations
-    if (size(volume_calcs) > 0) call run_volume_calculations()
-
     if (.not. restart_run) call initialize_source()
 
     ! Display header
     if (master) then
       if (run_mode == MODE_FIXEDSOURCE) then
-        call header("FIXED SOURCE TRANSPORT SIMULATION", level=1)
+        call header("FIXED SOURCE TRANSPORT SIMULATION", 3)
       elseif (run_mode == MODE_EIGENVALUE) then
-        call header("K EIGENVALUE SIMULATION", level=1)
-        call print_columns()
+        call header("K EIGENVALUE SIMULATION", 3)
+        if (verbosity >= 7) call print_columns()
       end if
     end if
 
@@ -114,7 +110,7 @@ contains
     ! ==========================================================================
     ! END OF RUN WRAPUP
 
-    if (master) call header("SIMULATION FINISHED", level=1)
+    call finalize_simulation()
 
     ! Clear particle
     call p % clear()
@@ -174,7 +170,7 @@ contains
 
     if (run_mode == MODE_FIXEDSOURCE) then
       call write_message("Simulating batch " // trim(to_str(current_batch)) &
-           // "...", 1)
+           // "...", 6)
     end if
 
     ! Reset total starting particle weight used for normalizing tallies
@@ -275,7 +271,8 @@ contains
       call calculate_average_keff()
 
       ! Write generation output
-      if (master .and. current_gen /= gen_per_batch) call print_generation()
+      if (master .and. current_gen /= gen_per_batch .and. verbosity >= 7) &
+           call print_generation()
     elseif (run_mode == MODE_FIXEDSOURCE) then
       ! For fixed-source mode, we need to sample the external source
       if (path_source == '') then
@@ -312,7 +309,7 @@ contains
       if (cmfd_on) call execute_cmfd()
 
       ! Display output
-      if (master) call print_batch_keff()
+      if (master .and. verbosity >= 7) call print_batch_keff()
 
       ! Calculate combined estimate of k-effective
       if (master) call calculate_combined_keff()
@@ -322,7 +319,7 @@ contains
     if (master) call check_triggers()
 #ifdef MPI
     call MPI_BCAST(satisfy_triggers, 1, MPI_LOGICAL, 0, &
-         MPI_COMM_WORLD, mpi_err)
+         mpi_intracomm, mpi_err)
 #endif
     if (satisfy_triggers .or. &
          (trigger_on .and. current_batch == n_max_batches)) then
@@ -358,7 +355,7 @@ contains
 
     ! Write message at beginning
     if (current_batch == 1) then
-      call write_message("Replaying history from state point...", 1)
+      call write_message("Replaying history from state point...", 6)
     end if
 
     if (run_mode == MODE_EIGENVALUE) then
@@ -367,19 +364,69 @@ contains
         call calculate_average_keff()
 
         ! print out batch keff
-        if (current_gen < gen_per_batch) then
-          if (master) call print_generation()
-        else
-          if (master) call print_batch_keff()
+        if (verbosity >= 7) then
+          if (current_gen < gen_per_batch) then
+            if (master) call print_generation()
+          else
+            if (master) call print_batch_keff()
+          end if
         end if
       end do
     end if
 
     ! Write message at end
     if (current_batch == restart_batch) then
-      call write_message("Resuming simulation...", 1)
+      call write_message("Resuming simulation...", 6)
     end if
 
   end subroutine replay_batch_history
+
+!===============================================================================
+! FINALIZE_SIMULATION calculates tally statistics, writes tallies, and displays
+! execution time and results
+!===============================================================================
+
+  subroutine finalize_simulation
+
+    ! Start finalization timer
+    call time_finalize%start()
+
+    ! Calculate statistics for tallies and write to tallies.out
+    if (master) then
+      if (n_realizations > 1) call tally_statistics()
+    end if
+    if (output_tallies) then
+      if (master) call write_tallies()
+    end if
+    if (check_overlaps) call reduce_overlap_count()
+
+    ! Stop timers and show timing statistics
+    call time_finalize%stop()
+    call time_total%stop()
+    if (master) then
+      if (verbosity >= 6) call print_runtime()
+      if (verbosity >= 4) call print_results()
+      if (check_overlaps) call print_overlap_check()
+    end if
+
+  end subroutine finalize_simulation
+
+!===============================================================================
+! REDUCE_OVERLAP_COUNT accumulates cell overlap check counts to master
+!===============================================================================
+
+  subroutine reduce_overlap_count()
+
+#ifdef MPI
+      if (master) then
+        call MPI_REDUCE(MPI_IN_PLACE, overlap_check_cnt, n_cells, &
+             MPI_INTEGER8, MPI_SUM, 0, mpi_intracomm, mpi_err)
+      else
+        call MPI_REDUCE(overlap_check_cnt, overlap_check_cnt, n_cells, &
+             MPI_INTEGER8, MPI_SUM, 0, mpi_intracomm, mpi_err)
+      end if
+#endif
+
+  end subroutine reduce_overlap_count
 
 end module simulation

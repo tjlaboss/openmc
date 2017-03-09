@@ -220,7 +220,7 @@ def plot_xs(this, types, divisor_types=None, temperature=294., axis=None,
             ylabel = 'Macroscopic Cross Section [1/cm]'
     ax.set_ylabel(ylabel)
     ax.legend(loc='best')
-    if this.name is not None:
+    if this.name is not None and this.name != '':
         if len(types) > 1:
             ax.set_title('Cross Sections for ' + this.name)
         else:
@@ -359,16 +359,9 @@ def _calculate_cexs_nuclide(this, types, temperature=294., sab_name=None,
         if strT in nuc.temperatures:
             nucT = strT
         else:
-            data_Ts = nuc.temperatures
-            for t in range(len(data_Ts)):
-                # Take off the "K" and convert to a float
-                data_Ts[t] = float(data_Ts[t][:-1])
-            min_delta = float('inf')
-            closest_t = -1
-            for t in data_Ts:
-                if abs(data_Ts[t] - T) < min_delta:
-                    closest_t = t
-            nucT = "{}K".format(int(round(data_Ts[closest_t])))
+            delta_T = np.array(nuc.kTs) - T * openmc.data.K_BOLTZMANN
+            closest_index = np.argmin(np.abs(delta_T))
+            nucT = nuc.temperatures[closest_index]
 
         # Prep S(a,b) data if needed
         if sab_name:
@@ -377,19 +370,11 @@ def _calculate_cexs_nuclide(this, types, temperature=294., sab_name=None,
             if strT in sab.temperatures:
                 sabT = strT
             else:
-                data_Ts = sab.temperatures
-                for t in range(len(data_Ts)):
-                    # Take off the "K" and convert to a float
-                    data_Ts[t] = float(data_Ts[t][:-1])
-                min_delta = np.finfo(np.float64).max
-                closest_t = -1
-                for t in data_Ts:
-                    if abs(data_Ts[t] - T) < min_delta:
-                        closest_t = t
-                sabT = "{}K".format(int(round(data_Ts[closest_t])))
+                delta_T = np.array(sab.kTs) - T * openmc.data.K_BOLTZMANN
+                closest_index = np.argmin(np.abs(delta_T))
+                sabT = sab.temperatures[closest_index]
 
-            # Create an energy grid composed the S(a,b) and
-            # the nuclide's grid
+            # Create an energy grid composed the S(a,b) and the nuclide's grid
             grid = nuc.energy[nucT]
             sab_Emax = 0.
             sab_funcs = []
@@ -676,7 +661,7 @@ def calculate_mgxs(this, types, orders=None, temperature=294.,
 
     for line in range(len(types)):
         for g in range(library.energy_groups.num_groups):
-            data[g * 2: g * 2 + 2] = mgxs[line, g]
+            data[line, g * 2: g * 2 + 2] = mgxs[line, g]
 
     return energy_grid[::-1], data
 
@@ -775,28 +760,28 @@ def _calculate_mgxs_nuc_macro(this, types, library, orders=None,
                             data[i, :] = temp_data[orders[i]]
                     else:
                         data[i, :] = np.sum(temp_data[:])
-                elif shape in (xsdata.xs_shapes["[G'][DG]"],
-                               xsdata.xs_shapes["[G][DG]"]):
+                elif shape in (xsdata.xs_shapes["[DG][G']"],
+                               xsdata.xs_shapes["[DG][G]"]):
                     # Then we have an array vs groups with values for each
                     # delayed group. The user-provided value of orders tells us
                     # which delayed group we want. If none are provided, then
                     # we sum all the delayed groups together.
                     if orders[i]:
-                        if orders[i] < len(shape[1]):
-                            data[i, :] = temp_data[:, orders[i]]
+                        if orders[i] < len(shape[0]):
+                            data[i, :] = temp_data[orders[i], :]
                     else:
-                        data[i, :] = np.sum(temp_data[:, :], axis=1)
-                elif shape == xsdata.xs_shapes["[G][G'][DG]"]:
+                        data[i, :] = np.sum(temp_data[:, :], axis=0)
+                elif shape == xsdata.xs_shapes["[DG][G][G']"]:
                     # Then we have a delayed group matrix. We will first
                     # remove the outgoing group dependency
-                    temp_data = np.sum(temp_data, axis=1)
+                    temp_data = np.sum(temp_data, axis=-1)
                     # And then proceed in exactly the same manner as the
-                    # "[G'][DG]" of "[G][DG]" shapes in the previous block.
+                    # "[DG][G']" or "[DG][G]" shapes in the previous block.
                     if orders[i]:
-                        if orders[i] < len(shape[1]):
-                            data[i, :] = temp_data[:, orders[i]]
+                        if orders[i] < len(shape[0]):
+                            data[i, :] = temp_data[orders[i], :]
                     else:
-                        data[i, :] = np.sum(temp_data[:, :], axis=1)
+                        data[i, :] = np.sum(temp_data[:, :], axis=0)
                 elif shape == xsdata.xs_shapes["[G][G'][Order]"]:
                     # This is a scattering matrix with angular data
                     # First remove the outgoing group dependence

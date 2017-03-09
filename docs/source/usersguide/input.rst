@@ -94,6 +94,18 @@ Settings Specification -- settings.xml
 All simulation parameters and miscellaneous options are specified in the
 settings.xml file.
 
+``<batches>`` Element
+---------------------
+
+The ``<batches>`` element indicates the total number of batches to execute,
+where each batch corresponds to a tally realization. In a fixed source
+calculation, each batch consists of a number of source particles. In an
+eigenvalue calculation, each batch consists of one or many fission source
+iterations (generations), where each generation itself consists of a number of
+source neutrons.
+
+  *Default*: None
+
 ``<confidence_intervals>`` Element
 ----------------------------------
 
@@ -131,67 +143,6 @@ you care. This element has the following attributes/sub-elements:
     The energy under which particles will be killed.
 
     *Default*: 0.0
-
-.. _eigenvalue:
-
-``<eigenvalue>`` Element
-------------------------
-
-The ``<eigenvalue>`` element indicates that a :math:`k`-eigenvalue calculation
-should be performed. It has the following attributes/sub-elements:
-
-  :batches:
-    The total number of batches, where each batch corresponds to multiple
-    fission source iterations. Batching is done to eliminate correlation between
-    realizations of random variables.
-
-    *Default*: None
-
-  :generations_per_batch:
-    The number of total fission source iterations per batch.
-
-    *Default*: 1
-
-  :inactive:
-    The number of inactive batches. In general, the starting cycles in a
-    criticality calculation can not be used to contribute to tallies since the
-    fission source distribution and eigenvalue are generally not converged
-    immediately.
-
-    *Default*: None
-
-  :particles:
-    The number of neutrons to simulate per fission source iteration.
-
-    *Default*: None
-
-  :keff_trigger:
-    This tag specifies a precision trigger on the combined :math:`k_{eff}`. The
-    trigger is a convergence criterion on the uncertainty of the estimated
-    eigenvalue. It has the following attributes/sub-elements:
-
-    :type:
-      The type of precision trigger. Accepted options are "variance", "std_dev",
-      and "rel_err".
-
-      :variance:
-       Variance of the batch mean :math:`\sigma^2`
-
-      :std_dev:
-        Standard deviation of the batch mean :math:`\sigma`
-
-      :rel_err:
-        Relative error of the batch mean :math:`\frac{\sigma}{\mu}`
-
-      *Default*: None
-
-    :threshold:
-      The precision trigger's convergence criterion for the
-      combined :math:`k_{eff}`.
-
-      *Default*: None
-
-  .. note:: See section on the :ref:`trigger` for more information.
 
 ``<energy_grid>`` Element
 -------------------------
@@ -247,22 +198,57 @@ problem. It has the following attributes/sub-elements:
 
     *Default*: None
 
-``<fixed_source>`` Element
+``<generations_per_batch>`` Element
+-----------------------------------
+
+The ``<generations_per_batch>`` element indicates the number of total fission
+source iterations per batch for an eigenvalue calculation. This element is
+ignored for all run modes other than "eigenvalue".
+
+  *Default*: 1
+
+``<inactive>`` Element
+----------------------
+
+The ``<inactive>`` element indicates the number of inactive batches used in a
+k-eigenvalue calculation. In general, the starting fission source iterations in
+an eigenvalue calculation can not be used to contribute to tallies since the
+fission source distribution and eigenvalue are generally not converged
+immediately. This element is ignored for all run modes other than "eigenvalue".
+
+  *Default*: 0
+
+``<keff_trigger>`` Element
 --------------------------
 
-The ``<fixed_source>`` element indicates that a fixed source calculation should
-be performed. It has the following attributes/sub-elements:
+The ``<keff_trigger>`` element (ignored for all run modes other than
+"eigenvalue".) specifies a precision trigger on the combined
+:math:`k_{eff}`. The trigger is a convergence criterion on the uncertainty of
+the estimated eigenvalue. It has the following attributes/sub-elements:
 
-  :batches:
-    The total number of batches. For fixed source calculations, each batch
-    represents a realization of random variables for tallies.
+  :type:
+    The type of precision trigger. Accepted options are "variance", "std_dev",
+    and "rel_err".
+
+    :variance:
+      Variance of the batch mean :math:`\sigma^2`
+
+    :std_dev:
+      Standard deviation of the batch mean :math:`\sigma`
+
+    :rel_err:
+      Relative error of the batch mean :math:`\frac{\sigma}{\mu}`
 
     *Default*: None
 
-  :particles:
-    The number of particles to simulate per batch.
+  :threshold:
+    The precision trigger's convergence criterion for the
+    combined :math:`k_{eff}`.
 
     *Default*: None
+
+.. note:: See section on the :ref:`trigger` for more information.
+
 
 ``<log_grid_bins>`` Element
 ---------------------------
@@ -336,6 +322,15 @@ will abort.
 
   *Default*: Current working directory
 
+``<particles>`` Element
+-----------------------
+
+This element indicates the number of neutrons to simulate per fission source
+iteration when a k-eigenvalue calculation is performed or the number of neutrons
+per batch for a fixed source simulation.
+
+  *Default*: None
+
 ``<ptables>`` Element
 ---------------------
 
@@ -408,7 +403,16 @@ The ``<run_cmfd>`` element indicates whether or not CMFD acceleration should be
 turned on or off. This element has no attributes or sub-elements and can be set
 to either "false" or "true".
 
-  *Defualt*: false
+  *Default*: false
+
+``<run_mode>`` Element
+----------------------
+
+The ``<run_mode>`` element indicates which run mode should be used when OpenMC
+is executed. This element has no attributes or sub-elements and can be set to
+"eigenvalue", "fixed source", "plot", "volume", or "particle restart".
+
+  *Default*: None
 
 ``<seed>`` Element
 ------------------
@@ -774,13 +778,13 @@ number, and particle number, respectively.
 -------------------------
 
 OpenMC includes tally precision triggers which allow the user to define
-uncertainty thresholds on :math:`k_{eff}` in the ``<eigenvalue>`` subelement of
-``settings.xml``, and/or tallies in ``tallies.xml``. When using triggers,
+uncertainty thresholds on :math:`k_{eff}` in the ``<keff_trigger>`` subelement
+of ``settings.xml``, and/or tallies in ``tallies.xml``. When using triggers,
 OpenMC will run until it completes as many batches as defined by ``<batches>``.
-At this point, the uncertainties on all tallied values are computed and
-compared with their corresponding trigger thresholds. If any triggers have not
-been met, OpenMC will continue until either all trigger thresholds have been
-satisfied or ``<max_batches>`` has been reached.
+At this point, the uncertainties on all tallied values are computed and compared
+with their corresponding trigger thresholds. If any triggers have not been met,
+OpenMC will continue until either all trigger thresholds have been satisfied or
+``<max_batches>`` has been reached.
 
 The ``<trigger>`` element provides an active "toggle switch" for tally
 precision trigger(s), the maximum number of batches and the batch interval. It
@@ -793,8 +797,8 @@ has the following attributes/sub-elements:
   :max_batches:
     This describes the maximum number of batches allowed when using trigger(s).
 
-    .. note:: When max_batches is set, the number of ``batches`` shown in
-              ``<eigenvalue>`` element represents minimum number of batches to
+    .. note:: When max_batches is set, the number of ``batches`` shown in the
+              ``<batches>`` element represents minimum number of batches to
               simulate when using the trigger(s).
 
   :batch_interval:
@@ -835,17 +839,27 @@ problem. It has the following attributes/sub-elements:
 
     *Default*: None
 
+.. _verbosity:
+
 ``<verbosity>`` Element
 -----------------------
 
 The ``<verbosity>`` element tells the code how much information to display to
 the standard output. A higher verbosity corresponds to more information being
-displayed. This element takes the following attributes:
+displayed. The text of this element should be an integer between between 1
+and 10. The verbosity levels are defined as follows:
 
-  :value:
-    The specified verbosity between 1 and 10.
+  :1: don't display any output
+  :2: only show OpenMC logo
+  :3: all of the above + headers
+  :4: all of the above + results
+  :5: all of the above + file I/O
+  :6: all of the above + timing statistics and initialization messages
+  :7: all of the above + :math:`k` by generation
+  :9: all of the above + indicate when each particle starts
+  :10: all of the above + event information
 
-    *Default*: 5
+  *Default*: 7
 
 ``<create_fission_neutrons>`` Element
 -------------------------------------
@@ -1480,145 +1494,13 @@ The ``<tally>`` element accepts the following sub-elements:
 
       :type:
         The type of the filter. Accepted options are "cell", "cellborn",
-        "material", "universe", "energy", "energyout", "mesh", "distribcell",
-        "delayedgroup", and "energyfunction".
+        "material", "universe", "energy", "energyout", "mu", "polar",
+        "azimuthal", "mesh", "distribcell", "delayedgroup", and
+        "energyfunction".
 
       :bins:
-        For each filter type, the corresponding ``bins`` entry is given as
-        follows:
-
-        :cell:
-          A list of cells in which the tally should be accumulated.
-
-        :cellborn:
-          This filter allows the tally to be scored to only when particles were
-          originally born in a specified cell.
-
-        :surface:
-          A list of surfaces for which the tally should be accumulated.
-
-        :material:
-          A list of materials for which the tally should be accumulated.
-
-        :universe:
-          A list of universes for which the tally should be accumulated.
-
-        :energy:
-          In continuous-energy mode, this filter should be provided as a
-          monotonically increasing list of bounding **pre-collision** energies
-          for a number of groups. For example, if this filter is specified as
-
-          .. code-block:: xml
-
-              <filter type="energy" bins="0.0 1.0e6 20.0e6" />
-
-          then two energy bins will be created, one with energies between 0 and
-          1 MeV and the other with energies between 1 and 20 MeV.
-
-          In multi-group mode the bins provided must match group edges
-          defined in the multi-group library.
-
-        :energyout:
-          In continuous-energy mode, this filter should be provided as a
-          monotonically increasing list of bounding **post-collision** energies
-          for a number of groups. For example, if this filter is specified as
-
-          .. code-block:: xml
-
-              <filter type="energyout" bins="0.0 1.0e6 20.0e6" />
-
-          then two post-collision energy bins will be created, one with
-          energies between 0 and 1 MeV and the other with energies between
-          1 and 20 MeV.
-
-          In multi-group mode the bins provided must match group edges
-          defined in the multi-group library.
-
-        :mu:
-          A monotonically increasing list of bounding **post-collision** cosines
-          of the change in a particle's angle (i.e., :math:`\mu = \hat{\Omega}
-          \cdot \hat{\Omega}'`), which represents a portion of the possible
-          values of :math:`[-1,1]`.  For example, spanning all of :math:`[-1,1]`
-          with five equi-width bins can be specified as:
-
-          .. code-block:: xml
-
-              <filter type="mu" bins="-1.0 -0.6 -0.2 0.2 0.6 1.0" />
-
-          Alternatively, if only one value is provided as a bin, OpenMC will
-          interpret this to mean the complete range of :math:`[-1,1]` should
-          be automatically subdivided in to the provided value for the bin.
-          That is, the above example of five equi-width bins spanning
-          :math:`[-1,1]` can be instead written as:
-
-          .. code-block:: xml
-
-              <filter type="mu" bins="5" />
-
-        :polar:
-          A monotonically increasing list of bounding particle polar angles
-          which represents a portion of the possible values of :math:`[0,\pi]`.
-          For example, spanning all of :math:`[0,\pi]` with five equi-width
-          bins can be specified as:
-
-          .. code-block:: xml
-
-              <filter type="polar" bins="0.0 0.6283 1.2566 1.8850 2.5132 3.1416"/>
-
-          Alternatively, if only one value is provided as a bin, OpenMC will
-          interpret this to mean the complete range of :math:`[0,\pi]` should
-          be automatically subdivided in to the provided value for the bin.
-          That is, the above example of five equi-width bins spanning
-          :math:`[0,\pi]` can be instead written as:
-
-          .. code-block:: xml
-
-              <filter type="polar" bins="5" />
-
-        :azimuthal:
-          A monotonically increasing list of bounding particle azimuthal angles
-          which represents a portion of the possible values of :math:`[-\pi,\pi)`.
-          For example, spanning all of :math:`[-\pi,\pi)` with two equi-width
-          bins can be specified as:
-
-          .. code-block:: xml
-
-              <filter type="azimuthal" bins="0.0 3.1416 6.2832" />
-
-          Alternatively, if only one value is provided as a bin, OpenMC will
-          interpret this to mean the complete range of :math:`[-\pi,\pi)` should
-          be automatically subdivided in to the provided value for the bin.
-          That is, the above example of five equi-width bins spanning
-          :math:`[-\pi,\pi)` can be instead written as:
-
-          .. code-block:: xml
-
-              <filter type="azimuthal" bins="2" />
-
-        :mesh:
-          The ``id`` of a structured mesh to be tallied over.
-
-        :distribcell:
-          The single cell which should be tallied uniquely for all instances.
-
-          .. note::
-              The distribcell filter will take a single cell ID and will tally
-              each unique occurrence of that cell separately. This filter will
-              not accept more than one cell ID. It is not recommended to combine
-              this filter with a cell or mesh filter.
-
-        :delayedgroup:
-          A list of delayed neutron precursor groups for which the tally should
-          be accumulated. For instance, to tally to all 6 delayed groups in the
-          ENDF/B-VII.1 library the filter is specified as:
-
-          .. code-block:: xml
-
-              <filter type="delayedgroup" bins="1 2 3 4 5 6" />
-
-        :energyfunction:
-          ``energyfunction`` filters do not use the ``bins`` entry.  Instead
-          they use ``energy`` and ``y``.
+         A description of the bins for each type of filter can be found in
+         :ref:`filter_types`.
 
       :energy:
         ``energyfunction`` filters multiply tally scores by an arbitrary
@@ -1926,6 +1808,144 @@ The ``<tally>`` element accepts the following sub-elements:
     for collision and analog estimators.
 
      *Default*: None
+
+.. _filter_types:
+
+Filter Types
+++++++++++++
+
+For each filter type, the following table describes what the ``bins`` attribute
+should be set to:
+
+:cell:
+  A list of unique IDs for cells in which the tally should be accumulated.
+
+:cellborn:
+  This filter allows the tally to be scored to only when particles were
+  originally born in a specified cell. A list of cell IDs should be given.
+
+:material:
+  A list of unique IDs for matreials in which the tally should be accumulated.
+
+:universe:
+  A list of unique IDs for universes in which the tally should be accumulated.
+
+:energy:
+  In continuous-energy mode, this filter should be provided as a
+  monotonically increasing list of bounding **pre-collision** energies
+  for a number of groups. For example, if this filter is specified as
+
+  .. code-block:: xml
+
+      <filter type="energy" bins="0.0 1.0e6 20.0e6" />
+
+  then two energy bins will be created, one with energies between 0 and
+  1 MeV and the other with energies between 1 and 20 MeV.
+
+  In multi-group mode the bins provided must match group edges
+  defined in the multi-group library.
+
+:energyout:
+  In continuous-energy mode, this filter should be provided as a
+  monotonically increasing list of bounding **post-collision** energies
+  for a number of groups. For example, if this filter is specified as
+
+  .. code-block:: xml
+
+      <filter type="energyout" bins="0.0 1.0e6 20.0e6" />
+
+  then two post-collision energy bins will be created, one with
+  energies between 0 and 1 MeV and the other with energies between
+  1 and 20 MeV.
+
+  In multi-group mode the bins provided must match group edges
+  defined in the multi-group library.
+
+:mu:
+  A monotonically increasing list of bounding **post-collision** cosines
+  of the change in a particle's angle (i.e., :math:`\mu = \hat{\Omega}
+  \cdot \hat{\Omega}'`), which represents a portion of the possible
+  values of :math:`[-1,1]`.  For example, spanning all of :math:`[-1,1]`
+  with five equi-width bins can be specified as:
+
+  .. code-block:: xml
+
+      <filter type="mu" bins="-1.0 -0.6 -0.2 0.2 0.6 1.0" />
+
+  Alternatively, if only one value is provided as a bin, OpenMC will
+  interpret this to mean the complete range of :math:`[-1,1]` should
+  be automatically subdivided in to the provided value for the bin.
+  That is, the above example of five equi-width bins spanning
+  :math:`[-1,1]` can be instead written as:
+
+  .. code-block:: xml
+
+      <filter type="mu" bins="5" />
+
+:polar:
+  A monotonically increasing list of bounding particle polar angles
+  which represents a portion of the possible values of :math:`[0,\pi]`.
+  For example, spanning all of :math:`[0,\pi]` with five equi-width
+  bins can be specified as:
+
+  .. code-block:: xml
+
+      <filter type="polar" bins="0.0 0.6283 1.2566 1.8850 2.5132 3.1416"/>
+
+  Alternatively, if only one value is provided as a bin, OpenMC will
+  interpret this to mean the complete range of :math:`[0,\pi]` should
+  be automatically subdivided in to the provided value for the bin.
+  That is, the above example of five equi-width bins spanning
+  :math:`[0,\pi]` can be instead written as:
+
+  .. code-block:: xml
+
+      <filter type="polar" bins="5" />
+
+:azimuthal:
+  A monotonically increasing list of bounding particle azimuthal angles
+  which represents a portion of the possible values of :math:`[-\pi,\pi)`.
+  For example, spanning all of :math:`[-\pi,\pi)` with two equi-width
+  bins can be specified as:
+
+  .. code-block:: xml
+
+      <filter type="azimuthal" bins="0.0 3.1416 6.2832" />
+
+  Alternatively, if only one value is provided as a bin, OpenMC will
+  interpret this to mean the complete range of :math:`[-\pi,\pi)` should
+  be automatically subdivided in to the provided value for the bin.
+  That is, the above example of five equi-width bins spanning
+  :math:`[-\pi,\pi)` can be instead written as:
+
+  .. code-block:: xml
+
+      <filter type="azimuthal" bins="2" />
+
+:mesh:
+  The unique ID of a structured mesh to be tallied over.
+
+:distribcell:
+  The single cell which should be tallied uniquely for all instances.
+
+  .. note:: The distribcell filter will take a single cell ID and will tally
+            each unique occurrence of that cell separately. This filter will not
+            accept more than one cell ID. It is not recommended to combine this
+            filter with a cell or mesh filter.
+
+:delayedgroup:
+  A list of delayed neutron precursor groups for which the tally should
+  be accumulated. For instance, to tally to all 6 delayed groups in the
+  ENDF/B-VII.1 library the filter is specified as:
+
+  .. code-block:: xml
+
+      <filter type="delayedgroup" bins="1 2 3 4 5 6" />
+
+:energyfunction:
+  ``energyfunction`` filters do not use the ``bins`` entry.  Instead
+  they use ``energy`` and ``y``.
+
 
 ``<mesh>`` Element
 ------------------
