@@ -3060,18 +3060,39 @@ module mgxs_header
         end if
 
       case('prompt-nu-fission')
-        xs = this % xs(t) % prompt_nu_fission(gin)
+        if (present(dg)) then
+          xs = this % xs(t) % chi_prompt(gout,gin)
+          xs = xs * this % xs(t) % prompt_nu_fission(gin)
+        else
+          xs = this % xs(t) % prompt_nu_fission(gin)
+        end if
 
       case('delayed-nu-fission')
         if (present(dg)) then
-          xs = this % xs(t) % delayed_nu_fission(dg, gin)
+          if (present(gout)) then
+            xs = this % xs(t) % chi_delayed(dg, gout, gin)
+            xs = xs * this % xs(t) % delayed_nu_fission(dg, gin)
+          else
+            xs = this % xs(t) % delayed_nu_fission(dg, gin)
+          end if
         else
-          xs = sum(this % xs(t) % delayed_nu_fission(:, gin))
+          if (present(gout)) then
+            xs = this % xs(t) % chi_delayed(1, gout, gin)
+            xs = xs * sum(this % xs(t) % delayed_nu_fission(:, gin))
+          else
+            xs = sum(this % xs(t) % delayed_nu_fission(:, gin))
+          end if
         end if
 
       case('nu-fission')
-        xs = this % xs(t) % prompt_nu_fission(gin) + &
-             sum(this % xs(t) % delayed_nu_fission(:, gin))
+        if (present(gout)) then
+          xs = this % xs(t) % chi_prompt(gout,gin)
+          xs = xs * this % xs(t) % prompt_nu_fission(gin) + &
+               sum(this % xs(t) % delayed_nu_fission(:, gin))
+        else
+          xs = this % xs(t) % prompt_nu_fission(gin) + &
+               sum(this % xs(t) % delayed_nu_fission(:, gin))
+        end if
 
       case('chi-prompt')
         if (present(gout)) then

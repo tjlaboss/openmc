@@ -4957,7 +4957,7 @@ class ScatterProbabilityMatrix(MatrixMGXS):
     @property
     def scores(self):
         return [self.rxn_type]
-       
+
     @property
     def filters(self):
         # Create the non-domain specific Filters for the Tallies
@@ -5282,8 +5282,6 @@ class Chi(MGXS):
             self._rxn_type = 'chi'
         else:
             self._rxn_type = 'chi-prompt'
-        self._estimator = 'analog'
-        self._valid_estimators = ['analog']
         self.prompt = prompt
 
     def __deepcopy__(self, memo):

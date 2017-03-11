@@ -3172,9 +3172,6 @@ contains
           ! Set the filter index in the tally find_filter array
           t % find_filter(FILTER_ENERGYOUT) = j
 
-          ! Set to analog estimator
-          t % estimator = ESTIMATOR_ANALOG
-
         case ('delayedgroup')
 
           ! Allocate and declare the filter type
@@ -3694,7 +3691,7 @@ contains
             end if
           case ('nu-fission')
             t % score_bins(j) = SCORE_NU_FISSION
-            if (t % find_filter(FILTER_ENERGYOUT) > 0) then
+            if (t % find_filter(FILTER_ENERGYOUT) > 0 .and. run_CE) then
               ! Set tally estimator to analog
               t % estimator = ESTIMATOR_ANALOG
             end if
@@ -3702,13 +3699,13 @@ contains
             t % score_bins(j) = SCORE_DECAY_RATE
           case ('delayed-nu-fission')
             t % score_bins(j) = SCORE_DELAYED_NU_FISSION
-            if (t % find_filter(FILTER_ENERGYOUT) > 0) then
+            if (t % find_filter(FILTER_ENERGYOUT) > 0 .and. run_CE) then
               ! Set tally estimator to analog
               t % estimator = ESTIMATOR_ANALOG
             end if
           case ('prompt-nu-fission')
             t % score_bins(j) = SCORE_PROMPT_NU_FISSION
-            if (t % find_filter(FILTER_ENERGYOUT) > 0) then
+            if (t % find_filter(FILTER_ENERGYOUT) > 0 .and. run_CE) then
               ! Set tally estimator to analog
               t % estimator = ESTIMATOR_ANALOG
             end if
