@@ -118,6 +118,7 @@ class State(object):
         self._core_volume = 1.
         self._chi_delayed_by_delayed_group = False
         self._chi_delayed_by_mesh = False
+        self._chi_analog = True
         self._log_file = None
 
     def __deepcopy__(self, memo):
@@ -140,6 +141,7 @@ class State(object):
         clone._core_volume = self.core_volume
         clone._chi_delayed_by_delayed_group = self._chi_delayed_by_delayed_group
         clone._chi_delayed_by_mesh = self._chi_delayed_by_mesh
+        clone._chi_analog = self._chi_analog
         clone._log_file = self._log_file
 
         return clone
@@ -215,6 +217,10 @@ class State(object):
     @property
     def chi_delayed_by_mesh(self):
         return self._chi_delayed_by_mesh
+
+    @property
+    def chi_analog(self):
+        return self._chi_analog
 
     @property
     def num_delayed_groups(self):
@@ -317,6 +323,10 @@ class State(object):
     @chi_delayed_by_mesh.setter
     def chi_delayed_by_mesh(self, chi_delayed_by_mesh):
         self._chi_delayed_by_mesh = chi_delayed_by_mesh
+
+    @chi_analog.setter
+    def chi_analog(self, chi_analog):
+        self._chi_analog = chi_analog
 
     @num_delayed_groups.setter
     def num_delayed_groups(self, num_delayed_groups):
@@ -767,6 +777,13 @@ class State(object):
                     energy_groups=self.one_group,
                     delayed_groups=delayed_groups, by_nuclide=False,
                     name= self.time_point + ' - ' + mgxs_type)
+            elif mgxs_type == 'chi-prompt':
+                self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
+                    mgxs_type, domain=self.mesh, domain_type='mesh',
+                    energy_groups=self.energy_groups, by_nuclide=False,
+                    name= self.time_point + ' - ' + mgxs_type)
+                if self.chi_analog:
+                    self._mgxs_lib[mgxs_type].estimator = 'analog'
             elif mgxs_type in openmc.mgxs.MGXS_TYPES:
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
@@ -797,6 +814,8 @@ class State(object):
                             mgxs_type, domain=self.unity_mesh, domain_type='mesh',
                             energy_groups=self.energy_groups, by_nuclide=False,
                             name= self.time_point + ' - ' + mgxs_type)
+                if self.chi_analog:
+                    self._mgxs_lib[mgxs_type].estimator = 'analog'
             elif mgxs_type in openmc.mgxs.MDGXS_TYPES:
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',

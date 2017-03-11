@@ -1015,7 +1015,6 @@ class ChiDelayed(MDGXS):
                                          delayed_groups, by_nuclide, name,
                                          num_polar, num_azimuthal)
         self._rxn_type = 'chi-delayed'
-        self._estimator = 'analog'
 
     @property
     def scores(self):

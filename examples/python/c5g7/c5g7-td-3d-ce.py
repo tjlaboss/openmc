@@ -113,9 +113,9 @@ elif case == '5.4':
 
 
 # OpenMC simulation parameters
-batches = 200
-inactive = 100
-particles = 250000
+batches = 80
+inactive = 30
+particles = 100000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -195,6 +195,7 @@ solver.core_volume                  = 42.84 * 42.84 * 128.52
 solver.constant_seed                = True
 solver.chi_delayed_by_delayed_group = False
 solver.chi_delayed_by_mesh          = False
+solver.chi_analog                   = True
 solver.use_pregenerated_sps         = False
 solver.pregenerate_sps              = False
 solver.run_on_cluster               = True

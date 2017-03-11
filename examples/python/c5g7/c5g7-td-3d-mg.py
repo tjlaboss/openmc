@@ -115,8 +115,8 @@ elif case == '5.4':
 
 
 # OpenMC simulation parameters
-batches = 200
-inactive = 100
+batches = 80
+inactive = 30
 particles = 100000
 
 # Instantiate a Settings object
@@ -199,6 +199,7 @@ solver.constant_seed                = False
 solver.seed                         = 1
 solver.chi_delayed_by_delayed_group = True
 solver.chi_delayed_by_mesh          = True
+solver.chi_analog                   = False
 solver.use_pregenerated_sps         = False
 solver.pregenerate_sps              = False
 solver.run_on_cluster               = False

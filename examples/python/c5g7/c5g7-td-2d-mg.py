@@ -17,14 +17,14 @@ from geometry_2d_mg import materials, surfaces, universes, cells, lattices, geom
 from plots import plots
 from mgxs_lib import mgxs_data
 
-# Create the materials file
-materials_file = openmc.Materials(geometry.get_all_materials().values())
-
 # Set the base control rod bank positions
 cells['Control Rod Base Bank 1'].translation = [0., 0., 64.26]
 cells['Control Rod Base Bank 2'].translation = [0., 0., 64.26]
 cells['Control Rod Base Bank 3'].translation = [0., 0., 64.26]
 cells['Control Rod Base Bank 4'].translation = [0., 0., 64.26]
+
+# Create the materials file
+materials_file = openmc.Materials(geometry.get_all_materials().values())
 
 case = '3.1'
 omega = 1.0
@@ -47,9 +47,9 @@ for bank in range(1,5):
     materials[name].set_density('macro', density)
 
 # OpenMC simulation parameters
-batches = 100
-inactive = 50
-particles = 100000
+batches = 80
+inactive = 30
+particles = 1000000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -159,8 +159,9 @@ solver.constant_seed                = False
 solver.seed                         = 1
 solver.chi_delayed_by_delayed_group = True
 solver.chi_delayed_by_mesh          = True
+solver.chi_analog                   = False
 solver.use_pregenerated_sps         = False
-solver.pregenerate_sps              = False
+solver.pregenerate_sps              = True
 solver.run_on_cluster               = False
 solver.job_file                     = 'job_fission.pbs'
 solver.log_file_name                = 'log_file.h5'
