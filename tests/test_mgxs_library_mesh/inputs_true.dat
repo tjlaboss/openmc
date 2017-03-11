@@ -336,56 +336,56 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
         <scores>flux</scores>
-        <estimator>analog</estimator>
+        <estimator>tracklength</estimator>
     </tally>
     <tally id="10003">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
         <scores>total</scores>
-        <estimator>analog</estimator>
+        <estimator>tracklength</estimator>
     </tally>
     <tally id="10004">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
+        <nuclides>total</nuclides>
+        <scores>flux</scores>
+        <estimator>analog</estimator>
+    </tally>
+    <tally id="10005">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
         <scores>scatter-1</scores>
         <estimator>analog</estimator>
     </tally>
-    <tally id="10005">
-        <filter bins="1" type="mesh" />
-        <filter bins="0.0 20000000.0" type="energy" />
-        <nuclides>total</nuclides>
-        <scores>flux</scores>
-        <estimator>analog</estimator>
-    </tally>
     <tally id="10006">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
-        <scores>total</scores>
-        <estimator>analog</estimator>
+        <scores>flux</scores>
+        <estimator>tracklength</estimator>
     </tally>
     <tally id="10007">
         <filter bins="1" type="mesh" />
-        <filter bins="0.0 20000000.0" type="energyout" />
+        <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
-        <scores>nu-scatter-1</scores>
-        <estimator>analog</estimator>
+        <scores>total</scores>
+        <estimator>tracklength</estimator>
     </tally>
     <tally id="10008">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
         <scores>flux</scores>
-        <estimator>tracklength</estimator>
+        <estimator>analog</estimator>
     </tally>
     <tally id="10009">
         <filter bins="1" type="mesh" />
-        <filter bins="0.0 20000000.0" type="energy" />
+        <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
-        <scores>absorption</scores>
-        <estimator>tracklength</estimator>
+        <scores>nu-scatter-1</scores>
+        <estimator>analog</estimator>
     </tally>
     <tally id="10010">
         <filter bins="1" type="mesh" />
@@ -405,14 +405,14 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
-        <scores>fission</scores>
+        <scores>flux</scores>
         <estimator>tracklength</estimator>
     </tally>
     <tally id="10013">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
-        <scores>flux</scores>
+        <scores>absorption</scores>
         <estimator>tracklength</estimator>
     </tally>
     <tally id="10014">
@@ -433,7 +433,7 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
-        <scores>nu-fission</scores>
+        <scores>fission</scores>
         <estimator>tracklength</estimator>
     </tally>
     <tally id="10017">
@@ -447,7 +447,7 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
-        <scores>kappa-fission</scores>
+        <scores>nu-fission</scores>
         <estimator>tracklength</estimator>
     </tally>
     <tally id="10019">
@@ -461,7 +461,7 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
-        <scores>scatter</scores>
+        <scores>kappa-fission</scores>
         <estimator>tracklength</estimator>
     </tally>
     <tally id="10021">
@@ -469,14 +469,14 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
         <scores>flux</scores>
-        <estimator>analog</estimator>
+        <estimator>tracklength</estimator>
     </tally>
     <tally id="10022">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
-        <scores>nu-scatter</scores>
-        <estimator>analog</estimator>
+        <scores>scatter</scores>
+        <estimator>tracklength</estimator>
     </tally>
     <tally id="10023">
         <filter bins="1" type="mesh" />
@@ -488,9 +488,8 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
     <tally id="10024">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
-        <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
-        <scores>scatter-P3</scores>
+        <scores>nu-scatter</scores>
         <estimator>analog</estimator>
     </tally>
     <tally id="10025">
@@ -505,15 +504,14 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <filter bins="0.0 20000000.0" type="energy" />
         <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
-        <scores>nu-scatter-P3</scores>
+        <scores>scatter-P3</scores>
         <estimator>analog</estimator>
     </tally>
     <tally id="10027">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
-        <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
-        <scores>nu-scatter</scores>
+        <scores>flux</scores>
         <estimator>analog</estimator>
     </tally>
     <tally id="10028">
@@ -521,14 +519,15 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <filter bins="0.0 20000000.0" type="energy" />
         <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
-        <scores>scatter</scores>
+        <scores>nu-scatter-P3</scores>
         <estimator>analog</estimator>
     </tally>
     <tally id="10029">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
+        <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
-        <scores>flux</scores>
+        <scores>nu-scatter</scores>
         <estimator>analog</estimator>
     </tally>
     <tally id="10030">
@@ -536,18 +535,19 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <filter bins="0.0 20000000.0" type="energy" />
         <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
-        <scores>nu-fission</scores>
+        <scores>scatter</scores>
         <estimator>analog</estimator>
     </tally>
     <tally id="10031">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
-        <scores>nu-fission</scores>
+        <scores>flux</scores>
         <estimator>analog</estimator>
     </tally>
     <tally id="10032">
         <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
         <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
         <scores>nu-fission</scores>
@@ -556,30 +556,32 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
     <tally id="10033">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
+        <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
-        <scores>prompt-nu-fission</scores>
+        <scores>scatter</scores>
         <estimator>analog</estimator>
     </tally>
     <tally id="10034">
-        <filter bins="1" type="mesh" />
-        <filter bins="0.0 20000000.0" type="energyout" />
-        <nuclides>total</nuclides>
-        <scores>prompt-nu-fission</scores>
-        <estimator>analog</estimator>
-    </tally>
-    <tally id="10035">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
         <scores>flux</scores>
         <estimator>tracklength</estimator>
     </tally>
-    <tally id="10036">
+    <tally id="10035">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
-        <scores>inverse-velocity</scores>
+        <scores>scatter</scores>
         <estimator>tracklength</estimator>
+    </tally>
+    <tally id="10036">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
+        <filter bins="0.0 20000000.0" type="energyout" />
+        <nuclides>total</nuclides>
+        <scores>scatter-P3</scores>
+        <estimator>analog</estimator>
     </tally>
     <tally id="10037">
         <filter bins="1" type="mesh" />
@@ -592,14 +594,15 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
-        <scores>prompt-nu-fission</scores>
+        <scores>scatter</scores>
         <estimator>tracklength</estimator>
     </tally>
     <tally id="10039">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
+        <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
-        <scores>flux</scores>
+        <scores>scatter-P3</scores>
         <estimator>analog</estimator>
     </tally>
     <tally id="10040">
@@ -607,17 +610,96 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <filter bins="0.0 20000000.0" type="energy" />
         <filter bins="0.0 20000000.0" type="energyout" />
         <nuclides>total</nuclides>
-        <scores>prompt-nu-fission</scores>
+        <scores>nu-scatter-0</scores>
         <estimator>analog</estimator>
     </tally>
     <tally id="10041">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
+        <filter bins="0.0 20000000.0" type="energyout" />
+        <nuclides>total</nuclides>
+        <scores>scatter-0</scores>
+        <estimator>analog</estimator>
+    </tally>
+    <tally id="10042">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
+        <nuclides>total</nuclides>
+        <scores>nu-fission</scores>
+        <estimator>analog</estimator>
+    </tally>
+    <tally id="10043">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energyout" />
+        <nuclides>total</nuclides>
+        <scores>nu-fission</scores>
+        <estimator>analog</estimator>
+    </tally>
+    <tally id="10044">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
+        <nuclides>total</nuclides>
+        <scores>prompt-nu-fission</scores>
+        <estimator>analog</estimator>
+    </tally>
+    <tally id="10045">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energyout" />
+        <nuclides>total</nuclides>
+        <scores>prompt-nu-fission</scores>
+        <estimator>analog</estimator>
+    </tally>
+    <tally id="10046">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
         <scores>flux</scores>
         <estimator>tracklength</estimator>
     </tally>
-    <tally id="10042">
+    <tally id="10047">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
+        <nuclides>total</nuclides>
+        <scores>inverse-velocity</scores>
+        <estimator>tracklength</estimator>
+    </tally>
+    <tally id="10048">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
+        <nuclides>total</nuclides>
+        <scores>flux</scores>
+        <estimator>tracklength</estimator>
+    </tally>
+    <tally id="10049">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
+        <nuclides>total</nuclides>
+        <scores>prompt-nu-fission</scores>
+        <estimator>tracklength</estimator>
+    </tally>
+    <tally id="10050">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
+        <nuclides>total</nuclides>
+        <scores>flux</scores>
+        <estimator>analog</estimator>
+    </tally>
+    <tally id="10051">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
+        <filter bins="0.0 20000000.0" type="energyout" />
+        <nuclides>total</nuclides>
+        <scores>prompt-nu-fission</scores>
+        <estimator>analog</estimator>
+    </tally>
+    <tally id="10052">
+        <filter bins="1" type="mesh" />
+        <filter bins="0.0 20000000.0" type="energy" />
+        <nuclides>total</nuclides>
+        <scores>flux</scores>
+        <estimator>tracklength</estimator>
+    </tally>
+    <tally id="10053">
         <filter bins="1" type="mesh" />
         <filter bins="1 2 3 4 5 6" type="delayedgroup" />
         <filter bins="0.0 20000000.0" type="energy" />
@@ -625,7 +707,7 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <scores>delayed-nu-fission</scores>
         <estimator>tracklength</estimator>
     </tally>
-    <tally id="10043">
+    <tally id="10054">
         <filter bins="1" type="mesh" />
         <filter bins="1 2 3 4 5 6" type="delayedgroup" />
         <filter bins="0.0 20000000.0" type="energy" />
@@ -633,7 +715,7 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <scores>delayed-nu-fission</scores>
         <estimator>analog</estimator>
     </tally>
-    <tally id="10044">
+    <tally id="10055">
         <filter bins="1" type="mesh" />
         <filter bins="1 2 3 4 5 6" type="delayedgroup" />
         <filter bins="0.0 20000000.0" type="energyout" />
@@ -641,14 +723,14 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <scores>delayed-nu-fission</scores>
         <estimator>analog</estimator>
     </tally>
-    <tally id="10045">
+    <tally id="10056">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
         <scores>nu-fission</scores>
         <estimator>tracklength</estimator>
     </tally>
-    <tally id="10046">
+    <tally id="10057">
         <filter bins="1" type="mesh" />
         <filter bins="1 2 3 4 5 6" type="delayedgroup" />
         <filter bins="0.0 20000000.0" type="energy" />
@@ -656,7 +738,7 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <scores>delayed-nu-fission</scores>
         <estimator>tracklength</estimator>
     </tally>
-    <tally id="10047">
+    <tally id="10058">
         <filter bins="1" type="mesh" />
         <filter bins="1 2 3 4 5 6" type="delayedgroup" />
         <filter bins="0.0 20000000.0" type="energy" />
@@ -664,7 +746,7 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <scores>delayed-nu-fission</scores>
         <estimator>tracklength</estimator>
     </tally>
-    <tally id="10048">
+    <tally id="10059">
         <filter bins="1" type="mesh" />
         <filter bins="1 2 3 4 5 6" type="delayedgroup" />
         <filter bins="0.0 20000000.0" type="energy" />
@@ -672,14 +754,14 @@ a0d62fc011ae33756cd87202432f5c49f847793a40ec50efc6e4366755a70196f9ae970b24244766
         <scores>decay-rate</scores>
         <estimator>tracklength</estimator>
     </tally>
-    <tally id="10049">
+    <tally id="10060">
         <filter bins="1" type="mesh" />
         <filter bins="0.0 20000000.0" type="energy" />
         <nuclides>total</nuclides>
         <scores>flux</scores>
         <estimator>analog</estimator>
     </tally>
-    <tally id="10050">
+    <tally id="10061">
         <filter bins="1" type="mesh" />
         <filter bins="1 2 3 4 5 6" type="delayedgroup" />
         <filter bins="0.0 20000000.0" type="energy" />

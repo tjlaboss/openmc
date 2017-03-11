@@ -188,6 +188,7 @@ Running OpenMC
    openmc.run
    openmc.calculate_volumes
    openmc.plot_geometry
+   openmc.plot_inline
 
 Post-processing
 ---------------
@@ -295,6 +296,7 @@ Multi-group Cross Sections
     openmc.mgxs.NuFissionMatrixXS
     openmc.mgxs.ScatterXS
     openmc.mgxs.ScatterMatrixXS
+    openmc.mgxs.ScatterProbabilityMatrix
     openmc.mgxs.TotalXS
     openmc.mgxs.TransportXS
 

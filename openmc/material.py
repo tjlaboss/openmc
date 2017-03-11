@@ -77,6 +77,12 @@ class Material(object):
         Volume of the material in cm^3. This can either be set manually or
         calculated in a stochastic volume calculation and added via the
         :meth:`Material.add_volume_information` method.
+    paths : list of str
+        The paths traversed through the CSG tree to reach each material
+        instance. This property is initialized by calling the
+        :meth:`Geometry.determine_paths` method.
+    num_instances : int
+        The number of instances of this material throughout the geometry.
 
     """
 
@@ -89,6 +95,7 @@ class Material(object):
         self._density_units = ''
         self._time = 0.0
         self._depletable = False
+        self._paths = []
         self._volume = None
         self._atoms = {}
 
@@ -222,6 +229,17 @@ class Material(object):
         return self._depletable
 
     @property
+    def paths(self):
+        if not self._paths:
+            raise ValueError('Material instance paths have not been determined. '
+                             'Call the Geometry.determine_paths() method.')
+        return self._paths
+
+    @property
+    def num_instances(self):
+        return len(self.paths)
+
+    @property
     def elements(self):
         return self._elements
 
@@ -310,6 +328,11 @@ class Material(object):
         if volume is not None:
             cv.check_type('material volume', volume, Real)
         self._volume = volume
+
+    @num_instances.setter
+    def num_instances(self, num_instances):
+        cv.check_type('num_instances', num_instances, Integral)
+        self._num_instances = num_instances
 
     @classmethod
     def from_hdf5(cls, group):
@@ -560,16 +583,16 @@ class Material(object):
             Nuclide to remove
 
         """
+        cv.check_type('nuclide', nuclide, string_types + (openmc.Nuclide,))
 
-        if not isinstance(nuclide, openmc.Nuclide):
-            msg = 'Unable to remove a Nuclide "{}" in Material ID="{}" ' \
-                  'since it is not a Nuclide'.format(self._id, nuclide)
-            raise ValueError(msg)
+        if isinstance(nuclide, string_types):
+            nuclide = openmc.Nuclide(nuclide)
 
         # If the Material contains the Nuclide, delete it
         for nuc in self._nuclides:
-            if nuclide == nuc:
+            if nuclide == nuc[0]:
                 self._nuclides.remove(nuc)
+                break
 
     def add_macroscopic(self, macroscopic):
         """Add a macroscopic to the material.  This will also set the
@@ -721,15 +744,14 @@ class Material(object):
             Element to remove
 
         """
+        cv.check_type('element', element, string_types + (openmc.Element,))
 
-        if not isinstance(element, openmc.Element):
-            msg = 'Unable to remove "{}" in Material ID="{}" ' \
-                  'since it is not an Element'.format(self.id, element)
-            raise ValueError(msg)
+        if isinstance(element, string_types):
+            element = openmc.Element(element)
 
         # If the Material contains the Element, delete it
         for elm in self._elements:
-            if element == elm:
+            if element == elm[0]:
                 self._elements.remove(elm)
 
     def add_s_alpha_beta(self, name):

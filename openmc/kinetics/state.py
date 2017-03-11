@@ -402,7 +402,7 @@ class State(object):
 
     @property
     def inscatter(self):
-        inscatter = self.mgxs_lib['nu-scatter matrix'].get_xs(row_column='outin')
+        inscatter = self.mgxs_lib['consistent nu-scatter matrix'].get_xs(row_column='outin')
         inscatter.shape = (self.nxyz, self.ngp, self.ng)
         return inscatter
 
@@ -744,7 +744,7 @@ class State(object):
             name= self.time_point + ' - ASSEMBLY - kappa-fission')
 
         mgxs_types = ['absorption', 'diffusion-coefficient', 'decay-rate',
-                      'kappa-fission', 'nu-scatter matrix', 'chi-prompt',
+                      'kappa-fission', 'consistent nu-scatter matrix', 'chi-prompt',
                       'chi-delayed', 'inverse-velocity', 'prompt-nu-fission',
                       'current', 'delayed-nu-fission']
 
@@ -755,7 +755,7 @@ class State(object):
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.fine_groups, by_nuclide=False,
                     name= self.time_point + ' - ' + mgxs_type)
-            elif mgxs_type == 'nu-scatter matrix':
+            elif mgxs_type == 'consistent nu-scatter matrix':
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=self.mesh, domain_type='mesh',
                     energy_groups=self.energy_groups, by_nuclide=False,

@@ -20,11 +20,16 @@ from mgxs_lib import mgxs_data
 # Create the materials file
 materials_file = openmc.Materials(geometry.get_all_materials().values())
 
+# Set the base control rod bank positions
+cells['Control Rod Base Bank 1'].translation = [0., 0., 64.26]
+cells['Control Rod Base Bank 2'].translation = [0., 0., 64.26]
+cells['Control Rod Base Bank 3'].translation = [0., 0., 64.26]
+cells['Control Rod Base Bank 4'].translation = [0., 0., 64.26]
+
 case = '3.1'
 omega = 1.0
 
 # Adjust the cells to have the desired moderator densities
-
 if case == '3.1':
     omega = 0.95
 elif case == '3.2':
@@ -42,9 +47,9 @@ for bank in range(1,5):
     materials[name].set_density('macro', density)
 
 # OpenMC simulation parameters
-batches = 200
-inactive = 100
-particles = 10000
+batches = 100
+inactive = 50
+particles = 100000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -130,7 +135,7 @@ full_assembly_mesh.width = [64.26/full_assembly_mesh.dimension[0],
                             128.52]
 
 # Instantiate a clock object
-clock = openmc.kinetics.Clock(start=0., end=2., dt_outer=5.e-1, dt_inner=1.e-1)
+clock = openmc.kinetics.Clock(start=0., end=2., dt_outer=1.e-1, dt_inner=1.e-2)
 
 # Instantiate a kinetics solver object
 solver = openmc.kinetics.Solver(name='MG_PC_TEST', directory='C5G7_2D')
@@ -146,18 +151,18 @@ solver.settings_file                = settings_file
 solver.materials_file               = materials_file
 solver.mgxs_lib_file                = mgxs_lib_file
 solver.clock                        = clock
-solver.mpi_procs                    = 24*1
+solver.mpi_procs                    = 32*1
 solver.threads                      = 1
-solver.ppn                          = 24
+solver.ppn                          = 32
 solver.core_volume                  = 42.84 * 42.84 * 128.52
 solver.constant_seed                = False
 solver.seed                         = 1
-solver.chi_delayed_by_delayed_group = False
-solver.chi_delayed_by_mesh          = False
+solver.chi_delayed_by_delayed_group = True
+solver.chi_delayed_by_mesh          = True
 solver.use_pregenerated_sps         = False
 solver.pregenerate_sps              = False
 solver.run_on_cluster               = False
-solver.job_file                     = 'job.pbs'
+solver.job_file                     = 'job_fission.pbs'
 solver.log_file_name                = 'log_file.h5'
 
 # Solve transient problem

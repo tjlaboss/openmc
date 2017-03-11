@@ -79,13 +79,12 @@ class Cell(object):
     translation : Iterable of float or np.ndarray
         If the cell is filled with a universe, this array specifies a vector
         that is used to translate (shift) the universe.
-    offsets : ndarray
-        Array of offsets used for distributed cell searches
-    distribcell_index : int
-        Index of this cell in distribcell arrays
-    distribcell_paths : list of str
-        The paths traversed through the CSG tree to reach each distribcell
-        instance
+    paths : list of str
+        The paths traversed through the CSG tree to reach each cell
+        instance. This property is initialized by calling the
+        :meth:`Geometry.determine_paths` method.
+    num_instances : int
+        The number of instances of this cell throughout the geometry.
     volume : float
         Volume of the cell in cm^3. This can either be set manually or
         calculated in a stochastic volume calculation and added via the
@@ -108,10 +107,9 @@ class Cell(object):
         self._temperature = None
         self._translation = None
         self._offsets = None
-        self._distribcell_index = None
-        self._distribcell_paths = None
         self._time = 0.0
         self._translation_times = None
+        self._paths = []
         self._volume = None
         self._atoms = None
 
@@ -174,8 +172,6 @@ class Cell(object):
             string += '\t{0: <15}=\t{1}\n'.format('Temperature',
                                                   self.temperature)
         string += '{: <16}=\t{}\n'.format('\tTranslation', self.translation)
-        string += '{: <16}=\t{}\n'.format('\tOffset', self.offsets)
-        string += '{: <16}=\t{}\n'.format('\tDistribcell index', self.distribcell_index)
 
         return string
 
@@ -240,20 +236,27 @@ class Cell(object):
             return self._translation
 
     @property
-    def offsets(self):
-        return self._offsets
-
-    @property
-    def distribcell_index(self):
-        return self._distribcell_index
-
-    @property
-    def distribcell_paths(self):
-        return self._distribcell_paths
-
-    @property
     def volume(self):
         return self._volume
+
+    @property
+    def paths(self):
+        if not self._paths:
+            raise ValueError('Cell instance paths have not been determined. '
+                             'Call the Geometry.determine_paths() method.')
+        return self._paths
+
+    @property
+    def bounding_box(self):
+        if self.region is not None:
+            return self.region.bounding_box
+        else:
+            return (np.array([-np.inf, -np.inf, -np.inf]),
+                    np.array([np.inf, np.inf, np.inf]))
+
+    @property
+    def num_instances(self):
+        return len(self.paths)
 
     @property
     def time(self):
@@ -308,22 +311,23 @@ class Cell(object):
     @rotation.setter
     def rotation(self, rotation):
         if not isinstance(self.fill, openmc.Universe):
-            raise RuntimeError('Cell rotation can only be applied if the cell '
-                               'is filled with a Universe')
+            raise TypeError('Cell rotation can only be applied if the cell '
+                            'is filled with a Universe.')
 
         cv.check_type('cell rotation', rotation, Iterable, Real)
         cv.check_length('cell rotation', rotation, 3)
         self._rotation = np.asarray(rotation)
 
-        # Save rotation matrix
+        # Save rotation matrix -- the reason we do this instead of having it be
+        # automatically calculated when the rotation_matrix property is accessed
+        # is so that plotting on a rotated geometry can be done faster.
         phi, theta, psi = self.rotation*(-pi/180.)
         c3, s3 = cos(phi), sin(phi)
         c2, s2 = cos(theta), sin(theta)
         c1, s1 = cos(psi), sin(psi)
-        self._rotation_matrix = np.array([
-            [c1*c2, c1*s2*s3 - c3*s1, s1*s3 + c1*c3*s2],
-            [c2*s1, c1*c3 + s1*s2*s3, c3*s1*s2 - c1*s3],
-            [-s2, c2*s3, c2*c3]])
+        return np.array([[c1*c2, c1*s2*s3 - c3*s1, s1*s3 + c1*c3*s2],
+                         [c2*s1, c1*c3 + s1*s2*s3, c3*s1*s2 - c1*s3],
+                         [-s2, c2*s3, c2*c3]])
 
     @translation.setter
     def translation(self, translation):
@@ -364,11 +368,6 @@ class Cell(object):
         else:
             self._temperature = temperature
 
-    @offsets.setter
-    def offsets(self, offsets):
-        cv.check_type('cell offsets', offsets, Iterable)
-        self._offsets = offsets
-
     @region.setter
     def region(self, region):
         if region is not None:
@@ -380,17 +379,6 @@ class Cell(object):
         if volume is not None:
             cv.check_type('cell volume', volume, Real)
         self._volume = volume
-
-    @distribcell_index.setter
-    def distribcell_index(self, ind):
-        cv.check_type('distribcell index', ind, Integral)
-        self._distribcell_index = ind
-
-    @distribcell_paths.setter
-    def distribcell_paths(self, distribcell_paths):
-        cv.check_iterable_type('distribcell_paths', distribcell_paths,
-                               string_types)
-        self._distribcell_paths = distribcell_paths
 
     @time.setter
     def time(self, time):
@@ -472,23 +460,6 @@ class Cell(object):
                 raise ValueError('No volume information found for this cell.')
         else:
             raise ValueError('No volume information found for this cell.')
-
-    def get_cell_instance(self, path, distribcell_index):
-
-        # If the Cell is filled by a Material
-        if self.fill_type in ('material', 'distribmat', 'void'):
-            offset = 0
-
-        # If the Cell is filled by a Universe
-        elif self.fill_type == 'universe':
-            offset = self.offsets[distribcell_index-1]
-            offset += self.fill.get_cell_instance(path, distribcell_index)
-
-        # If the Cell is filled by a Lattice
-        else:
-            offset = self.fill.get_cell_instance(path, distribcell_index)
-
-        return offset
 
     def get_nuclides(self):
         """Returns all nuclides in the cell

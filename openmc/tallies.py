@@ -2,12 +2,10 @@ from __future__ import division
 
 from collections import Iterable, MutableSequence
 import copy
+import re
 from functools import partial
-import os
-import pickle
 import itertools
 from numbers import Integral, Real
-import sys
 import warnings
 from xml.etree import ElementTree as ET
 
@@ -1013,7 +1011,50 @@ class Tally(object):
         # Sparsify merged tally if both tallies are sparse
         merged_tally.sparse = self.sparse and other.sparse
 
+        # Consolidate scatter and flux Legendre moment scores
+        merged_tally._consolidate_moment_scores()
+
         return merged_tally
+
+    def _consolidate_moment_scores(self):
+        """Remove redundant scattering and flux moment scores from a Tally."""
+
+        # Define regex for scatter, nu-scatter and flux moment scores
+        regex = [(r'^((?!nu-)scatter-\d)', r'^((?!nu-)scatter-(P|p)\d)'),
+                 (r'nu-scatter-\d', r'nu-scatter-(P|p)\d'),
+                 (r'flux-\d', r'flux-(P|p)\d')]
+
+        # Find all non-scattering and non-flux moment scores
+        scores = [x for x in self.scores if
+                  re.search(r'^((?!scatter-).)*$', x)]
+        scores = [x for x in scores if
+                  re.search(r'^((?!flux-).)*$', x)]
+
+        for regex_n, regex_pn in regex:
+
+            # Use regex to find score-(P)n scores
+            score_n = [x for x in self.scores if re.search(regex_n, x)]
+            score_pn = [x for x in self.scores if re.search(regex_pn, x)]
+
+            # Consolidate moment scores
+            if len(score_pn) > 0:
+
+                # Only keep the highest score-PN score
+                high_pn = sorted([x.lower() for x in score_pn])[-1]
+                pn = int(high_pn.split('-')[-1].replace('p', ''))
+
+                # Only keep the score-N scores with N > PN
+                score_n = sorted([x.lower() for x in score_n])
+                score_n = [x for x in score_n if (int(x.split('-')[1]) > pn)]
+
+                # Append highest score-PN and any higher score-N scores
+                scores.extend([high_pn] + score_n)
+            else:
+                scores.extend(score_n)
+
+        # Override Tally's scores with consolidated list of scores
+        self.scores = scores
+
 
     def to_xml_element(self):
         """Return XML representation of the tally
@@ -1517,8 +1558,7 @@ class Tally(object):
         return data
 
     def get_pandas_dataframe(self, filters=True, nuclides=True, scores=True,
-                             derivative=True, distribcell_paths=True,
-                             float_format='{:.2e}'):
+                             derivative=True, paths=True, float_format='{:.2e}'):
         """Build a Pandas DataFrame for the Tally data.
 
         This method constructs a Pandas DataFrame object for the Tally data
@@ -1538,7 +1578,7 @@ class Tally(object):
             Include columns with score bin information (default is True).
         derivative : bool
             Include columns with differential tally info (default is True).
-        distribcell_paths : bool, optional
+        paths : bool, optional
             Construct columns for distribcell tally filters (default is True).
             The geometric information in the Summary object is embedded into a
             Multi-index column with a geometric "path" to each distribcell
@@ -1581,7 +1621,7 @@ class Tally(object):
             # Append each Filter's DataFrame to the overall DataFrame
             for self_filter in self.filters:
                 filter_df = self_filter.get_pandas_dataframe(
-                    data_size, distribcell_paths=distribcell_paths)
+                    data_size, paths=paths)
                 df = pd.concat([df, filter_df], axis=1)
 
         # Include DataFrame column for nuclides if user requested it
