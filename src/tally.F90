@@ -1601,20 +1601,12 @@ contains
         else
           if (i_nuclide > 0) then
             if (eo_filter > 0) then
-              select type(filt => t % filters(eo_filter) % obj)
-              type is (EnergyoutFilter)
-
-                ! Loop over all energy group bins and tally to them
-                ! individually
-                do g_bin = 1, filt % n_bins
-
-                  g_out = size(filt % bins) - g_bin
-
-                  score = nucxs % get_xs('nu-fission', p_g, gout=g_out, UVW=p_uvw) * &
-                      atom_density * flux
-                  call score_fission_energyout(t, g_bin, score, score_index)
-                end do
-              end select
+              ! Loop over all energy groups and tally to them individually
+              do g_bin = 1, num_energy_groups
+                score = nucxs % get_xs('nu-fission', p_g, gout=g_out, UVW=p_uvw) * &
+                    atom_density * flux
+                call score_fission_energyout(t, g_bin, score, score_index)
+              end do
               cycle SCORE_LOOP
             else
               score = nucxs % get_xs('nu-fission', p_g, UVW=p_uvw) * &
@@ -1622,19 +1614,11 @@ contains
             end if
           else
             if (eo_filter > 0) then
-              select type(filt => t % filters(eo_filter) % obj)
-              type is (EnergyoutFilter)
-
-                ! Loop over all energy group bins and tally to them
-                ! individually
-                do g_bin = 1, filt % n_bins
-
-                  g_out = size(filt % bins) - g_bin
-
-                  score = matxs % get_xs('nu-fission', p_g, gout=g_out, UVW=p_uvw) * flux
-                  call score_fission_energyout(t, g_bin, score, score_index)
-                end do
-              end select
+              ! Loop over all energy group bins and tally to them individually
+              do g_bin = 1, num_energy_groups
+                score = matxs % get_xs('nu-fission', p_g, gout=g_bin, UVW=p_uvw) * flux
+                call score_fission_energyout(t, g_bin, score, score_index)
+              end do
               cycle SCORE_LOOP
             else
               score = matxs % get_xs('nu-fission', p_g, UVW=p_uvw) * flux
@@ -1694,20 +1678,12 @@ contains
         else
           if (i_nuclide > 0) then
             if (eo_filter > 0) then
-              select type(filt => t % filters(eo_filter) % obj)
-              type is (EnergyoutFilter)
-
-                ! Loop over all energy group bins and tally to them
-                ! individually
-                do g_bin = 1, filt % n_bins
-
-                  g_out = size(filt % bins) - g_bin
-
-                  score = nucxs % get_xs('prompt-nu-fission', p_g, gout=g_out, UVW=p_uvw) * &
-                      atom_density * flux
-                  call score_fission_energyout(t, g_bin, score, score_index)
-                end do
-              end select
+              ! Loop over all energy group bins and tally to them individually
+              do g_bin = 1, num_energy_groups
+                score = nucxs % get_xs('prompt-nu-fission', p_g, gout=g_bin, UVW=p_uvw) * &
+                    atom_density * flux
+                call score_fission_energyout(t, g_bin, score, score_index)
+              end do
               cycle SCORE_LOOP
             else
               score = nucxs % get_xs('prompt-nu-fission', p_g, UVW=p_uvw) * &
@@ -1715,19 +1691,11 @@ contains
             end if
           else
             if (eo_filter > 0) then
-              select type(filt => t % filters(eo_filter) % obj)
-              type is (EnergyoutFilter)
-
-                ! Loop over all energy group bins and tally to them
-                ! individually
-                do g_bin = 1, filt % n_bins
-
-                  g_out = size(filt % bins) - g_bin
-
-                  score = matxs % get_xs('prompt-nu-fission', p_g, gout=g_out, UVW=p_uvw) * flux
-                  call score_fission_energyout(t, g_bin, score, score_index)
-                end do
-              end select
+              ! Loop over all energy group bins and tally to them individually
+              do g_bin = 1, num_energy_groups
+                score = matxs % get_xs('prompt-nu-fission', p_g, gout=g_bin, UVW=p_uvw) * flux
+                call score_fission_energyout(t, g_bin, score, score_index)
+              end do
               cycle SCORE_LOOP
             else
               score = matxs % get_xs('prompt-nu-fission', p_g, UVW=p_uvw) * flux
@@ -1846,34 +1814,24 @@ contains
             select type(filt_dg => t % filters(dg_filter) % obj)
             type is (DelayedGroupFilter)
 
-              select type(filt_eo => t % filters(eo_filter) % obj)
-              type is (EnergyoutFilter)
+              ! Loop over all delayed group bins and tally to them individually
+              do d_bin = 1, filt_dg % n_bins
 
-                ! Loop over all delayed group bins and tally to them
-                ! individually
-                do d_bin = 1, filt_dg % n_bins
+                ! Get the delayed group for this bin
+                d = filt_dg % groups(d_bin)
 
-                  ! Get the delayed group for this bin
-                  d = filt_dg % groups(d_bin)
-
-                  ! Loop over all energy group bins and tally to them
-                  ! individually
-                  do g_bin = 1, filt_eo % n_bins
-
-                    g_out = size(filt_eo % bins) - g_bin
-
-                    if (i_nuclide > 0) then
-                      score = nucxs % get_xs('delayed-nu-fission', p_g, gout=g_out, &
-                           UVW=p_uvw, dg=d) * atom_density * flux
-                    else
-                      score = matxs % get_xs('delayed-nu-fission', p_g, gout=g_out, &
-                         UVW=p_uvw, dg=d) * flux
-                    end if
-
-                    call score_fission_energyout_dg(t, g_bin, d_bin, score, score_index)
-                  end do
+                ! Loop over all energy group bins and tally to them individually
+                do g_bin = 1, num_energy_groups
+                  if (i_nuclide > 0) then
+                    score = nucxs % get_xs('delayed-nu-fission', p_g, gout=g_bin, &
+                         UVW=p_uvw, dg=d) * atom_density * flux
+                  else
+                    score = matxs % get_xs('delayed-nu-fission', p_g, gout=g_bin, &
+                       UVW=p_uvw, dg=d) * flux
+                  end if
+                  call score_fission_energyout_dg(t, g_bin, d_bin, score, score_index)
                 end do
-              end select
+              end do
             end select
             cycle SCORE_LOOP
           else if (dg_filter > 0) then
@@ -1900,27 +1858,18 @@ contains
               cycle SCORE_LOOP
             end select
           else if (eo_filter > 0) then
-            select type(filt => t % filters(eo_filter) % obj)
-            type is (EnergyoutFilter)
-
-              ! Loop over all delayed group bins and tally to them
-              ! individually
-              do g_bin = 1, filt % n_bins
-
-                g_out = size(filt % bins) - g_bin
-
-                if (i_nuclide > 0) then
-                  score = nucxs % get_xs('delayed-nu-fission', p_g, gout=g_out, &
-                       UVW=p_uvw) * atom_density * flux
-                else
-                  score = matxs % get_xs('delayed-nu-fission', p_g, gout=g_out, &
-                       UVW=p_uvw) * flux
-                end if
-
-                call score_fission_energyout(t, g_bin, score, score_index)
-              end do
-              cycle SCORE_LOOP
-            end select
+            ! Loop over all delayed group bins and tally to them individually
+            do g_bin = 1, num_energy_groups
+              if (i_nuclide > 0) then
+                score = nucxs % get_xs('delayed-nu-fission', p_g, gout=g_bin, &
+                     UVW=p_uvw) * atom_density * flux
+              else
+                score = matxs % get_xs('delayed-nu-fission', p_g, gout=g_bin, &
+                     UVW=p_uvw) * flux
+              end if
+              call score_fission_energyout(t, g_bin, score, score_index)
+            end do
+            cycle SCORE_LOOP
           else
             if (i_nuclide > 0) then
               score = nucxs % get_xs('delayed-nu-fission', p_g, UVW=p_uvw) &
@@ -2803,21 +2752,56 @@ contains
 
     integer :: bin_original  ! original bin index
     integer :: filter_index  ! index for matching filter bin combination
+    real(8) :: E_out         ! energy of fission bank site
+    integer :: n             ! number of energies on filter
 
     ! save original energyout bin
-    bin_original = matching_bins(t % find_filter(FILTER_ENERGYOUT))
-    matching_bins(t % find_filter(FILTER_ENERGYOUT)) = g_bin
+    filter_index = t % find_filter(FILTER_ENERGYOUT)
+    bin_original = matching_bins(filter_index)
 
-    ! determine scoring index and weight on the modified matching_bins
-    filter_index = sum((matching_bins(1:size(t % filters)) - 1) * t % stride) &
-         + 1
+    ! declare the energyout filter type
+    select type(eo_filt => t % filters(filter_index) % obj)
+    type is (EnergyoutFilter)
+
+      if (eo_filt % matches_transport_groups) then
+
+        ! change outgoing energy bin
+        matching_bins(filter_index) = size(eo_filt % bins) - g_bin
+
+        ! determine scoring index and weight on the modified matching_bins
+        filter_index = sum((matching_bins(1:size(t % filters)) - 1) * t % stride) &
+             + 1
 
 !$omp atomic
-    t % results(RESULT_VALUE, score_index, filter_index) = &
-         t % results(RESULT_VALUE, score_index, filter_index) + score
+        t % results(RESULT_VALUE, score_index, filter_index) = &
+             t % results(RESULT_VALUE, score_index, filter_index) + score
+      else
+
+        ! determine outgoing energy from fission bank
+        E_out = energy_bin_avg(g_bin)
+
+        ! Get number of energies on filter
+        n = size(eo_filt % bins)
+
+        ! check if outgoing energy is within specified range on filter
+        if (E_out >= eo_filt % bins(1) .and. E_out <= eo_filt % bins(n)) then
+
+          ! change outgoing energy bin
+          matching_bins(filter_index) = binary_search(eo_filt % bins, n, E_out)
+
+          ! determine scoring index and weight on the modified matching_bins
+          filter_index = sum((matching_bins(1:size(t % filters)) - 1) * t % stride) &
+               + 1
+
+!$omp atomic
+          t % results(RESULT_VALUE, score_index, filter_index) = &
+               t % results(RESULT_VALUE, score_index, filter_index) + score
+        end if
+      end if
+    end select
 
     ! reset original energyout bin
-    matching_bins(t % find_filter(FILTER_ENERGYOUT)) = bin_original
+    matching_bins(filter_index) = bin_original
 
   end subroutine score_fission_energyout
 

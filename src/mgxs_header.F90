@@ -3032,6 +3032,7 @@ module mgxs_header
       integer, optional, intent(in) :: dg     ! Delayed group
       real(8)                       :: xs ! Requested x/s
       integer                       :: t ! temperature index
+      integer                       :: d ! Delayed group
 
       t = this % index_temp
 
@@ -3077,8 +3078,11 @@ module mgxs_header
           end if
         else
           if (present(gout)) then
-            xs = this % xs(t) % chi_delayed(1, gout, gin)
-            xs = xs * sum(this % xs(t) % delayed_nu_fission(:, gin))
+            xs = ZERO
+            do d = 1, num_delayed_groups
+              xs = xs + this % xs(t) % chi_delayed(d, gout, gin) * &
+                  this % xs(t) % delayed_nu_fission(d, gin)
+            end do
           else
             xs = sum(this % xs(t) % delayed_nu_fission(:, gin))
           end if
@@ -3086,9 +3090,12 @@ module mgxs_header
 
       case('nu-fission')
         if (present(gout)) then
-          xs = this % xs(t) % chi_prompt(gout,gin)
-          xs = xs * this % xs(t) % prompt_nu_fission(gin) + &
-               sum(this % xs(t) % delayed_nu_fission(:, gin))
+          xs = this % xs(t) % chi_prompt(gout,gin) * &
+              this % xs(t) % prompt_nu_fission(gin)
+          do d = 1, num_delayed_groups
+            xs = xs + this % xs(t) % chi_delayed(d, gout, gin) * &
+                this % xs(t) % delayed_nu_fission(d, gin)
+          end do
         else
           xs = this % xs(t) % prompt_nu_fission(gin) + &
                sum(this % xs(t) % delayed_nu_fission(:, gin))

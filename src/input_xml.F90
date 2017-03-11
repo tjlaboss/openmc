@@ -3172,6 +3172,11 @@ contains
           ! Set the filter index in the tally find_filter array
           t % find_filter(FILTER_ENERGYOUT) = j
 
+          ! Set to analog estimator if using CE cross sections
+          if (run_CE) then
+            t % estimator = ESTIMATOR_ANALOG
+          end if
+
         case ('delayedgroup')
 
           ! Allocate and declare the filter type
