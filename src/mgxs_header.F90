@@ -3089,7 +3089,7 @@ module mgxs_header
         end if
 
       case('nu-fission')
-        if (present(gout)) then
+       if (present(gout)) then
           xs = this % xs(t) % chi_prompt(gout,gin) * &
               this % xs(t) % prompt_nu_fission(gin)
           do d = 1, num_delayed_groups
@@ -3189,6 +3189,7 @@ module mgxs_header
       real(8), optional, intent(in) :: mu     ! Change in angle
       integer, optional, intent(in) :: dg     ! Delayed group
       real(8)                       :: xs ! Requested x/s
+      integer                       :: d  ! Delayed group
 
       integer :: iazi, ipol, t
 
@@ -3213,18 +3214,45 @@ module mgxs_header
           xs = this % xs(t) % kappa_fission(gin, iazi, ipol)
 
         case('prompt-nu-fission')
-          xs = this % xs(t) % prompt_nu_fission(gin, iazi, ipol)
+          if (present(gout)) then
+            xs = this % xs(t) % chi_prompt(gout, gin, iazi, ipol) * &
+                this % xs(t) % prompt_nu_fission(gin, iazi, ipol)
+          else
+            xs = this % xs(t) % prompt_nu_fission(gin, iazi, ipol)
+          end if
 
         case('delayed-nu-fission')
-          if (present(dg)) then
+        if (present(dg)) then
+          if (present(gout)) then
+            xs = this % xs(t) % chi_delayed(dg, gout, gin, iazi, ipol) * &
+                this % xs(t) % delayed_nu_fission(dg, gin, iazi, ipol)
+          else
             xs = this % xs(t) % delayed_nu_fission(dg, gin, iazi, ipol)
+          end if
+        else
+          if (present(gout)) then
+            xs = ZERO
+            do d = 1, num_delayed_groups
+              xs = xs + this % xs(t) % chi_delayed(d, gout, gin, iazi, ipol) * &
+                  this % xs(t) % delayed_nu_fission(d, gin, iazi, ipol)
+            end do
           else
             xs = sum(this % xs(t) % delayed_nu_fission(:, gin, iazi, ipol))
           end if
+        end if
 
         case('nu-fission')
-          xs = this % xs(t) % prompt_nu_fission(gin, iazi, ipol) + &
-               sum(this % xs(t) % delayed_nu_fission(:, gin, iazi, ipol))
+          if (present(gout)) then
+            xs = this % xs(t) % chi_prompt(gout, gin, iazi, ipol) * &
+                this % xs(t) % prompt_nu_fission(gin, iazi, ipol)
+            do d = 1, num_delayed_groups
+              xs = xs + this % xs(t) % chi_delayed(d, gout, gin, iazi, ipol) * &
+                  this % xs(t) % delayed_nu_fission(d, gin, iazi, ipol)
+            end do
+          else
+            xs = this % xs(t) % prompt_nu_fission(gin, iazi, ipol) + &
+                sum(this % xs(t) % delayed_nu_fission(:, gin, iazi, ipol))
+          end if
 
         case('chi-prompt')
           if (present(gout)) then

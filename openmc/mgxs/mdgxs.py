@@ -1015,6 +1015,20 @@ class ChiDelayed(MDGXS):
                                          delayed_groups, by_nuclide, name,
                                          num_polar, num_azimuthal)
         self._rxn_type = 'chi-delayed'
+        self._estimator = 'analog'
+        self._valid_estimators = ['analog']
+
+    @property
+    def energy_mode(self):
+        return self._energy_mode
+
+    @energy_mode.setter
+    def energy_mode(self, energy_mode):
+        super(ChiDelayed, self).energy_mode(energy_mode)
+
+        if energy_mode == 'multi-group':
+            self._valid_estimators = ESTIMATOR_TYPES
+            self._estimator = 'tracklength'
 
     @property
     def scores(self):
@@ -2622,3 +2636,15 @@ class DelayedNuFissionMatrixXS(MatrixMDGXS):
         self._hdf5_key = 'delayed-nu-fission matrix'
         self._estimator = 'analog'
         self._valid_estimators = ['analog']
+
+    @property
+    def energy_mode(self):
+        return self._energy_mode
+
+    @energy_mode.setter
+    def energy_mode(self, energy_mode):
+        super(DelayedNuFissionMatrixXS, self).energy_mode(energy_mode)
+
+        if energy_mode == 'multi-group':
+            self._valid_estimators = ESTIMATOR_TYPES
+            self._estimator = 'tracklength'
