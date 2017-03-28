@@ -281,10 +281,10 @@ class Geometry(object):
         Parameters
         ----------
         surfaces: collections.OrderedDict
+            Dictionary mapping lattice IDs to :class:`openmc.Surface` instances
             
         region: openmc.surface.Region
             The region of space defined by Surfaces
-            Dictionary mapping lattice IDs to :class:`openmc.Surface` instances
         Returns
         -------
         collections.OrderedDict
@@ -300,8 +300,6 @@ class Geometry(object):
                 surfaces = self.get_surfaces_from_region(surfaces, reg)
         return surfaces
                 
-        
-
     def get_materials_by_name(self, name, case_sensitive=False, matching=False):
         """Return a list of materials with matching names.
 
