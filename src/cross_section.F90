@@ -6,6 +6,7 @@ module cross_section
   use error,            only: fatal_error
   use global
   use list_header,      only: ListElemInt
+  use mesh,             only: get_mesh_bin
   use material_header,  only: Material
   use math,             only: faddeeva, w_derivative, broaden_wmp_polynomials
   use multipole_header, only: FORM_RM, FORM_MLBW, MP_EA, RM_RT, RM_RA, RM_RF, &
@@ -30,6 +31,7 @@ contains
     type(Particle), intent(inout) :: p
 
     integer :: i             ! loop index over nuclides
+    integer :: d             ! loop index over precursors
     integer :: i_nuclide     ! index into nuclides array
     integer :: i_sab         ! index into sab_tables array
     integer :: j             ! index in mat % i_sab_nuclides
@@ -44,6 +46,10 @@ contains
     material_xs % absorption     = ZERO
     material_xs % fission        = ZERO
     material_xs % nu_fission     = ZERO
+    material_xs % prompt_nu_fission = ZERO
+    material_xs % delayed_nu_fission(:) = ZERO
+    material_xs % decay_rate(:) = ZERO
+    material_xs % kappa_fission  = ZERO
 
     ! Exit subroutine if material is void
     if (p % material == MATERIAL_VOID) return
@@ -93,9 +99,9 @@ contains
         ! Calculate microscopic cross section for this nuclide
         if (p % E /= micro_xs(i_nuclide) % last_E &
              .or. p % sqrtkT /= micro_xs(i_nuclide) % last_sqrtkT) then
-          call calculate_nuclide_xs(i_nuclide, i_sab, p % E, i_grid, p % sqrtkT)
+          call calculate_nuclide_xs(i_nuclide, i_sab, p, i_grid)
         else if (i_sab /= micro_xs(i_nuclide) % last_index_sab) then
-          call calculate_nuclide_xs(i_nuclide, i_sab, p % E, i_grid, p % sqrtkT)
+          call calculate_nuclide_xs(i_nuclide, i_sab, p, i_grid)
         end if
 
         ! ========================================================================
@@ -123,6 +129,24 @@ contains
         ! Add contributions to material macroscopic nu-fission cross section
         material_xs % nu_fission = material_xs % nu_fission + &
              atom_density * micro_xs(i_nuclide) % nu_fission
+
+        ! Add contributions to material macroscopic nu-fission cross section
+        material_xs % prompt_nu_fission = material_xs % prompt_nu_fission + &
+             atom_density * micro_xs(i_nuclide) % prompt_nu_fission
+
+        ! Add contributions to material macroscopic nu-fission cross section
+        material_xs % kappa_fission = material_xs % kappa_fission + &
+             atom_density * micro_xs(i_nuclide) % kappa_fission
+
+        do d = 1, MAX_DELAYED_GROUPS
+          ! Add contributions to material macroscopic nu-fission cross section
+          material_xs % delayed_nu_fission(d) = material_xs % delayed_nu_fission(d) + &
+               atom_density * micro_xs(i_nuclide) % delayed_nu_fission(d)
+
+          ! Add contributions to material macroscopic nu-fission cross section
+          material_xs % decay_rate(d) = material_xs % decay_rate(d) + &
+               atom_density * micro_xs(i_nuclide) % decay_rate(d)
+        end do
       end do
     end associate
 
@@ -133,19 +157,19 @@ contains
 ! given index in the nuclides array at the energy of the given particle
 !===============================================================================
 
-  subroutine calculate_nuclide_xs(i_nuclide, i_sab, E, i_log_union, sqrtkT)
+  subroutine calculate_nuclide_xs(i_nuclide, i_sab, p, i_log_union)
+    type(Particle), intent(inout) :: p
     integer, intent(in) :: i_nuclide ! index into nuclides array
     integer, intent(in) :: i_sab     ! index into sab_tables array
-    real(8), intent(in) :: E         ! energy
     integer, intent(in) :: i_log_union ! index into logarithmic mapping array or
                                        ! material union energy grid
-    real(8), intent(in) :: sqrtkT    ! Square root of kT, material dependent
 
     logical :: use_mp ! true if XS can be calculated with windowed multipole
     integer :: i_temp ! index for temperature
     integer :: i_grid ! index on nuclide energy grid
     integer :: i_low  ! lower logarithmic mapping index
     integer :: i_high ! upper logarithmic mapping index
+    integer :: d      ! delayed group
     real(8) :: f      ! interp factor on nuclide energy grid
     real(8) :: kT     ! temperature in eV
     real(8) :: sigT, sigA, sigF ! Intermediate multipole variables
@@ -154,8 +178,8 @@ contains
       ! Check to see if there is multipole data present at this energy
       use_mp = .false.
       if (nuc % mp_present) then
-        if (E >= nuc % multipole % start_E .and. &
-             E <= nuc % multipole % end_E) then
+        if (p % E >= nuc % multipole % start_E .and. &
+             p % E <= nuc % multipole % end_E) then
           use_mp = .true.
         end if
       end if
@@ -163,7 +187,7 @@ contains
       ! Evaluate multipole or interpolate
       if (use_mp) then
         ! Call multipole kernel
-        call multipole_eval(nuc % multipole, E, sqrtkT, sigT, sigA, sigF)
+        call multipole_eval(nuc % multipole, p % E, p % sqrtkT, sigT, sigA, sigF)
 
         micro_xs(i_nuclide) % total = sigT
         micro_xs(i_nuclide) % absorption = sigA
@@ -171,10 +195,22 @@ contains
 
         if (nuc % fissionable) then
           micro_xs(i_nuclide) % fission = sigF
-          micro_xs(i_nuclide) % nu_fission = sigF * nuc % nu(E, EMISSION_TOTAL)
+          micro_xs(i_nuclide) % prompt_nu_fission = sigF * nuc % nu(p % E, EMISSION_PROMPT)
+          micro_xs(i_nuclide) % nu_fission = sigF * nuc % nu(p % E, EMISSION_TOTAL)
+          micro_xs(i_nuclide) % kappa_fission = sigF * nuc % reactions(nuc % index_fission(1)) % Q_value
+          micro_xs(i_nuclide) % delayed_nu_fission(:) = ZERO
+          do d = 1, nuc % n_precursor
+            micro_xs(i_nuclide) % delayed_nu_fission(d) = sigF * nuc % nu(p % E, EMISSION_DELAYED, d)
+            micro_xs(i_nuclide) % decay_rate(d) = sigF * nuc % nu(p % E, EMISSION_DELAYED, d) * &
+                nuc % reactions(nuc % index_fission(1)) % products(1 + d) % decay_rate
+          end do
         else
           micro_xs(i_nuclide) % fission    = ZERO
           micro_xs(i_nuclide) % nu_fission = ZERO
+          micro_xs(i_nuclide) % prompt_nu_fission = ZERO
+          micro_xs(i_nuclide) % delayed_nu_fission(:) = ZERO
+          micro_xs(i_nuclide) % decay_rate(:) = ZERO
+          micro_xs(i_nuclide) % kappa_fission = ZERO
         end if
 
         ! Ensure these values are set
@@ -193,7 +229,7 @@ contains
 
       else
         ! Find the appropriate temperature index.
-        kT = sqrtkT**2
+        kT = p % sqrtkT**2
         select case (temperature_method)
         case (TEMPERATURE_NEAREST)
           i_temp = minloc(abs(nuclides(i_nuclide) % kTs - kT), dim=1)
@@ -215,9 +251,9 @@ contains
           ! reduce the energy range over which a binary search needs to be
           ! performed
 
-          if (E < grid % energy(1)) then
+          if (p % E < grid % energy(1)) then
             i_grid = 1
-          elseif (E > grid % energy(size(grid % energy))) then
+          elseif (p % E > grid % energy(size(grid % energy))) then
             i_grid = size(grid % energy) - 1
           else
             ! Determine bounding indices based on which equal log-spaced
@@ -227,7 +263,7 @@ contains
 
             ! Perform binary search over reduced range
             i_grid = binary_search(grid % energy(i_low:i_high), &
-                 i_high - i_low + 1, E) + i_low - 1
+                 i_high - i_low + 1, p % E) + i_low - 1
           end if
 
           ! check for rare case where two energy points are the same
@@ -235,7 +271,7 @@ contains
                i_grid = i_grid + 1
 
           ! calculate interpolation factor
-          f = (E - grid % energy(i_grid)) / &
+          f = (p % E - grid % energy(i_grid)) / &
                (grid % energy(i_grid + 1) - grid % energy(i_grid))
 
           micro_xs(i_nuclide) % index_temp    = i_temp
@@ -245,6 +281,10 @@ contains
           ! Initialize nuclide cross-sections to zero
           micro_xs(i_nuclide) % fission    = ZERO
           micro_xs(i_nuclide) % nu_fission = ZERO
+          micro_xs(i_nuclide) % prompt_nu_fission = ZERO
+          micro_xs(i_nuclide) % delayed_nu_fission(:) = ZERO
+          micro_xs(i_nuclide) % decay_rate(:) = ZERO
+          micro_xs(i_nuclide) % kappa_fission = ZERO
 
           ! Calculate microscopic nuclide total cross section
           micro_xs(i_nuclide) % total = (ONE - f) * xs % total(i_grid) &
@@ -266,6 +306,24 @@ contains
             ! Calculate microscopic nuclide nu-fission cross section
             micro_xs(i_nuclide) % nu_fission = (ONE - f) * xs % nu_fission( &
                  i_grid) + f * xs % nu_fission(i_grid + 1)
+
+            ! Calculate microscopic nuclide prompt-nu-fission cross section
+            micro_xs(i_nuclide) % prompt_nu_fission = (ONE - f) * xs % prompt_nu_fission( &
+                 i_grid) + f * xs % prompt_nu_fission(i_grid + 1)
+
+            ! Calculate microscopic nuclide kappa-fission cross section
+            micro_xs(i_nuclide) % kappa_fission = (ONE - f) * xs % kappa_fission( &
+                 i_grid) + f * xs % kappa_fission(i_grid + 1)
+
+            do d = 1, nuc % n_precursor
+              ! Calculate microscopic nuclide delayed-nu-fission cross section
+              micro_xs(i_nuclide) % delayed_nu_fission(d) = (ONE - f) * xs % delayed_nu_fission( &
+                   i_grid, d) + f * xs % delayed_nu_fission(i_grid + 1, d)
+
+              ! Calculate microscopic nuclide nu-fission cross section
+              micro_xs(i_nuclide) % decay_rate(d) = (ONE - f) * xs % decay_rate( &
+                   i_grid, d) + f * xs % decay_rate(i_grid + 1, d)
+            end do
           end if
         end associate
       end if
@@ -282,21 +340,21 @@ contains
       ! need to correct it by subtracting the non-S(a,b) elastic cross section and
       ! then add back in the calculated S(a,b) elastic+inelastic cross section.
 
-      if (i_sab > 0) call calculate_sab_xs(i_nuclide, i_sab, E, sqrtkT)
+      if (i_sab > 0) call calculate_sab_xs(i_nuclide, i_sab, p % E, p % sqrtkT)
 
       ! if the particle is in the unresolved resonance range and there are
       ! probability tables, we need to determine cross sections from the table
 
       if (urr_ptables_on .and. nuc % urr_present .and. .not. use_mp) then
-        if (E > nuc % urr_data(i_temp) % energy(1) .and. E < nuc % &
+        if (p % E > nuc % urr_data(i_temp) % energy(1) .and. p % E < nuc % &
              urr_data(i_temp) % energy(nuc % urr_data(i_temp) % n_energy)) then
-          call calculate_urr_xs(i_nuclide, i_temp, E)
+          call calculate_urr_xs(i_nuclide, i_temp, p % E)
         end if
       end if
 
-      micro_xs(i_nuclide) % last_E = E
+      micro_xs(i_nuclide) % last_E = p % E
       micro_xs(i_nuclide) % last_index_sab = i_sab
-      micro_xs(i_nuclide) % last_sqrtkT = sqrtkT
+      micro_xs(i_nuclide) % last_sqrtkT = p % sqrtkT
     end associate
 
   end subroutine calculate_nuclide_xs
@@ -428,6 +486,7 @@ contains
     integer :: i_energy     ! index for energy
     integer :: i_low        ! band index at lower bounding energy
     integer :: i_up         ! band index at upper bounding energy
+    integer :: d            ! delayed group
     real(8) :: f            ! interpolation factor
     real(8) :: r            ! pseudo-random number
     real(8) :: elastic      ! elastic cross section
@@ -553,6 +612,17 @@ contains
       if (nuc % fissionable) then
         micro_xs(i_nuclide) % nu_fission = nuc % nu(E, EMISSION_TOTAL) * &
              micro_xs(i_nuclide) % fission
+        micro_xs(i_nuclide) % prompt_nu_fission = nuc % nu(E, EMISSION_PROMPT) * &
+             micro_xs(i_nuclide) % fission
+        micro_xs(i_nuclide) % kappa_fission = nuc % reactions(nuc % index_fission(1)) % Q_value * &
+             micro_xs(i_nuclide) % fission
+        do d = 1, nuc % n_precursor
+          micro_xs(i_nuclide) % delayed_nu_fission(d) = nuc % nu(E, EMISSION_DELAYED, d) * &
+               micro_xs(i_nuclide) % fission
+          micro_xs(i_nuclide) % decay_rate(d) = nuc % nu(E, EMISSION_DELAYED, d) * &
+               micro_xs(i_nuclide) % fission * nuc % reactions(nuc % index_fission(1)) % &
+               products(1 + d) % decay_rate
+        end do
       end if
     end associate
 

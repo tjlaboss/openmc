@@ -90,6 +90,7 @@ contains
     type(XMLNode) :: node_dist
     type(XMLNode) :: node_cutoff
     type(XMLNode) :: node_entropy
+    type(XMLNode) :: node_frequency
     type(XMLNode) :: node_ufs
     type(XMLNode) :: node_sp
     type(XMLNode) :: node_output
@@ -718,6 +719,114 @@ contains
            ufs_mesh % dimension(2), ufs_mesh % dimension(3)))
     end if
 
+    ! Frequency mesh
+    if (check_for_node(root, "frequency")) then
+
+      ! Get pointer to frequency node
+      node_frequency = root % child("frequency")
+
+      ! Check to make sure enough values were supplied
+      if (node_word_count(node_frequency, "lower_left") /= 3) then
+        call fatal_error("Need to specify (x,y,z) coordinates of lower-left &
+             &corner of frequency mesh.")
+      elseif (node_word_count(node_frequency, "upper_right") /= 3) then
+        call fatal_error("Need to specify (x,y,z) coordinates of upper-right &
+             &corner of frequency mesh.")
+      end if
+
+      ! Allocate mesh object and coordinates on mesh
+      allocate(frequency_mesh)
+      allocate(frequency_mesh % lower_left(3))
+      allocate(frequency_mesh % upper_right(3))
+      allocate(frequency_mesh % width(3))
+
+      ! Copy values
+      call get_node_array(node_frequency, "lower_left", &
+           frequency_mesh % lower_left)
+      call get_node_array(node_frequency, "upper_right", &
+           frequency_mesh % upper_right)
+
+      ! Check on values provided
+      if (.not. all(frequency_mesh % upper_right > frequency_mesh % lower_left)) &
+           &then
+        call fatal_error("Upper-right coordinate must be greater than &
+             &lower-left coordinate for frequency mesh.")
+      end if
+
+      ! Check if dimensions were specified -- if not, they will be calculated
+      ! automatically upon first entry into frequency
+      if (check_for_node(node_frequency, "dimension")) then
+
+        ! If so, make sure proper number of values were given
+        if (node_word_count(node_frequency, "dimension") /= 3) then
+          call fatal_error("Dimension of frequency mesh must be given as three &
+               &integers.")
+        end if
+
+        ! Allocate dimensions
+        frequency_mesh % n_dimension = 3
+        allocate(frequency_mesh % dimension(3))
+
+        ! Copy dimensions
+        call get_node_array(node_frequency, "dimension", frequency_mesh % dimension)
+
+        ! Calculate width
+        frequency_mesh % width = (frequency_mesh % upper_right - &
+             frequency_mesh % lower_left) / frequency_mesh % dimension
+
+      end if
+
+      ! Check for group structure
+      if (check_for_node(node_frequency, "group_structure")) then
+
+        num_frequency_energy_groups = node_word_count(node_frequency, "group_structure") - 1
+
+        allocate(frequency_energy_bins(num_frequency_energy_groups + 1))
+
+        call get_node_array(node_frequency, "group_structure", frequency_energy_bins)
+
+        allocate(frequency_energy_bin_avg(num_frequency_energy_groups))
+
+        do i = 1, num_frequency_energy_groups
+          frequency_energy_bin_avg(i) = HALF * (frequency_energy_bins(i) + frequency_energy_bins(i + 1))
+        end do
+      else
+        num_frequency_energy_groups = ZERO
+      end if
+
+      ! Check for num delayed groups
+      if (check_for_node(node_frequency, "delayed_groups")) then
+        call get_node_value(node_frequency, "delayed_groups", num_frequency_delayed_groups)
+      else
+        num_frequency_delayed_groups = ZERO
+      end if
+
+      ! Check for flux frequency
+      if (check_for_node(node_frequency, "flux_frequency")) then
+        allocate(flux_frequency(num_frequency_energy_groups))
+        call get_node_array(node_frequency, "flux_frequency", flux_frequency)
+        flux_frequency_on = .true.
+      end if
+
+      ! Check for precursor frequency
+      if (check_for_node(node_frequency, "precursor_frequency")) then
+
+        allocate(precursor_frequency(product(frequency_mesh % dimension), num_frequency_delayed_groups))
+
+        ! Allocate temporary array for precursor frequency
+        allocate(temp_real(product(frequency_mesh % dimension) * num_frequency_delayed_groups))
+
+        ! Get precursor frequency
+        call get_node_array(node_frequency, "precursor_frequency", temp_real)
+        precursor_frequency = reshape(temp_real, (/product(frequency_mesh % dimension), num_frequency_delayed_groups/))
+
+        ! Deallocate temporary precursor frequency array
+        deallocate(temp_real)
+
+        precursor_frequency_on = .true.
+      end if
+    end if
+
     ! Check if the user has specified to write state points
     if (check_for_node(root, "state_point")) then
 
@@ -964,6 +1073,15 @@ contains
       if (check_for_node(root, "create_fission_neutrons")) then
         call get_node_value(root, "create_fission_neutrons", &
              create_fission_neutrons)
+      end if
+
+      if (check_for_node(root, "create_fission_delayed_neutrons")) then
+        call get_node_value(root, "create_fission_delayed_neutrons", &
+             create_fission_delayed_neutrons)
+      end if
+
+      if (check_for_node(root, "k_crit")) then
+        call get_node_value(root, "k_crit", k_crit)
       end if
     end if
 
@@ -3172,11 +3290,6 @@ contains
           ! Set the filter index in the tally find_filter array
           t % find_filter(FILTER_ENERGYOUT) = j
 
-          ! Set to analog estimator if using CE cross sections
-          if (run_CE) then
-            t % estimator = ESTIMATOR_ANALOG
-          end if
-
         case ('delayedgroup')
 
           ! Allocate and declare the filter type
@@ -3631,12 +3744,18 @@ contains
           case ('scatter-n')
             t % score_bins(j) = SCORE_SCATTER_N
             t % moment_order(j) = n_order
-            t % estimator = ESTIMATOR_ANALOG
+
+            if (run_CE .or. n_order > 0) then
+              t % estimator = ESTIMATOR_ANALOG
+            end if
 
           case ('nu-scatter-n')
             t % score_bins(j) = SCORE_NU_SCATTER_N
             t % moment_order(j) = n_order
-            t % estimator = ESTIMATOR_ANALOG
+
+            if (run_CE .or. n_order > 0) then
+              t % estimator = ESTIMATOR_ANALOG
+            end if
 
           case ('scatter-pn')
             t % estimator = ESTIMATOR_ANALOG
@@ -3704,16 +3823,8 @@ contains
             t % score_bins(j) = SCORE_DECAY_RATE
           case ('delayed-nu-fission')
             t % score_bins(j) = SCORE_DELAYED_NU_FISSION
-            if (t % find_filter(FILTER_ENERGYOUT) > 0 .and. run_CE) then
-              ! Set tally estimator to analog
-              t % estimator = ESTIMATOR_ANALOG
-            end if
           case ('prompt-nu-fission')
             t % score_bins(j) = SCORE_PROMPT_NU_FISSION
-            if (t % find_filter(FILTER_ENERGYOUT) > 0 .and. run_CE) then
-              ! Set tally estimator to analog
-              t % estimator = ESTIMATOR_ANALOG
-            end if
           case ('kappa-fission')
             t % score_bins(j) = SCORE_KAPPA_FISSION
           case ('inverse-velocity')

@@ -1,12 +1,18 @@
 <?xml version='1.0' encoding='utf-8'?>
 <tallies>
   <tally id="1" name="tally 1">
-    <filter bins="1e-05 0.0635 10.0 100.0 1000.0 500000.0 1000000.0 20000000.0" type="energyout" />
-    <scores>nu-fission prompt-nu-fission</scores>
+    <filter bins="1e-05 0.0635 10.0 100.0 1000.0 500000.0 1000000.0 20000000.0" type="energy" />
+    <scores>scatter scatter-0</scores>
+    <estimator>tracklength</estimator>
   </tally>
   <tally id="2" name="tally 2">
     <filter bins="1e-05 0.0635 10.0 100.0 1000.0 500000.0 1000000.0 20000000.0" type="energyout" />
         <filter bins="1 2" type="delayedgroup" />
     <scores>delayed-nu-fission</scores>
+  </tally>
+  <tally id="3" name="tally 3">
+    <filter bins="1e-05 0.0635 10.0 100.0 1000.0 500000.0 1000000.0 20000000.0" type="energy" />
+    <scores>prompt-nu-fission</scores>
+    <estimator>analog</estimator>
   </tally>
 </tallies>

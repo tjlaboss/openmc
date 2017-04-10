@@ -69,7 +69,7 @@ def get_scalar_data(variable, log_file, variable_twin=None, directory='.'):
 
 
 def spatial_plot(variable, log_file, directory='.', plane='xy', plane_num=0,
-                 group=0, axis=None, animation=False, bar=True, **kwargs):
+                 group=0, axis=None, animation=False, bar=True, normalize=550., **kwargs):
     """Creates a figure of a spatial variable from a transient solve.
 
     Parameters
@@ -176,12 +176,13 @@ def spatial_plot(variable, log_file, directory='.', plane='xy', plane_num=0,
                 ones = np.ones(nx*ny)
 
                 color_map = np.copy(spatial_data[i][plane_num, :, :, group].flatten())
-                fracs = color_map.astype(float)/550.
+                fracs = color_map.astype(float)/normalize
                 norm = matplotlib.colors.Normalize(0.0, 1.0)
                 colors = matplotlib.cm.jet(norm(fracs))
 
                 cax = ax.bar3d(np.tile(range(nx), ny), np.repeat(range(ny), nx), zeros, ones, ones, spatial_data[i][plane_num, :, :, group].flatten(), color=colors)
-                ax.set_zlim(0,550)
+                #cax = ax.bar3d(np.tile(range(nx), ny), np.repeat(range(ny), nx), zeros, ones, ones, spatial_data[i][plane_num, :, :, group].flatten())
+                ax.set_zlim(0,normalize)
             else:
                 cax = ax.imshow(spatial_data[i][plane_num, :, :, group],
                                 vmin=data_lim[0], vmax=data_lim[1], interpolation='nearest')

@@ -14,7 +14,6 @@ lattices = {}
 for bank in [1,4]:
     uo = universes['UO2 Bank {}'.format(bank)]
     cc = universes['Control Rod Base Bank {}'.format(bank)]
-    cc = universes['Control Rod Base Bank {}'.format(bank)]
     fc = universes['Fission Chamber Bank {}'.format(bank)]
     name = 'UO2 Lattice {}'.format(bank)
     lattices[name] = openmc.RectLattice(name=name)

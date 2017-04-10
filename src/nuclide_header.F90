@@ -41,6 +41,10 @@ module nuclide_header
     real(8), allocatable :: elastic(:)    ! elastic scattering
     real(8), allocatable :: fission(:)    ! fission
     real(8), allocatable :: nu_fission(:) ! neutron production
+    real(8), allocatable :: prompt_nu_fission(:) ! neutron production
+    real(8), allocatable :: delayed_nu_fission(:,:) ! neutron production
+    real(8), allocatable :: decay_rate(:,:) ! neutron production
+    real(8), allocatable :: kappa_fission(:) ! neutron production
     real(8), allocatable :: absorption(:) ! absorption (MT > 100)
     real(8), allocatable :: heating(:)    ! heating
   end type SumXS
@@ -133,6 +137,10 @@ module nuclide_header
     real(8) :: absorption      ! microscopic absorption xs
     real(8) :: fission         ! microscopic fission xs
     real(8) :: nu_fission      ! microscopic production xs
+    real(8) :: prompt_nu_fission ! microscopic production xs
+    real(8) :: delayed_nu_fission(MAX_DELAYED_GROUPS) ! microscopic production xs
+    real(8) :: decay_rate(MAX_DELAYED_GROUPS) ! microscopic production xs
+    real(8) :: kappa_fission ! microscopic production xs
 
     ! Information for S(a,b) use
     integer :: index_sab          ! index in sab_tables (zero means no table)
@@ -159,6 +167,10 @@ module nuclide_header
     real(8) :: absorption    ! macroscopic absorption xs
     real(8) :: fission       ! macroscopic fission xs
     real(8) :: nu_fission    ! macroscopic production xs
+    real(8) :: prompt_nu_fission ! macroscopic production xs
+    real(8) :: delayed_nu_fission(MAX_DELAYED_GROUPS) ! microscopic production xs
+    real(8) :: decay_rate(MAX_DELAYED_GROUPS) ! microscopic production xs
+    real(8) :: kappa_fission ! macroscopic production xs
   end type MaterialMacroXS
 
 !===============================================================================
@@ -455,6 +467,7 @@ module nuclide_header
     integer :: t
     integer :: m
     integer :: n
+    integer :: d
     integer :: n_grid
     integer :: i_fission
     integer :: n_temperature
@@ -470,11 +483,19 @@ module nuclide_header
       allocate(this % sum_xs(i) % elastic(n_grid))
       allocate(this % sum_xs(i) % fission(n_grid))
       allocate(this % sum_xs(i) % nu_fission(n_grid))
+      allocate(this % sum_xs(i) % prompt_nu_fission(n_grid))
+      allocate(this % sum_xs(i) % delayed_nu_fission(n_grid, MAX_DELAYED_GROUPS))
+      allocate(this % sum_xs(i) % decay_rate(n_grid, MAX_DELAYED_GROUPS))
+      allocate(this % sum_xs(i) % kappa_fission(n_grid))
       allocate(this % sum_xs(i) % absorption(n_grid))
       this % sum_xs(i) % total(:) = ZERO
       this % sum_xs(i) % elastic(:) = ZERO
       this % sum_xs(i) % fission(:) = ZERO
       this % sum_xs(i) % nu_fission(:) = ZERO
+      this % sum_xs(i) % prompt_nu_fission(:) = ZERO
+      this % sum_xs(i) % delayed_nu_fission(:,:) = ZERO
+      this % sum_xs(i) % decay_rate(:,:) = ZERO
+      this % sum_xs(i) % kappa_fission(:) = ZERO
       this % sum_xs(i) % absorption(:) = ZERO
     end do
 
@@ -587,9 +608,24 @@ module nuclide_header
         do i = 1, size(this % sum_xs(t) % fission)
           this % sum_xs(t) % nu_fission(i) = this % nu(this % grid(t) % energy(i), &
                EMISSION_TOTAL) * this % sum_xs(t) % fission(i)
+          this % sum_xs(t) % prompt_nu_fission(i) = this % nu(this % grid(t) % energy(i), &
+               EMISSION_PROMPT) * this % sum_xs(t) % fission(i)
+          this % sum_xs(t) % kappa_fission(i) = this % reactions(this % index_fission(1)) % Q_value &
+               * this % sum_xs(t) % fission(i)
+          do d = 1, this % n_precursor
+            this % sum_xs(t) % delayed_nu_fission(i,d) = this % nu(this % grid(t) % energy(i), &
+                 EMISSION_DELAYED, d) * this % sum_xs(t) % fission(i)
+            this % sum_xs(t) % decay_rate(i,d) = this % nu(this % grid(t) % energy(i), &
+                 EMISSION_DELAYED, d) * this % sum_xs(t) % fission(i) * this % reactions(this % index_fission(1)) &
+                 % products(1 + d) % decay_rate
+          end do
         end do
       else
         this % sum_xs(t) % nu_fission(:) = ZERO
+        this % sum_xs(t) % prompt_nu_fission(:) = ZERO
+        this % sum_xs(t) % kappa_fission(:) = ZERO
+        this % sum_xs(t) % delayed_nu_fission(:,:) = ZERO
+        this % sum_xs(t) % decay_rate(:,:) = ZERO
       end if
     end do
   end subroutine nuclide_create_derived

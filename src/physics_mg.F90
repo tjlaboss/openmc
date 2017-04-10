@@ -8,7 +8,7 @@ module physics_mg
   use material_header,        only: Material
   use math,                   only: rotate_angle
   use mgxs_header,            only: Mgxs, MgxsContainer
-  use mesh,                   only: get_mesh_indices
+  use mesh,                   only: get_mesh_indices, get_mesh_bin
   use message_passing
   use output,                 only: write_message
   use particle_header,        only: Particle
@@ -63,6 +63,10 @@ contains
     type(Particle), intent(inout) :: p
 
     type(Material), pointer :: mat
+    real(8) :: freq
+    real(8) :: velocity
+    integer :: mesh_bin
+    integer :: freq_group
 
     mat => materials(p % material)
 
@@ -76,6 +80,30 @@ contains
         call create_fission_sites(p, fission_bank, n_bank)
       elseif (run_mode == MODE_FIXEDSOURCE .and. create_fission_neutrons) then
         call create_fission_sites(p, p % secondary_bank, p % n_secondary)
+      end if
+    end if
+
+    ! Adjust the weight to account for the flux frequency
+    if (flux_frequency_on) then
+
+      call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
+
+      if (p % E <= frequency_energy_bins(1) .or. p % E > frequency_energy_bins(num_frequency_energy_groups + 1)) then
+        freq_group = -1
+      else
+        freq_group = binary_search(frequency_energy_bins, num_frequency_energy_groups + 1, p % E)
+      end if
+
+      if (mesh_bin /= -1 .and. freq_group /= -1) then
+
+        freq = flux_frequency(freq_group)
+        velocity = sqrt(TWO * p % E / MASS_NEUTRON_EV) * C_LIGHT * 100.0_8
+        freq = freq / velocity
+
+        if (freq > ZERO) then
+          p % wgt = p % wgt * (ONE - min(ONE, freq / material_xs % total))
+          p % last_wgt = p % wgt
+        end if
       end if
     end if
 
@@ -109,6 +137,11 @@ contains
 
     type(Particle), intent(inout) :: p
 
+    real(8) :: nu_fission
+    real(8) :: delayed_nu_fission
+    integer :: mesh_bin
+    integer :: d
+
     if (survival_biasing) then
       ! Determine weight absorbed in survival biasing
       p % absorb_wgt = (p % wgt * &
@@ -118,19 +151,54 @@ contains
       p % wgt = p % wgt - p % absorb_wgt
       p % last_wgt = p % wgt
 
+      nu_fission = material_xs % prompt_nu_fission
+
+      if (precursor_frequency_on) then
+        call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
+      else
+        mesh_bin = -1
+      end if
+
+      do d = 1, num_delayed_groups
+        delayed_nu_fission = material_xs % delayed_nu_fission(d)
+
+        if (mesh_bin /= -1 .and. d <= num_frequency_delayed_groups) then
+          delayed_nu_fission = delayed_nu_fission * precursor_frequency(mesh_bin, d)
+        end if
+
+        nu_fission = nu_fission + delayed_nu_fission
+      end do
+
       ! Score implicit absorption estimate of keff
 !$omp atomic
       global_tallies(RESULT_VALUE, K_ABSORPTION) = &
            global_tallies(RESULT_VALUE, K_ABSORPTION) + p % absorb_wgt * &
-           material_xs % nu_fission / material_xs % absorption
+           nu_fission / material_xs % absorption
     else
       ! See if disappearance reaction happens
       if (material_xs % absorption > prn() * material_xs % total) then
+
+        if (precursor_frequency_on) then
+          call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
+        else
+          mesh_bin = -1
+        end if
+
+        do d = 1, num_delayed_groups
+          delayed_nu_fission = material_xs % delayed_nu_fission(d)
+
+          if (mesh_bin /= -1 .and. d <= num_frequency_delayed_groups) then
+            delayed_nu_fission = delayed_nu_fission * precursor_frequency(mesh_bin, d)
+          end if
+
+          nu_fission = nu_fission + delayed_nu_fission
+        end do
+
         ! Score absorption estimate of keff
 !$omp atomic
         global_tallies(RESULT_VALUE, K_ABSORPTION) = &
              global_tallies(RESULT_VALUE, K_ABSORPTION) + p % wgt * &
-             material_xs % nu_fission / material_xs % absorption
+             nu_fission / material_xs % absorption
 
         p % alive = .false.
         p % event = EVENT_ABSORB
@@ -213,8 +281,13 @@ contains
     end if
 
     ! Determine expected number of neutrons produced
-    nu_t = p % wgt / keff * weight * &
-         material_xs % nu_fission / material_xs % total
+    if (create_fission_delayed_neutrons) then
+      nu_t = p % wgt / keff * weight * &
+           material_xs % nu_fission / material_xs % total / k_crit
+    else
+      nu_t = p % wgt / keff * weight * &
+           material_xs % prompt_nu_fission / material_xs % total / k_crit
+    end if
 
     ! Sample number of neutrons produced
     if (prn() > nu_t - int(nu_t)) then

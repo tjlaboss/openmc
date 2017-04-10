@@ -29,6 +29,11 @@ class Settings(object):
         deviation.
     create_fission_neutrons : bool
         Indicate whether fission neutrons should be created or not.
+    create_fission_delayed_neutrons : bool
+        Indicate whether delayed fission neutrons should be created or not.
+    k_crit : float
+        Critical eigenvalue to normalize neutrons produced from fissions in a
+        fixed source solve.
     cross_sections : str
         Indicates the path to an XML cross section listing file (usually named
         cross_sections.xml). If it is not set, the
@@ -50,6 +55,16 @@ class Settings(object):
         Mesh to be used to calculate Shannon entropy. If the mesh dimensions are
         not specified. OpenMC assigns a mesh such that 20 source sites per mesh
         cell are to be expected on average.
+    frequency_mesh : openmc.Mesh
+        Mesh to be used to set the flux or precursor frequency.
+    frequency_group_structure : openmc.mgxs.EnergyGroups
+        Energy group structure used for setting the flux frequency
+    frequency_num_delayed_groups : int
+        Number of delayed groups for precursor frequency
+    flux_frequency : np.ndarray
+        Array of flux frequencies of size frequency_mesh x frequency_energy_groups
+    precursor_frequency : np.ndarray
+        Array of precursor frequencies of size frequency_mesh x frequency_delayed_groups
     generations_per_batch : int
         Number of generations per batch
     inactive : int
@@ -177,6 +192,13 @@ class Settings(object):
         # Shannon entropy mesh
         self._entropy_mesh = None
 
+        # Frequency data
+        self._frequency_mesh = None
+        self._frequency_group_structure = None
+        self._frequency_num_delayed_groups = None
+        self._flux_frequency = None
+        self._precursor_frequency = None
+
         # Trigger subelement
         self._trigger_active = None
         self._trigger_max_batches = None
@@ -221,6 +243,8 @@ class Settings(object):
             VolumeCalculation, 'volume calculations')
 
         self._create_fission_neutrons = None
+        self._create_fission_delayed_neutrons = None
+        self._k_crit = None
 
     @property
     def run_mode(self):
@@ -289,6 +313,26 @@ class Settings(object):
     @property
     def entropy_mesh(self):
         return self._entropy_mesh
+
+    @property
+    def frequency_mesh(self):
+        return self._frequency_mesh
+
+    @property
+    def frequency_group_structure(self):
+        return self._frequency_group_structure
+
+    @property
+    def frequency_num_delayed_groups(self):
+        return self._frequency_num_delayed_groups
+
+    @property
+    def flux_frequency(self):
+        return self._flux_frequency
+
+    @property
+    def precursor_frequency(self):
+        return self._precursor_frequency
 
     @property
     def trigger_active(self):
@@ -389,6 +433,14 @@ class Settings(object):
     @property
     def create_fission_neutrons(self):
         return self._create_fission_neutrons
+
+    @property
+    def create_fission_delayed_neutrons(self):
+        return self._create_fission_delayed_neutrons
+
+    @property
+    def k_crit(self):
+        return self._k_crit
 
     @run_mode.setter
     def run_mode(self, run_mode):
@@ -608,6 +660,30 @@ class Settings(object):
         cv.check_length('entropy mesh upper-right corner', entropy.upper_right, 3)
         self._entropy_mesh = entropy
 
+    @frequency_mesh.setter
+    def frequency_mesh(self, mesh):
+        cv.check_type('frequency mesh', mesh, Mesh)
+        cv.check_length('frequency mesh dimension', mesh.dimension, 3)
+        cv.check_length('frequency mesh lower-left corner', mesh.lower_left, 3)
+        cv.check_length('frequency mesh upper-right corner', mesh.upper_right, 3)
+        self._frequency_mesh = mesh
+
+    @frequency_group_structure.setter
+    def frequency_group_structure(self, group_structure):
+        self._frequency_group_structure = group_structure
+
+    @frequency_num_delayed_groups.setter
+    def frequency_num_delayed_groups(self, delayed_groups):
+        self._frequency_num_delayed_groups = delayed_groups
+
+    @flux_frequency.setter
+    def flux_frequency(self, frequency):
+        self._flux_frequency = frequency
+
+    @precursor_frequency.setter
+    def precursor_frequency(self, frequency):
+        self._precursor_frequency = frequency
+
     @trigger_active.setter
     def trigger_active(self, trigger_active):
         cv.check_type('trigger active', trigger_active, bool)
@@ -796,6 +872,17 @@ class Settings(object):
                       create_fission_neutrons, bool)
         self._create_fission_neutrons = create_fission_neutrons
 
+    @create_fission_delayed_neutrons.setter
+    def create_fission_delayed_neutrons(self, create_fission_delayed_neutrons):
+        cv.check_type('Whether create fission delayed neutrons',
+                      create_fission_delayed_neutrons, bool)
+        self._create_fission_delayed_neutrons = create_fission_delayed_neutrons
+
+    @k_crit.setter
+    def k_crit(self, k_crit):
+        cv.check_type('Critical eigenvalue for fixed source solve', k_crit, float)
+        self._k_crit = k_crit
+
     def _create_run_mode_subelement(self, root):
         elem = ET.SubElement(root, "run_mode")
         elem.text = self._run_mode
@@ -958,6 +1045,40 @@ class Settings(object):
             subelement.text = ' '.join(
                 str(x) for x in self._entropy_mesh.upper_right)
 
+    def _create_frequency_subelement(self, root):
+        if self._frequency_mesh is not None:
+            element = ET.SubElement(root, "frequency")
+
+            if self._frequency_mesh.dimension is not None:
+                subelement = ET.SubElement(element, "dimension")
+                subelement.text = ' '.join(
+                    str(x) for x in self._frequency_mesh.dimension)
+            subelement = ET.SubElement(element, "lower_left")
+            subelement.text = ' '.join(
+                str(x) for x in self._frequency_mesh.lower_left)
+            subelement = ET.SubElement(element, "upper_right")
+            subelement.text = ' '.join(
+                str(x) for x in self._frequency_mesh.upper_right)
+
+            if self._frequency_group_structure is not None:
+                subelement = ET.SubElement(element, "group_structure")
+                subelement.text = ' '.join(
+                    str(x) for x in self._frequency_group_structure.group_edges)
+
+            if self._frequency_num_delayed_groups is not None:
+                subelement = ET.SubElement(element, "delayed_groups")
+                subelement.text = str(self._frequency_num_delayed_groups)
+
+            if self._flux_frequency is not None:
+                subelement = ET.SubElement(element, "flux_frequency")
+                subelement.text = ' '.join(
+                    str(x) for x in self._flux_frequency)
+
+            if self._precursor_frequency is not None:
+                subelement = ET.SubElement(element, "precursor_frequency")
+                subelement.text = ' '.join(
+                    str(x) for x in self._precursor_frequency)
+
     def _create_trigger_subelement(self, root):
         if self._trigger_active is not None:
             trigger_element = ET.SubElement(root, "trigger")
@@ -1059,6 +1180,16 @@ class Settings(object):
             elem = ET.SubElement(root, "create_fission_neutrons")
             elem.text = str(self._create_fission_neutrons).lower()
 
+    def _create_create_fission_delayed_neutrons_subelement(self, root):
+        if self._create_fission_delayed_neutrons is not None:
+            elem = ET.SubElement(root, "create_fission_delayed_neutrons")
+            elem.text = str(self._create_fission_delayed_neutrons).lower()
+
+    def _create_k_crit_subelement(self, root):
+        if self._k_crit is not None:
+            elem = ET.SubElement(root, "k_crit")
+            elem.text = str(self._k_crit)
+
     def export_to_xml(self, path='settings.xml'):
         """Export simulation settings to an XML file.
 
@@ -1093,6 +1224,7 @@ class Settings(object):
         self._create_survival_biasing_subelement(root_element)
         self._create_cutoff_subelement(root_element)
         self._create_entropy_subelement(root_element)
+        self._create_frequency_subelement(root_element)
         self._create_trigger_subelement(root_element)
         self._create_no_reduce_subelement(root_element)
         self._create_threads_subelement(root_element)
@@ -1106,6 +1238,8 @@ class Settings(object):
         self._create_resonance_scattering_subelement(root_element)
         self._create_volume_calcs_subelement(root_element)
         self._create_create_fission_neutrons_subelement(root_element)
+        self._create_create_fission_delayed_neutrons_subelement(root_element)
+        self._create_k_crit_subelement(root_element)
 
         # Clean the indentation in the file to be user-readable
         clean_xml_indentation(root_element)

@@ -47,9 +47,9 @@ for bank in range(1,5):
     materials[name].set_density('macro', density)
 
 # OpenMC simulation parameters
-batches = 80
-inactive = 30
-particles = 1000000
+batches = 50
+inactive = 25
+particles = 10000000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -60,15 +60,14 @@ settings_file.output = {'tallies': True}
 
 # Create an initial uniform spatial source distribution over fissionable zones
 source_bounds  = [-32.13, -10.71, -64.26, 10.71,  32.13,  64.26]
-entropy_bounds = [-32.13, -10.71, -64.26, 10.71,  32.13,  64.26]
 uniform_dist = openmc.stats.Box(source_bounds[:3], source_bounds[3:], only_fissionable=True)
 settings_file.source = openmc.source.Source(space=uniform_dist)
 
 entropy_mesh = openmc.Mesh()
 entropy_mesh.type = 'regular'
 entropy_mesh.dimension = [34,34,1]
-entropy_mesh.lower_left  = entropy_bounds[:3]
-entropy_mesh.upper_right = entropy_bounds[3:]
+entropy_mesh.lower_left  = source_bounds[:3]
+entropy_mesh.upper_right = source_bounds[3:]
 settings_file.entropy_mesh = entropy_mesh
 
 # Instantiate an EnergyGroups object for the diffusion coefficients
@@ -138,33 +137,35 @@ full_assembly_mesh.width = [64.26/full_assembly_mesh.dimension[0],
 clock = openmc.kinetics.Clock(start=0., end=2., dt_outer=1.e-1, dt_inner=1.e-2)
 
 # Instantiate a kinetics solver object
-solver = openmc.kinetics.Solver(name='MG_PC_TEST', directory='C5G7_2D')
+solver = openmc.kinetics.Solver(name='MG_PIN_CELL', directory='C5G7_2D')
 solver.num_delayed_groups           = 8
-solver.mesh                         = pin_cell_mesh
-solver.pin_cell_mesh                = pin_cell_mesh
-solver.assembly_mesh                = assembly_mesh
+solver.amplitude_mesh               = full_assembly_mesh
+solver.shape_mesh                   = full_pin_cell_mesh
 solver.one_group                    = one_group
 solver.energy_groups                = energy_groups
 solver.fine_groups                  = fine_groups
 solver.geometry                     = geometry
 solver.settings_file                = settings_file
 solver.materials_file               = materials_file
+solver.inner_tolerance              = np.inf
+solver.outer_tolerance              = np.inf
 solver.mgxs_lib_file                = mgxs_lib_file
+solver.method                       = 'STATIC-FLUX'
+solver.multi_group                  = True
 solver.clock                        = clock
-solver.mpi_procs                    = 32*1
+solver.mpi_procs                    = 24*1
 solver.threads                      = 1
-solver.ppn                          = 32
+solver.ppn                          = 24
 solver.core_volume                  = 42.84 * 42.84 * 128.52
 solver.constant_seed                = False
 solver.seed                         = 1
 solver.chi_delayed_by_delayed_group = True
-solver.chi_delayed_by_mesh          = True
-solver.chi_analog                   = False
-solver.use_pregenerated_sps         = False
-solver.pregenerate_sps              = True
+solver.chi_delayed_by_mesh          = False
+solver.use_pregenerated_sps         = True
+solver.pregenerate_sps              = False
 solver.run_on_cluster               = False
-solver.job_file                     = 'job_fission.pbs'
-solver.log_file_name                = 'log_file.h5'
+solver.job_file                     = 'job.pbs'
+solver.log_file_name                = 'log_file_sf_2.h5'
 
 # Solve transient problem
 solver.solve()

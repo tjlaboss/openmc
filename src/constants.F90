@@ -403,12 +403,13 @@ module constants
   ! ============================================================================
   ! RANDOM NUMBER STREAM CONSTANTS
 
-  integer, parameter :: N_STREAMS = 5
+  integer, parameter :: N_STREAMS = 6
   integer, parameter :: STREAM_TRACKING   = 1
   integer, parameter :: STREAM_TALLIES    = 2
   integer, parameter :: STREAM_SOURCE     = 3
   integer, parameter :: STREAM_URR_PTABLE = 4
   integer, parameter :: STREAM_VOLUME     = 5
+  integer, parameter :: STREAM_BOOTSTRAP  = 6
 
   ! ============================================================================
   ! MISCELLANEOUS CONSTANTS

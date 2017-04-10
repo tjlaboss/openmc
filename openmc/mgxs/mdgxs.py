@@ -16,7 +16,7 @@ import openmc
 from openmc.mgxs import MGXS
 from openmc.mgxs.mgxs import _DOMAIN_TO_FILTER
 import openmc.checkvalue as cv
-
+from openmc.tallies import ESTIMATOR_TYPES
 
 # Supported cross section types
 MDGXS_TYPES = ['delayed-nu-fission',
@@ -1016,7 +1016,7 @@ class ChiDelayed(MDGXS):
                                          num_polar, num_azimuthal)
         self._rxn_type = 'chi-delayed'
         self._estimator = 'analog'
-        self._valid_estimators = ['analog']
+        self._valid_estimators = ESTIMATOR_TYPES
 
     @property
     def energy_mode(self):
@@ -1024,11 +1024,9 @@ class ChiDelayed(MDGXS):
 
     @energy_mode.setter
     def energy_mode(self, energy_mode):
-        super(ChiDelayed, self).energy_mode(energy_mode)
-
-        if energy_mode == 'multi-group':
-            self._valid_estimators = ESTIMATOR_TYPES
-            self._estimator = 'tracklength'
+        cv.check_value('energy mode', energy_mode,
+                    ['continuous-energy', 'multi-group'])
+        self._energy_mode = energy_mode
 
     @property
     def scores(self):
@@ -2634,8 +2632,8 @@ class DelayedNuFissionMatrixXS(MatrixMDGXS):
                                                        num_azimuthal)
         self._rxn_type = 'delayed-nu-fission'
         self._hdf5_key = 'delayed-nu-fission matrix'
-        self._estimator = 'analog'
-        self._valid_estimators = ['analog']
+        self._estimator = 'tracklength'
+        self._valid_estimators = ESTIMATOR_TYPES
 
     @property
     def energy_mode(self):
@@ -2644,7 +2642,3 @@ class DelayedNuFissionMatrixXS(MatrixMDGXS):
     @energy_mode.setter
     def energy_mode(self, energy_mode):
         super(DelayedNuFissionMatrixXS, self).energy_mode(energy_mode)
-
-        if energy_mode == 'multi-group':
-            self._valid_estimators = ESTIMATOR_TYPES
-            self._estimator = 'tracklength'

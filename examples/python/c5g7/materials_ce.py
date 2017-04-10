@@ -1,7 +1,5 @@
 import openmc
 import copy
-from mgxs_lib import mgxs_data
-import numpy as np
 
 materials = {}
 
@@ -83,7 +81,7 @@ materials['Fission Chamber'].set_density('sum')
 materials['Fission Chamber'].add_element('H'   , 2*3.3500E-2, 'ao')
 materials['Fission Chamber'].add_element('O'   ,   3.3500E-2, 'ao')
 materials['Fission Chamber'].add_element('B'   ,   2.7800E-5, 'ao')
-#materials['Fission Chamber'].add_nuclide('U235',   1.0000E-8, 'ao')
+materials['Fission Chamber'].add_nuclide('U235',   1.0000E-8, 'ao')
 
 for bank in range(0,5):
     materials['Moderator Bank {}'.format(bank)] = copy.deepcopy(materials['Moderator'])

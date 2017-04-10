@@ -22,6 +22,12 @@ import openmc.kinetics
 from openmc.kinetics.clock import TIME_POINTS
 import h5py
 
+import matplotlib
+from mpl_toolkits.mplot3d import Axes3D
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+
 if sys.version_info[0] >= 3:
     basestring = str
 
@@ -45,17 +51,14 @@ class Solver(object):
     directory : str
         A directory to save the transient simulation data.
 
-    mesh : openmc.mesh.Mesh
-        Mesh which specifies the dimensions of coarse mesh.
+    shape_mesh : openmc.mesh.Mesh
+        Mesh by which shape is computed on.
+
+    amplitude_mesh : openmc.mesh.Mesh
+        Mesh by which amplitude is computed on.
 
     unity_mesh : openmc.mesh.Mesh
-        Mesh which contains only one cell.
-
-    pin_cell_mesh : openmc.mesh.Mesh
-        Mesh over the pin cells.
-
-    assembly_mesh : openmc.mesh.Mesh
-        Mesh over the assemblies.
+        Mesh with one cell convering the entire geometry..
 
     geometry : openmc.geometry.Geometry
         Geometry which describes the problem being solved.
@@ -119,6 +122,21 @@ class Solver(object):
     core_volume : float
         The core volume used to normalize the initial power.
 
+    pregenerate_sps : bool
+        Whether to pregenerate all shape functions before solving for amplitude.
+
+    log_file_name : str
+        Log file name (excluding directory prefix).
+
+    run_on_cluster : bool
+        Whether to run OpenMC locally or as a job.
+
+    job_file : str
+        Name of job file to use to run jobs.
+
+    multi_group : bool
+        Whether the OpenMC run is multi-group or continuous-energy.
+
     """
 
     def __init__(self, name='kinetics_solve', directory='.'):
@@ -126,10 +144,9 @@ class Solver(object):
         # Initialize Solver class attributes
         self.name = name
         self.directory = directory
-        self._mesh = None
+        self._shape_mesh = None
+        self._amplitude_mesh = None
         self._unity_mesh = None
-        self._pin_cell_mesh = None
-        self._assembly_mesh = None
         self._geometry = None
         self._settings_file = None
         self._materials_file = None
@@ -138,90 +155,46 @@ class Solver(object):
         self._one_group = None
         self._energy_groups = None
         self._fine_groups = None
-        self._k_crit = 1.0
-        self._num_delayed_groups = 6
         self._initial_power = 1.
+        self._k_crit = 1.0
+        self._mpi_procs = 1
+        self._threads = 1
+        self._chi_delayed_by_delayed_group = False
+        self._chi_delayed_by_mesh = False
+        self._num_delayed_groups = 6
         self._states = OrderedDict()
+        self._use_pregenerated_sps = False
         self._constant_seed = True
         self._seed = 1
         self._core_volume = 1.
-        self._chi_delayed_by_delayed_group = False
-        self._chi_delayed_by_mesh = False
-        self._mpi_procs = 1
-        self._threads = 1
-        self._use_pregenerated_sps = False
         self._pregenerate_sps = False
-        self._log_file = None
         self._log_file_name = 'log_file.h5'
         self._run_on_cluster = False
         self._job_file = 'job.pbs'
-
-    @property
-    def log_file(self):
-        log_file = os.path.join(self.directory,
-                                self.name + '/' + self.log_file_name)
-        log_file = log_file.replace(' ', '-')
-        return log_file
+        self._multi_group = True
+        self._inner_tolerance = 1.e-6
+        self._outer_tolerance = 1.e-6
+        self._method = 'ADIABATIC'
 
     @property
     def name(self):
         return self._name
 
     @property
-    def log_file_name(self):
-        return self._log_file_name
-
-    @property
     def directory(self):
         return self._directory
 
     @property
-    def use_pregenerated_sps(self):
-        return self._use_pregenerated_sps
+    def shape_mesh(self):
+        return self._shape_mesh
 
     @property
-    def pregenerate_sps(self):
-        return self._pregenerate_sps
-
-    @property
-    def core_volume(self):
-        return self._core_volume
-
-    @property
-    def constant_seed(self):
-        return self._constant_seed
-
-    @property
-    def seed(self):
-        return self._seed
-
-    @property
-    def states(self):
-        return self._states
-
-    @property
-    def mesh(self):
-        return self._mesh
+    def amplitude_mesh(self):
+        return self._amplitude_mesh
 
     @property
     def unity_mesh(self):
         return self._unity_mesh
-
-    @property
-    def pin_cell_mesh(self):
-        return self._pin_cell_mesh
-
-    @property
-    def assembly_mesh(self):
-        return self._assembly_mesh
-
-    @property
-    def nxyz(self):
-        return np.prod(self.mesh.dimension)
-
-    @property
-    def ng(self):
-        return self.energy_groups.num_groups
 
     @property
     def geometry(self):
@@ -264,6 +237,14 @@ class Solver(object):
         return self._k_crit
 
     @property
+    def mpi_procs(self):
+        return self._mpi_procs
+
+    @property
+    def threads(self):
+        return self._threads
+
+    @property
     def chi_delayed_by_delayed_group(self):
         return self._chi_delayed_by_delayed_group
 
@@ -276,16 +257,32 @@ class Solver(object):
         return self._num_delayed_groups
 
     @property
-    def mpi_procs(self):
-        return self._mpi_procs
+    def states(self):
+        return self._states
 
     @property
-    def threads(self):
-        return self._threads
+    def use_pregenerated_sps(self):
+        return self._use_pregenerated_sps
 
     @property
-    def run_directory(self):
-        return self.directory + '/' + self.name
+    def constant_seed(self):
+        return self._constant_seed
+
+    @property
+    def seed(self):
+        return self._seed
+
+    @property
+    def core_volume(self):
+        return self._core_volume
+
+    @property
+    def pregenerate_sps(self):
+        return self._pregenerate_sps
+
+    @property
+    def log_file_name(self):
+        return self._log_file_name
 
     @property
     def run_on_cluster(self):
@@ -295,59 +292,44 @@ class Solver(object):
     def job_file(self):
         return self._job_file
 
+    @property
+    def multi_group(self):
+        return self._multi_group
+
+    @property
+    def inner_tolerance(self):
+        return self._inner_tolerance
+
+    @property
+    def outer_tolerance(self):
+        return self._outer_tolerance
+
+    @property
+    def method(self):
+        return self._method
+
     @name.setter
     def name(self, name):
         self._name = name
-
-    @log_file_name.setter
-    def log_file_name(self, name):
-        self._log_file_name = name
 
     @directory.setter
     def directory(self, directory):
         self._directory = directory
 
-    @use_pregenerated_sps.setter
-    def use_pregenerated_sps(self, use_pregenerated_sps):
-        self._use_pregenerated_sps = use_pregenerated_sps
+    @shape_mesh.setter
+    def shape_mesh(self, mesh):
+        self._shape_mesh = mesh
 
-    @pregenerate_sps.setter
-    def pregenerate_sps(self, pregenerate_sps):
-        self._pregenerate_sps = pregenerate_sps
+        unity_mesh = openmc.Mesh()
+        unity_mesh.type = mesh.type
+        unity_mesh.dimension = [1,1,1]
+        unity_mesh.lower_left  = mesh.lower_left
+        unity_mesh.width = [i*j for i,j in zip(mesh.dimension, mesh.width)]
+        self._unity_mesh = unity_mesh
 
-    @core_volume.setter
-    def core_volume(self, core_volume):
-        self._core_volume = core_volume
-
-    @constant_seed.setter
-    def constant_seed(self, constant_seed):
-        self._constant_seed = constant_seed
-
-    @seed.setter
-    def seed(self, seed):
-        self._seed = seed
-
-    @states.setter
-    def states(self, states):
-        self._states = states
-
-    @mesh.setter
-    def mesh(self, mesh):
-        self._mesh = mesh
-
-        self._unity_mesh = openmc.Mesh()
-        self._unity_mesh.type = mesh.type
-        self._unity_mesh.dimension = [1,1,1]
-        self._unity_mesh.lower_left  = mesh.lower_left
-        self._unity_mesh.width = [i*j for i,j in zip(mesh.dimension, mesh.width)]
-
-    @pin_cell_mesh.setter
-    def pin_cell_mesh(self, pin_cell_mesh):
-        self._pin_cell_mesh = pin_cell_mesh
-
-    @assembly_mesh.setter
-    def assembly_mesh(self, assembly_mesh):
-        self._assembly_mesh = assembly_mesh
+    @amplitude_mesh.setter
+    def amplitude_mesh(self, mesh):
+        self._amplitude_mesh = mesh
 
     @geometry.setter
     def geometry(self, geometry):
@@ -389,6 +371,14 @@ class Solver(object):
     def k_crit(self, k_crit):
         self._k_crit = k_crit
 
+    @mpi_procs.setter
+    def mpi_procs(self, mpi_procs):
+        self._mpi_procs = mpi_procs
+
+    @threads.setter
+    def threads(self, threads):
+        self._threads = threads
+
     @chi_delayed_by_delayed_group.setter
     def chi_delayed_by_delayed_group(self, chi_delayed_by_delayed_group):
         self._chi_delayed_by_delayed_group = chi_delayed_by_delayed_group
@@ -401,13 +391,33 @@ class Solver(object):
     def num_delayed_groups(self, num_delayed_groups):
         self._num_delayed_groups = num_delayed_groups
 
-    @mpi_procs.setter
-    def mpi_procs(self, mpi_procs):
-        self._mpi_procs = mpi_procs
+    @states.setter
+    def states(self, states):
+        self._states = states
 
-    @threads.setter
-    def threads(self, threads):
-        self._threads = threads
+    @use_pregenerated_sps.setter
+    def use_pregenerated_sps(self, use_pregenerated_sps):
+        self._use_pregenerated_sps = use_pregenerated_sps
+
+    @constant_seed.setter
+    def constant_seed(self, constant_seed):
+        self._constant_seed = constant_seed
+
+    @seed.setter
+    def seed(self, seed):
+        self._seed = seed
+
+    @core_volume.setter
+    def core_volume(self, core_volume):
+        self._core_volume = core_volume
+
+    @pregenerate_sps.setter
+    def pregenerate_sps(self, pregenerate_sps):
+        self._pregenerate_sps = pregenerate_sps
+
+    @log_file_name.setter
+    def log_file_name(self, name):
+        self._log_file_name = name
 
     @run_on_cluster.setter
     def run_on_cluster(self, run_on_cluster):
@@ -417,6 +427,41 @@ class Solver(object):
     def job_file(self, job_file):
         self._job_file = job_file
 
+    @multi_group.setter
+    def multi_group(self, multi_group):
+        self._multi_group = multi_group
+
+    @inner_tolerance.setter
+    def inner_tolerance(self, tolerance):
+        self._inner_tolerance = tolerance
+
+    @outer_tolerance.setter
+    def outer_tolerance(self, tolerance):
+        self._outer_tolerance = tolerance
+
+    @method.setter
+    def method(self, method):
+        self._method = method
+
+    @property
+    def nxyz(self):
+        return np.prod(self.shape_mesh.dimension)
+
+    @property
+    def ng(self):
+        return self.energy_groups.num_groups
+
+    @property
+    def run_directory(self):
+        return self.directory + '/' + self.name
+
+    @property
+    def log_file(self):
+        log_file = os.path.join(self.directory,
+                                self.name + '/' + self.log_file_name)
+        log_file = log_file.replace(' ', '-')
+        return log_file
+
     def job_directory(self, time_point):
         dir = self.run_directory + '/job_{:09.6f}'.format(self.clock.times[time_point])
         dir = dir.replace('.', '_')
@@ -425,16 +470,22 @@ class Solver(object):
     def create_log_file(self):
 
         f = h5py.File(self.log_file, 'w')
-        for mesh,name in \
-            zip([self.mesh, self.unity_mesh, self.pin_cell_mesh, self.assembly_mesh],
-                ['mesh', 'unity_mesh', 'pin_cell_mesh', 'assembly_mesh']):
-            f.require_group(name)
-            f[name].attrs['id'] = mesh.id
-            f[name].attrs['name'] = mesh.name
-            f[name].attrs['type'] = mesh.type
-            f[name].attrs['dimension'] = mesh.dimension
-            f[name].attrs['lower_left'] = mesh.lower_left
-            f[name].attrs['width'] = mesh.width
+
+        f.require_group('shape')
+        f['shape'].attrs['id'] = self.shape_mesh.id
+        f['shape'].attrs['name'] = self.shape_mesh.name
+        f['shape'].attrs['type'] = self.shape_mesh.type
+        f['shape'].attrs['dimension'] = self.shape_mesh.dimension
+        f['shape'].attrs['lower_left'] = self.shape_mesh.lower_left
+        f['shape'].attrs['width'] = self.shape_mesh.width
+
+        f.require_group('amplitude')
+        f['amplitude'].attrs['id'] = self.amplitude_mesh.id
+        f['amplitude'].attrs['name'] = self.amplitude_mesh.name
+        f['amplitude'].attrs['type'] = self.amplitude_mesh.type
+        f['amplitude'].attrs['dimension'] = self.amplitude_mesh.dimension
+        f['amplitude'].attrs['lower_left'] = self.amplitude_mesh.lower_left
+        f['amplitude'].attrs['width'] = self.amplitude_mesh.width
 
         for groups,name in \
             zip([self.one_group, self.energy_groups, self.fine_groups],
@@ -455,6 +506,7 @@ class Solver(object):
         f.attrs['seed'] = self.seed
         f.attrs['core_volume'] = self.core_volume
         f.attrs['k_crit'] = self.k_crit
+        f.attrs['method'] = self.method
         f.require_group('clock')
         f['clock'].attrs['dt_outer'] = self.clock.dt_outer
         f['clock'].attrs['dt_inner'] = self.clock.dt_inner
@@ -539,16 +591,20 @@ class Solver(object):
         for mgxs in self.states[time_point].mgxs_lib.values():
             mgxs.load_from_statepoint(statepoint_file)
 
+        self.states[time_point].load_mgxs()
+
+
     def create_state(self, time_point, derived=False):
 
         if derived:
             state = openmc.kinetics.DerivedState(self.states)
         else:
             state = openmc.kinetics.State()
-        state.mesh = self.mesh
+
+        state.shape_mesh = self.shape_mesh
+        state.amplitude_mesh = self.amplitude_mesh
         state.unity_mesh = self.unity_mesh
-        state.pin_cell_mesh = self.pin_cell_mesh
-        state.assembly_mesh = self.assembly_mesh
+        state.multi_group = self.multi_group
         state.energy_groups = self.energy_groups
         state.fine_groups = self.fine_groups
         state.one_group = self.one_group
@@ -560,42 +616,46 @@ class Solver(object):
         state.chi_delayed_by_delayed_group = self.chi_delayed_by_delayed_group
         state.chi_delayed_by_mesh = self.chi_delayed_by_mesh
         state.log_file = self.log_file
+        state.method = self.method
+
         self.states[time_point] = state
 
     def compute_initial_flux(self):
 
+        # Run OpenMC to obtain XS
         self.run_openmc('START')
 
-        # Extract the flux from the first solve
+        # Get the START state
         state = self.states['START']
-        mgxs_lib = state.mgxs_lib
-        flux = mgxs_lib['absorption'].tallies['flux'].get_values()
-        flux.shape = (self.nxyz, self.ng)
-        flux = flux[:, ::-1]
-        state.flux = flux
 
         # Compute the initial eigenvalue
-        flux, self.k_crit = self.compute_eigenvalue(state.destruction_matrix,
-                                                    state.production_matrix,
-                                                    flux)
+        flux, self.k_crit = self.compute_eigenvalue(state.destruction_matrix(False),
+                                                    state.production_matrix(False),
+                                                    state.flux_tallied)
 
         # Compute the initial adjoint eigenvalue
-        adjoint_flux = np.ones(self.nxyz * self.ng)
-        adjoint_flux, k_adjoint = self.compute_eigenvalue\
-                                  (state.adjoint_destruction_matrix,
-                                   state.production_matrix.transpose(),
-                                   adjoint_flux)
-
-        flux[flux < 0.] = 0.
-        adjoint_flux[adjoint_flux < 0.] = 0.
+        state.adjoint_flux, k_adjoint = self.compute_eigenvalue\
+            (state.destruction_matrix(False).transpose(), state.production_matrix(False).transpose(),
+             np.ones(self.nxyz * self.ng))
 
         # Normalize the initial flux
-        state.flux = flux
-        state.adjoint_flux = adjoint_flux
-        norm_factor = self.initial_power / state.core_power_density
-        state.flux *= norm_factor
-        state.adjoint_flux *= norm_factor
         state.k_crit = self.k_crit
+
+        # Get the amplitude on the fine and coarse meshes
+        coarse_shape = state.amplitude_dimension + (self.ng,)
+        fine_shape   = state.shape_dimension     + (self.ng,)
+        flux.shape   = fine_shape
+        coarse_amp   = openmc.kinetics.map_array(flux, coarse_shape, normalize=True)
+        fine_amp     = openmc.kinetics.map_array(coarse_amp, fine_shape, normalize=True)
+
+        # Set the unnormalized amplitude and shape
+        state.amplitude = coarse_amp
+        state.shape     = flux.flatten() / fine_amp.flatten()
+
+        # Compute the power and normalize the amplitude
+        norm_factor         = self.initial_power / state.core_power_density
+        state.amplitude    *= norm_factor
+        state.adjoint_flux *= norm_factor
 
         # Compute the initial precursor concentration
         state.compute_initial_precursor_concentration()
@@ -622,77 +682,178 @@ class Solver(object):
             for time_point in TIME_POINTS:
                 if time_point != time_from:
                     state_to = self.states[time_point]
-                    state_to.flux = copy.deepcopy(state_from.flux)
-                    state_to.adjoint_flux = copy.deepcopy(state_from.adjoint_flux)
-                    state_to.precursors = copy.deepcopy(state_from.precursors)
+                    state_to.amplitude    = state_from.amplitude
+                    state_to.adjoint_flux = state_from.adjoint_flux
+                    state_to.precursors   = state_from.precursors
+
+                    if time_point in ['START', 'END', 'PREVIOUS_OUT', 'FORWARD_OUT'] \
+                            and time_from in ['START', 'END', 'PREVIOUS_OUT', 'FORWARD_OUT']:
+                        state_to.shape = state_from.shape
+
                     if time_point != 'END':
                         self.clock.times[time_point] = self.clock.times[time_from]
 
                     if copy_mgxs:
                         state_to.mgxs_lib = state_from.mgxs_lib
+                        state_to.load_mgxs()
         else:
             state_from = self.states[time_from]
             state_to = self.states[time_to]
-            state_to.flux = copy.deepcopy(state_from.flux)
-            state_to.adjoint_flux = copy.deepcopy(state_from.adjoint_flux)
-            state_to.precursors = copy.deepcopy(state_from.precursors)
+            state_to.amplitude = state_from.amplitude
+            state_to.adjoint_flux = state_from.adjoint_flux
+            state_to.precursors = state_from.precursors
+
+            if time_to in ['START', 'END', 'PREVIOUS_OUT', 'FORWARD_OUT'] \
+                    and time_from in ['START', 'END', 'PREVIOUS_OUT', 'FORWARD_OUT']:
+                state_to.shape = state_from.shape
+
             if time_to != 'END':
                 self.clock.times[time_to] = self.clock.times[time_from]
 
             if copy_mgxs:
                 state_to.mgxs_lib = state_from.mgxs_lib
+                state_to.load_mgxs()
 
     def take_outer_step(self):
 
         # Increment clock
         times = self.clock.times
-        times['FORWARD_OUT'] += self.clock.dt_outer
         state_pre = self.states['PREVIOUS_IN']
         state_fwd = self.states['FORWARD_IN']
+        state_fwd_out = self.states['FORWARD_OUT']
+        state_pre_out = self.states['PREVIOUS_OUT']
+        outer_iteration = 0
+        t_final = times['FORWARD_OUT'] + self.clock.dt_outer
 
-        # Run OpenMC on forward out state
-        self.run_openmc('FORWARD_OUT')
+        # Save the outer old power
+        power_outer_old = state_fwd_out.power
 
-        while (times['FORWARD_IN'] < times['FORWARD_OUT'] - 1.e-8):
+        while True:
 
-            # Increment forward in time
-            times['FORWARD_IN'] += self.clock.dt_inner
+            # Set the inner iteration times
+            if outer_iteration == 0:
+                times['FORWARD_IN'] = times['FORWARD_OUT']
+                times['PREVIOUS_IN'] = times['FORWARD_OUT']
+            else:
+                times['FORWARD_IN'] = times['PREVIOUS_OUT']
+                times['PREVIOUS_IN'] = times['PREVIOUS_OUT']
 
-            # Get the transient matrix and time source
-            time_source = state_pre.time_source_matrix * \
-                          state_pre.flux.flatten()
-            source = time_source + state_pre.decay_source(state_pre).flatten()
+            while (times['FORWARD_IN'] < t_final - 1.e-8):
 
-            # Compute the flux at the FORWARD_IN time step
-            state_fwd.flux = spsolve(state_fwd.transient_matrix, source)
+                # Increment forward in time
+                times['FORWARD_IN'] += self.clock.dt_inner
+                inner_iteration = 0
 
-            # Propagate the precursors
-            state_fwd.propagate_precursors(state_pre)
+                while True:
 
-            # Update the values for the time step
-            self.copy_states('FORWARD_IN', 'PREVIOUS_IN')
+                    # Save the inner old power
+                    power_old = state_fwd.power
 
-            # Dump data at FORWARD_OUT state to log file
-            if (times['FORWARD_IN'] < times['FORWARD_OUT'] - 1.e-8):
-                state_fwd.dump_inner_to_log_file()
+                    # Get the transient matrix and time source
+                    time_source = state_fwd.time_removal_matrix(True, True) * state_pre.amplitude.flatten()
+                    decay_source = state_fwd.k3_source_matrix(state_pre) * state_pre.amplitude.flatten() - \
+                        state_fwd.k1_source(state_pre, True).flatten()
+                    source = time_source - decay_source
 
-            # Save the core power at FORWARD_IN
-            print('t: {0:1.3f} s, P: {1:1.3e} W/cm^3, rho: {2:+1.3f} pcm'
-                  ', beta_eff: {3:1.5f}, pnl: {4:1.3e} s'.\
-                  format(times['FORWARD_IN'], state_fwd.core_power_density,
-                         state_fwd.reactivity * 1.e5,
-                         state_fwd.beta_eff, state_fwd.pnl))
+                    # Compute the amplitude at the FORWARD_IN time step
+                    state_fwd.amplitude = spsolve(state_fwd.transient_matrix(True), source)
+
+                    # Propagate the precursors
+                    state_fwd.propagate_precursors(state_pre)
+
+                    # Check whether the flux at the FORWARD_IN time step is converged
+                    residual_array = (power_old - state_fwd.power)/state_fwd.power
+                    residual_array[residual_array == -np.inf] = 0.
+                    residual_array[residual_array ==  np.inf] = 0.
+                    residual_array = np.nan_to_num(residual_array)
+                    num_pins = 1056
+                    inner_residual = np.sqrt((residual_array**2).sum() / num_pins)
+
+                    if inner_residual < self.inner_tolerance:
+                        break
+                    else:
+                        inner_iteration += 1
+
+                # Update the values for the time step
+                self.copy_states('FORWARD_IN', 'PREVIOUS_IN')
+
+                # Dump data at FORWARD_OUT state to log file
+                if (times['FORWARD_IN'] < times['FORWARD_OUT'] - 1.e-8):
+                    state_fwd.dump_inner_to_log_file()
+
+                # Save the core power at FORWARD_IN
+                print('t: {0:1.3f} s, P: {1:1.3e} W/cm^3, rho: {2:+1.3f} pcm'
+                      ', beta_eff: {3:1.5f}, pnl: {4:1.3e} s'.\
+                          format(times['FORWARD_IN'], state_fwd.core_power_density,
+                                 state_fwd.reactivity * 1.e5,
+                                 state_fwd.beta_eff, state_fwd.pnl))
+
+            new_power = state_fwd.power
+            residual_array = (power_outer_old - new_power) / new_power
+            residual_array[residual_array == -np.inf] = 0.
+            residual_array[residual_array ==  np.inf] = 0.
+            residual_array = np.nan_to_num(residual_array)
+            num_pins = np.sum(power_outer_old > 0.)
+            outer_residual = np.sqrt((residual_array**2).sum() / num_pins)
+            power_outer_old = new_power
+
+            if outer_residual < self.outer_tolerance and outer_iteration > 0:
+                print('  CONVERGED outer residual {}'.format(outer_residual))
+                break
+            else:
+
+                print('UNCONVERGED outer residual {}'.format(outer_residual))
+
+                # Increment time if first outer iteration
+                if outer_iteration == 0:
+                    # Copy FORWARD_OUT to PREVIOUS_OUT
+                    self.copy_states('FORWARD_OUT', 'PREVIOUS_OUT', True)
+                    times['FORWARD_OUT'] += self.clock.dt_outer
+
+                nz , ny , nx  = state_fwd.shape_dimension
+                fig = plt.figure()
+                ax = fig.add_subplot(111)
+                residual_array[residual_array == 0.0] = np.nan
+                residual_array.shape = (ny, nx)
+                cax = ax.imshow(residual_array, interpolation='none', cmap='jet')
+                fig.colorbar(cax)
+                plt.savefig('outer_residual_{}_{:0.4f}.png'.format(outer_iteration, times['FORWARD_OUT']))
+
+                # Increment outer iteration count
+                outer_iteration = outer_iteration + 1
+
+                # Get the current core power
+                core_power = state_fwd.core_power_density
+
+                # Copy amplitude to FORWARD_OUT
+                state_fwd_out.amplitude = state_fwd.amplitude
+                prev_amp = state_pre.amplitude
+
+                # Reset the inner states
+                self.copy_states('PREVIOUS_OUT', 'FORWARD_IN')
+                self.copy_states('PREVIOUS_OUT', 'PREVIOUS_IN')
+
+                # Run OpenMC on forward out state
+                self.run_openmc('FORWARD_OUT')
+
+                # Compute shape
+                if self.method == 'ADIABATIC':
+                    flux, k_eff = self.compute_eigenvalue(state_fwd_out.destruction_matrix(False, False),
+                                                          state_fwd_out.production_matrix(False, False),
+                                                          state_fwd_out.flux_tallied)
+                elif self.method == 'OMEGA':
+                    flux, k_eff = self.compute_eigenvalue(state_fwd_out.destruction_matrix(False, True),
+                                                          state_fwd_out.production_matrix(False, True),
+                                                          state_fwd_out.flux_tallied)
+
+                state_fwd_out.extract_shape(flux, core_power)
 
         # Copy the flux, precursors, and time from FORWARD_IN to
         # FORWARD_OUT
         self.copy_states('FORWARD_IN', 'FORWARD_OUT')
 
         # Dump data at FORWARD_OUT state to log file
-        self.states['FORWARD_OUT'].dump_outer_to_log_file()
-
-        # Copy the flux, precursors, time, and MGXS from FORWARD_OUT to
-        # PREVIOUS_OUT
-        self.copy_states('FORWARD_OUT', 'PREVIOUS_OUT', True)
+        state_fwd_out.dump_outer_to_log_file()
 
     def compute_eigenvalue(self, A, M, flux):
 
@@ -722,6 +883,8 @@ class Solver(object):
 
             # Compute the residual
             residual_array = (new_source - old_source) / new_source
+            residual_array[residual_array == -np.inf] = 0.
+            residual_array[residual_array ==  np.inf] = 0.
             residual_array = np.nan_to_num(residual_array)
             residual_array = np.square(residual_array)
             residual = np.sqrt(residual_array.mean())
@@ -729,7 +892,7 @@ class Solver(object):
             # Copy new source to old source
             old_source = np.copy(new_source)
 
-            print('linear solver iter {0} resid {1:1.5e} k-eff {2:1.6f}'\
+            print('eigen solve iter {:03d} resid {:1.5e} k-eff {:1.6f}'\
                       .format(i, residual, k_eff))
 
             if residual < 1.e-6 and i > 10:
@@ -767,6 +930,9 @@ class Solver(object):
             self.run_openmc_all()
             self.use_pregenerated_sps = True
 
+        if self.method == 'OMEGA':
+            self.create_frequency_mesh()
+
         # Compute the initial steady state flux
         self.compute_initial_flux()
 
@@ -774,7 +940,16 @@ class Solver(object):
         for i in range(self.num_outer_time_steps):
             self.take_outer_step()
 
+    def create_frequency_mesh(self):
+
+        self.settings_file.frequency_mesh = self.shape_mesh
+        self.settings_file.frequency_group_structure = self.energy_groups
+        self.settings_file.frequency_num_delayed_groups = self.num_delayed_groups
+
     def setup_openmc(self, time_point):
+
+        # Get a fresh copy of the settings file
+        settings_file = copy.deepcopy(self.settings_file)
 
         # Create job directory
         if not os.path.exists(self.job_directory(time_point)):
@@ -782,23 +957,29 @@ class Solver(object):
 
         # Create a new random seed for the xml file
         if self.constant_seed:
-            self.settings_file.seed = self.seed
+            settings_file.seed = self.seed
         else:
-            self.settings_file.seed = np.random.randint(1, 1e6, 1)[0]
+            settings_file.seed = np.random.randint(1, 1e6, 1)[0]
 
         if self.mgxs_lib_file:
             self.materials_file.cross_sections = './mgxs.h5'
             self.mgxs_lib_file.export_to_hdf5(self.job_directory(time_point) + '/mgxs.h5')
-            self.settings_file.energy_mode = 'multi-group'
+            settings_file.energy_mode = 'multi-group'
 
         # Create MGXS
-        self.states[time_point].initialize_mgxs()
+        state = self.states[time_point]
+        sTATE.initialize_mgxs()
+
+        if self.method == 'OMEGA':
+            state_prev = self.states['PREVIOUS_OUT']
+            self.settings_file.flux_frequency      = state.flux_frequency(state_prev).flatten()
+            self.settings_file.precursor_frequency = state.precursor_frequency().flatten()
 
         # Create the xml files
         self.geometry.time = self.clock.times[time_point]
         self.geometry.export_to_xml(self.job_directory(time_point) + '/geometry.xml')
         self.materials_file.export_to_xml(self.job_directory(time_point) + '/materials.xml')
-        self.settings_file.export_to_xml(self.job_directory(time_point) + '/settings.xml')
+        settings_file.export_to_xml(self.job_directory(time_point) + '/settings.xml')
         self.generate_tallies_file(time_point)
 
     @property
@@ -849,3 +1030,4 @@ class Solver(object):
                 elapsed_time += 10
 
         self.clock.times['START'] = start_time
+

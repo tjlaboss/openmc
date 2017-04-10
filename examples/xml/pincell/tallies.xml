@@ -1,16 +1,10 @@
 <?xml version="1.0"?>
 <tallies>
 
-  <mesh id="1" type="regular">
-    <dimension>100 100 1</dimension>
-    <lower_left>-0.62992 -0.62992 -1.e50</lower_left>
-    <upper_right>0.62992  0.62992  1.e50</upper_right>
-  </mesh>
-
-  <tally id="1">
-    <filter type="mesh" bins="1" />
-    <filter type="energy" bins="0. 4. 20.0e6" />
-    <scores>flux fission nu-fission</scores>
+  <tally id="3" name="tally 3">
+    <filter bins="1e-05 0.0635 10.0 100.0 1000.0 500000.0 1000000.0 20000000.0" type="energyout" />
+    <scores>prompt-nu-fission</scores>
+    <estimator>analog</estimator>
   </tally>
 
 </tallies>

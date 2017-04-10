@@ -7,6 +7,7 @@ module tracking
                                 cross_lattice, check_cell_overlap
   use global
   use output,             only: write_message
+  use mesh,               only: get_mesh_bin
   use message_passing
   use particle_header,    only: LocalCoord, Particle
   use physics,            only: collision
@@ -42,6 +43,11 @@ contains
     real(8) :: d_collision            ! sampled distance to collision
     real(8) :: distance               ! distance particle travels
     logical :: found_cell             ! found cell which particle is in?
+    real(8) :: nu_fission
+    real(8) :: delayed_nu_fission
+    integer :: mesh_bin
+    integer :: d
+
 
     ! Display message if high verbosity or trace is on
     if (verbosity >= 9 .or. trace) then
@@ -133,11 +139,29 @@ contains
         call score_tracklength_tally(p, distance)
       end if
 
-
       ! Score track-length estimate of k-eff
       if (run_mode == MODE_EIGENVALUE) then
+
+        nu_fission = material_xs % prompt_nu_fission
+
+        if (precursor_frequency_on) then
+          call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
+        else
+          mesh_bin = -1
+        end if
+
+        do d = 1, MAX_DELAYED_GROUPS
+          delayed_nu_fission = material_xs % delayed_nu_fission(d)
+
+          if (mesh_bin /= -1 .and. d <= num_frequency_delayed_groups) then
+            delayed_nu_fission = delayed_nu_fission * precursor_frequency(mesh_bin, d)
+          end if
+
+          nu_fission = nu_fission + delayed_nu_fission
+        end do
+
         global_tally_tracklength = global_tally_tracklength + p % wgt * &
-             distance * material_xs % nu_fission
+             distance * nu_fission
       end if
 
       ! Score flux derivative accumulators for differential tallies.
@@ -167,8 +191,27 @@ contains
 
         ! Score collision estimate of keff
         if (run_mode == MODE_EIGENVALUE) then
+
+          nu_fission = material_xs % prompt_nu_fission
+
+          if (precursor_frequency_on) then
+            call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
+          else
+            mesh_bin = -1
+          end if
+
+          do d = 1, MAX_DELAYED_GROUPS
+            delayed_nu_fission = material_xs % delayed_nu_fission(d)
+
+            if (mesh_bin /= -1 .and. d <= num_frequency_delayed_groups) then
+              delayed_nu_fission = delayed_nu_fission * precursor_frequency(mesh_bin, d)
+            end if
+
+            nu_fission = nu_fission + delayed_nu_fission
+          end do
+
           global_tally_collision = global_tally_collision + p % wgt * &
-               material_xs % nu_fission / material_xs % total
+               nu_fission / material_xs % total
         end if
 
         ! score surface current tallies -- this has to be done before the collision

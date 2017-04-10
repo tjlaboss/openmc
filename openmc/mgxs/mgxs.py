@@ -240,7 +240,7 @@ class MGXS(object):
         self._derived = False
         self._hdf5_key = None
         self._valid_estimators = ESTIMATOR_TYPES
-        self._energy_mode = 'continuous'
+        self._energy_mode = 'continuous-energy'
 
         self.name = name
         self.by_nuclide = by_nuclide
@@ -4110,20 +4110,39 @@ class ScatterMatrixXS(MatrixMGXS):
     @property
     def estimator(self):
         if self.formulation == 'simple':
-            return self._estimator
+            if self.scatter_format == 'legendre':
+                if self.legendre_order == 0:
+                    if self.correction or self.energy_mode == 'continuous-energy':
+                        return 'analog'
+                    else:
+                        return 'tracklength'
+                else:
+                    return 'analog'
+            elif self.scatter_format == 'histogram':
+                if self.energy_mode == 'multi-group':
+                    return 'tracklength'
+                else:
+                    return 'analog'
         else:
             # Add estimators for groupwise scattering cross section
             estimators = ['tracklength', 'tracklength']
 
             # Add estimators for group-to-group scattering probabilities
-            if energy_mode == 'multi-group':
-                estimators.append('tracklength')
-            else:
-                estimators.append('analog')
+            # Add scores for group-to-group scattering probability matrix
+            if self.scatter_format == 'legendre':
+                if self.legendre_order == 0 and self.energy_mode == 'multi-group':
+                    estimators.append('tracklength')
+                else:
+                    estimators.append('analog')
+            elif self.scatter_format == 'histogram':
+                if self.energy_mode == 'multi-group':
+                    estimators.append('tracklength')
+                else:
+                    estimators.append('analog')
 
             # Add estimators for multiplicity matrix
             if self.nu:
-                if energy_mode == 'multi-group':
+                if self.energy_mode == 'multi-group':
                     estimators.extend(['tracklength', 'tracklength'])
                 else:
                     estimators.extend(['analog', 'analog'])
@@ -5471,6 +5490,13 @@ class NuFissionMatrixXS(MatrixMGXS):
         cv.check_type('prompt', prompt, bool)
         self._prompt = prompt
 
+        if prompt or self.energy_mode == 'multi-group':
+            self._valid_estimators = ESTIMATOR_TYPES
+            self._estimator = 'tracklength'
+        else:
+            self._valid_estimators = ['analog']
+            self._estimator = 'analog'
+
     def __deepcopy__(self, memo):
         clone = super(NuFissionMatrixXS, self).__deepcopy__(memo)
         clone._prompt = self.prompt
@@ -5627,7 +5653,9 @@ class Chi(MGXS):
 
     @energy_mode.setter
     def energy_mode(self, energy_mode):
-        super(Chi, self).energy_mode(energy_mode)
+        cv.check_value('energy mode', energy_mode,
+                    ['continuous-energy', 'multi-group'])
+        self._energy_mode = energy_mode
 
         if energy_mode == 'multi-group':
             self._valid_estimators = ESTIMATOR_TYPES

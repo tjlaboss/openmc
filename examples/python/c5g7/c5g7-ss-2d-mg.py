@@ -69,8 +69,8 @@ materials_file.export_to_xml(run_directory + '/materials.xml')
 
 inactive    = 30
 active      = 100
-particles   = 100000
-sp_interval = 5
+particles   = 1000000
+sp_interval = 10
 
 # Create settings file
 settings_file = openmc.Settings()
@@ -78,7 +78,7 @@ settings_file.energy_mode = 'multi-group'
 settings_file.batches = active + inactive
 settings_file.inactive = inactive
 settings_file.particles = particles
-settings_file.output = {'tallies': True}
+settings_file.output = {'tallies': False}
 
 statepoint = dict()
 sp_batches = range(inactive + sp_interval, inactive + sp_interval + active, sp_interval)
@@ -93,7 +93,7 @@ settings_file.source = openmc.source.Source(space=uniform_dist)
 
 entropy_mesh = openmc.Mesh()
 entropy_mesh.type = 'regular'
-entropy_mesh.dimension = [1,1,1]
+entropy_mesh.dimension = [34,34,1]
 entropy_mesh.lower_left  = entropy_bounds[:3]
 entropy_mesh.upper_right = entropy_bounds[3:]
 settings_file.entropy_mesh = entropy_mesh
@@ -140,7 +140,7 @@ delayed_groups = list(range(1,9))
 mgxs_dict = OrderedDict()
 
 mgxs_types = ['absorption', 'diffusion-coefficient', 'decay-rate',
-              'kappa-fission', 'consistent nu-scatter matrix', 'chi-prompt',
+              'kappa-fission', 'nu-scatter matrix', 'chi-prompt',
               'chi-delayed', 'inverse-velocity', 'prompt-nu-fission',
               'current', 'delayed-nu-fission']
 
@@ -156,25 +156,27 @@ for mgxs_type in mgxs_types:
             mgxs_type, domain=mesh, domain_type='mesh',
             energy_groups=fine_groups, by_nuclide=False,
             name=mgxs_type)
-    elif mgxs_type == 'consistent nu-scatter matrix':
+        mgxs_dict[mgxs_type].energy_mode = 'multi-group'
+    elif 'nu-scatter matrix' in mgxs_type:
         mgxs_dict[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
             mgxs_type, domain=mesh, domain_type='mesh',
             energy_groups=energy_groups, by_nuclide=False,
             name=mgxs_type)
         mgxs_dict[mgxs_type].correction = None
-        if not scat_analog:
-            mgxs_dict[mgxs_type].estimator = 'tracklength'
+        mgxs_dict[mgxs_type].energy_mode = 'multi-group'
     elif mgxs_type == 'decay-rate':
         mgxs_dict[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
             mgxs_type, domain=mesh, domain_type='mesh',
             energy_groups=one_group,
             delayed_groups=delayed_groups, by_nuclide=False,
             name=mgxs_type)
+        mgxs_dict[mgxs_type].energy_mode = 'multi-group'
     elif mgxs_type == 'chi-prompt':
         mgxs_dict[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
             mgxs_type, domain=mesh, domain_type='mesh',
             energy_groups=energy_groups, by_nuclide=False,
             name=mgxs_type)
+        mgxs_dict[mgxs_type].energy_mode = 'multi-group'
         if chi_analog:
             mgxs_dict[mgxs_type].estimator = 'analog'
     elif mgxs_type in openmc.mgxs.MGXS_TYPES:
@@ -182,6 +184,7 @@ for mgxs_type in mgxs_types:
             mgxs_type, domain=mesh, domain_type='mesh',
             energy_groups=energy_groups, by_nuclide=False,
             name=mgxs_type)
+        mgxs_dict[mgxs_type].energy_mode = 'multi-group'
     elif mgxs_type == 'chi-delayed':
         if chi_delayed_by_delayed_group:
             if chi_delayed_by_mesh:
@@ -207,6 +210,7 @@ for mgxs_type in mgxs_types:
                     mgxs_type, domain=unity_mesh, domain_type='mesh',
                     energy_groups=energy_groups, by_nuclide=False,
                     name=mgxs_type)
+        mgxs_dict[mgxs_type].energy_mode = 'multi-group'
         if chi_analog:
             mgxs_dict[mgxs_type].estimator = 'analog'
     elif mgxs_type in openmc.mgxs.MDGXS_TYPES:
@@ -215,6 +219,7 @@ for mgxs_type in mgxs_types:
             energy_groups=energy_groups,
             delayed_groups=delayed_groups, by_nuclide=False,
             name=mgxs_type)
+        mgxs_dict[mgxs_type].energy_mode = 'multi-group'
 
 # Generate a new tallies file
 tallies_file = openmc.Tallies()
@@ -228,7 +233,7 @@ for mgxs in mgxs_dict.values():
 # Export the tallies file to xml
 tallies_file.export_to_xml(run_directory + '/tallies.xml')
 
-openmc.run(threads=1, mpi_procs=36, mpi_exec='mpirun', cwd=run_directory)
+openmc.run(threads=1, mpi_procs=24, mpi_exec='mpirun', cwd=run_directory)
 
 ###############################################################
 #                   data processing
@@ -236,7 +241,10 @@ openmc.run(threads=1, mpi_procs=36, mpi_exec='mpirun', cwd=run_directory)
 
 for i,batch in enumerate(sp_batches):
     su = openmc.Summary(run_directory + '/summary.h5')
-    sp = openmc.StatePoint(run_directory + '/statepoint.{:03d}.h5'.format(batch), False)
+    if inactive + active >= 100:
+        sp = openmc.StatePoint(run_directory + '/statepoint.{:03d}.h5'.format(batch), False)
+    else:
+        sp = openmc.StatePoint(run_directory + '/statepoint.{:d}.h5'.format(batch), False)
     sp.link_with_summary(su)
 
     print('Loading MGXS {} of {}'.format(i+1, len(sp_batches)))
@@ -245,18 +253,25 @@ for i,batch in enumerate(sp_batches):
         mgxs.load_from_statepoint(sp)
         mgxs_uncertainty[mgxs_type][i] = np.linalg.norm(mgxs.get_xs(value='rel_err'))
 
-sns.color_palette("husl", 8)
+sns.set_palette(sns.husl_palette(len(mgxs_dict.values()), l=0.5))
 plt.figure(figsize=(9,6))
 sp_particles = [i*particles for i in sp_batches]
+i = 0
 for mgxs_type,mgxs in mgxs_dict.items():
-    plt.loglog(sp_particles, mgxs_uncertainty[mgxs_type], label=mgxs_type, marker='o')
+    if i % 3 == 0:
+        plt.loglog(sp_particles, mgxs_uncertainty[mgxs_type], label=mgxs_type, marker='o')
+    elif i % 3 == 1:
+        plt.loglog(sp_particles, mgxs_uncertainty[mgxs_type], label=mgxs_type, marker='D')
+    else:
+        plt.loglog(sp_particles, mgxs_uncertainty[mgxs_type], label=mgxs_type, marker='<')
+    i = i + 1
 
 legend = plt.legend(ncol=3, loc=9, frameon=True, fancybox=True, facecolor='white', edgecolor='black')
 plt.ylim([1e-0, 1e4])
 plt.xlabel('# of neutrons')
 plt.ylabel('relative error')
 plt.title('MGXS relative error for 2D MG C5G7')
-plt.savefig('mgxs_uncertainty.png')
+plt.savefig('mg_mgxs_uncertainty.png')
 plt.close()
 
 for mgxs_type in mgxs_dict.keys():
