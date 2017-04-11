@@ -173,7 +173,7 @@ contains
 !$omp atomic
       global_tallies(RESULT_VALUE, K_ABSORPTION) = &
            global_tallies(RESULT_VALUE, K_ABSORPTION) + p % absorb_wgt * &
-           nu_fission / material_xs % absorption
+           nu_fission / material_xs % absorption / k_crit
     else
       ! See if disappearance reaction happens
       if (material_xs % absorption > prn() * material_xs % total) then
@@ -198,7 +198,7 @@ contains
 !$omp atomic
         global_tallies(RESULT_VALUE, K_ABSORPTION) = &
              global_tallies(RESULT_VALUE, K_ABSORPTION) + p % wgt * &
-             nu_fission / material_xs % absorption
+             nu_fission / material_xs % absorption / k_crit
 
         p % alive = .false.
         p % event = EVENT_ABSORB

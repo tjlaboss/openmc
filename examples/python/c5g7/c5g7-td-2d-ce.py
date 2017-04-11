@@ -25,7 +25,7 @@ cells['Control Rod Base Bank 4'].translation = [0., 0., 64.26]
 # Create the materials file
 materials_file = openmc.Materials(geometry.get_all_materials().values())
 
-case = '3.0'
+case = '3.1'
 omega = 1.0
 
 # Adjust the cells to have the desired moderator densities
@@ -48,7 +48,7 @@ for bank in range(1,5):
 # OpenMC simulation parameters
 batches = 50
 inactive = 25
-particles = 10000
+particles = 1000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()

@@ -791,14 +791,14 @@ contains
           frequency_energy_bin_avg(i) = HALF * (frequency_energy_bins(i) + frequency_energy_bins(i + 1))
         end do
       else
-        num_frequency_energy_groups = ZERO
+        num_frequency_energy_groups = 0
       end if
 
       ! Check for num delayed groups
       if (check_for_node(node_frequency, "delayed_groups")) then
         call get_node_value(node_frequency, "delayed_groups", num_frequency_delayed_groups)
       else
-        num_frequency_delayed_groups = ZERO
+        num_frequency_delayed_groups = 0
       end if
 
       ! Check for flux frequency

@@ -349,7 +349,7 @@ contains
         end do
 
         global_tally_absorption = global_tally_absorption + p % absorb_wgt * &
-             nu_fission / micro_xs(i_nuclide) % absorption
+             nu_fission / micro_xs(i_nuclide) % absorption / k_crit
       end if
     else
       ! See if disappearance reaction happens
@@ -377,7 +377,7 @@ contains
           end do
 
           global_tally_absorption = global_tally_absorption + p % wgt * &
-               nu_fission / micro_xs(i_nuclide) % absorption
+               nu_fission / micro_xs(i_nuclide) % absorption / k_crit
         end if
 
         p % alive = .false.
@@ -1359,21 +1359,20 @@ contains
       nu_d = ZERO
     end if
 
-    if (precursor_frequency_on .and. nu_d /= ZERO) then
-
+    if (precursor_frequency_on) then
       call get_mesh_bin(frequency_mesh, site % xyz, mesh_bin)
-
-      if (mesh_bin /= -1) then
-        nu_d = ZERO
-        do group = 1, MAX_DELAYED_GROUPS
-          if (group <= num_frequency_delayed_groups) then
-            nu_d = nu_d + nuc % nu(E_in, EMISSION_DELAYED, group) * precursor_frequency(mesh_bin, group)
-          else
-            nu_d = nu_d + nuc % nu(E_in, EMISSION_DELAYED, group)
-          end if
-        end do
-      end if
+    else
+      mesh_bin = -1
     end if
+
+    nu_d = ZERO
+    do group = 1, MAX_DELAYED_GROUPS
+      if (mesh_bin /= -1 .and. group <= num_frequency_delayed_groups) then
+        nu_d = nu_d + nuc % nu(E_in, EMISSION_DELAYED, group) * precursor_frequency(mesh_bin, group)
+      else
+        nu_d = nu_d + nuc % nu(E_in, EMISSION_DELAYED, group)
+      end if
+    end do
 
     ! Determine total nu, delayed nu, and delayed neutron fraction
     nu_t = nuc % nu(E_in, EMISSION_PROMPT) + nu_d

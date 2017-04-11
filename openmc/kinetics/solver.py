@@ -843,7 +843,7 @@ class Solver(object):
                                                           state_fwd_out.flux_tallied)
                 elif self.method == 'OMEGA':
                     flux, k_eff = self.compute_eigenvalue(state_fwd_out.destruction_matrix(False, True),
-                                                          state_fwd_out.production_matrix(False, True),
+                                                          state_fwd_out.production_matrix(False, False),
                                                           state_fwd_out.flux_tallied)
 
                 state_fwd_out.extract_shape(flux, core_power)
@@ -970,9 +970,9 @@ class Solver(object):
         state = self.states[time_point]
 
         if self.method == 'OMEGA' and time_point != 'START':
-            settings_file.flux_frequency      = state.flux_frequency.flatten()
+            #settings_file.flux_frequency      = state.flux_frequency.flatten()
             settings_file.precursor_frequency = state.precursor_frequency.flatten()
-            settings_file.k_crit              = self.k_crit
+        #    settings_file.k_crit              = self.k_crit
 
         state.initialize_mgxs()
 

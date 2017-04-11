@@ -529,7 +529,7 @@ class State(object):
 
         state_prev = self.states['PREVIOUS_OUT']
 
-        freq = (1. / self.dt_outer - state_prev.flux / self.flux / self.dt_outer) * self.dxyz
+        freq = (1. / self.dt_outer - state_prev.flux / self.flux / self.dt_outer)
 
         freq[freq == -np.inf] = 0.
         freq[freq ==  np.inf] = 0.
@@ -581,15 +581,16 @@ class State(object):
         #total = sps.diags(absorb_outscat.flatten()) - openmc.kinetics.diagonal_matrix(inscatter)
         total = sps.diags(absorb_outscat.flatten()) - block_diag(inscatter)
 
-        if omega:
-            flux_frequency = self.flux_frequency
-            if collapse:
-                coarse_shape = self.amplitude_dimension + (self.ng,)
-            else:
-                coarse_shape = self.shape_dimension + (self.ng,)
+        #if omega:
+        #    flux_frequency = self.flux_frequency * self.dxyz
+        #    flux_frequency.shape = (1,1,1,self.ng)
+        #    if collapse:
+        #        coarse_shape = self.amplitude_dimension + (self.ng,)
+        #    else:
+        #        coarse_shape = self.shape_dimension + (self.ng,)
 
-            flux_frequency = openmc.kinetics.map_array(flux_frequency, coarse_shape, True)
-            total += sps.diags(flux_frequency.flatten())
+        #    flux_frequency = openmc.kinetics.map_array(flux_frequency, coarse_shape, True)
+        #    total += sps.diags(flux_frequency.flatten())
 
         return total + linear + non_linear
 

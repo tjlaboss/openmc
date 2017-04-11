@@ -161,7 +161,7 @@ contains
         end do
 
         global_tally_tracklength = global_tally_tracklength + p % wgt * &
-             distance * nu_fission
+             distance * nu_fission / k_crit
       end if
 
       ! Score flux derivative accumulators for differential tallies.
@@ -211,7 +211,7 @@ contains
           end do
 
           global_tally_collision = global_tally_collision + p % wgt * &
-               nu_fission / material_xs % total
+               nu_fission / material_xs % total / k_crit
         end if
 
         ! score surface current tallies -- this has to be done before the collision
