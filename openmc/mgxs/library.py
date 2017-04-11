@@ -289,19 +289,11 @@ class Library(object):
     def by_nuclide(self, by_nuclide):
         cv.check_type('by_nuclide', by_nuclide, bool)
 
-        if by_nuclide and self.domain_type == 'mesh':
-            raise ValueError('Unable to create MGXS library by nuclide with '
-                             'mesh domain')
-
         self._by_nuclide = by_nuclide
 
     @domain_type.setter
     def domain_type(self, domain_type):
         cv.check_value('domain type', domain_type, openmc.mgxs.DOMAIN_TYPES)
-
-        if self.by_nuclide and domain_type == 'mesh':
-            raise ValueError('Unable to create MGXS library by nuclide with '
-                             'mesh domain')
 
         self._domain_type = domain_type
 
