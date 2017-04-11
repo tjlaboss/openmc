@@ -13,9 +13,8 @@ import openmc.mgxs
 import openmc.plotter
 import openmc.kinetics as kinetics
 
-from geometry_2d_mg import materials, surfaces, universes, cells, lattices, geometry, mgxs_lib_file
+from geometry_2d_ce import materials, surfaces, universes, cells, lattices, geometry
 from plots import plots
-from mgxs_lib import mgxs_data
 
 # Set the base control rod bank positions
 cells['Control Rod Base Bank 1'].translation = [0., 0., 64.26]
@@ -41,10 +40,10 @@ elif case == '3.4':
 
 for bank in range(1,5):
     name = 'Moderator Bank {}'.format(bank)
-    d = materials[name].density
+    d = materials[name].mass_density
     density = np.array([[0., 1.     , 2.],
                         [d , omega*d, d ]])
-    materials[name].set_density('macro', density)
+    materials[name].set_density('g/cm3', density)
 
 # OpenMC simulation parameters
 batches = 50
@@ -72,12 +71,12 @@ settings_file.entropy_mesh = entropy_mesh
 
 # Instantiate an EnergyGroups object for the diffusion coefficients
 fine_groups = openmc.mgxs.EnergyGroups()
-fine_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 1.0e7]
+fine_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 2.0e7]
 #fine_groups.group_edges = [0., 55.6, 1.0e7]
 
 # Instantiate an EnergyGroups object for the transient solve
 energy_groups = openmc.mgxs.EnergyGroups()
-energy_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 1.0e7]
+energy_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 2.0e7]
 #energy_groups.group_edges = [0., 0.63, 1.0e7]
 
 # Instantiate an EnergyGroups object for one group data
@@ -89,58 +88,46 @@ point_mesh = openmc.Mesh()
 point_mesh.type = 'regular'
 point_mesh.dimension = [1,1,1]
 point_mesh.lower_left  = [-32.13, -10.71, -64.26]
-point_mesh.width = [42.84/point_mesh.dimension[0],
-                    42.84/point_mesh.dimension[1],
-                    128.52]
+point_mesh.upper_right = [ 10.71,  32.13,  64.26]
 
 full_point_mesh = openmc.Mesh()
 full_point_mesh.type = 'regular'
 full_point_mesh.dimension = [1,1,1]
 full_point_mesh.lower_left  = [-32.13, -32.13, -64.26]
-full_point_mesh.width = [64.26/full_point_mesh.dimension[0],
-                         64.26/full_point_mesh.dimension[1],
-                         128.52]
+full_point_mesh.upper_right = [ 32.13,  32.13,  64.26]
 
 pin_cell_mesh = openmc.Mesh()
 pin_cell_mesh.type = 'regular'
 pin_cell_mesh.dimension = [34,34,1]
 pin_cell_mesh.lower_left  = [-32.13, -10.71, -64.26]
-pin_cell_mesh.width = [42.84/pin_cell_mesh.dimension[0],
-                       42.84/pin_cell_mesh.dimension[1],
-                       128.52]
+pin_cell_mesh.upper_right = [ 10.71,  32.13,  64.26]
 
 full_pin_cell_mesh = openmc.Mesh()
 full_pin_cell_mesh.type = 'regular'
 full_pin_cell_mesh.dimension = [51,51,1]
 full_pin_cell_mesh.lower_left  = [-32.13, -32.13, -64.26]
-full_pin_cell_mesh.width = [64.26/full_pin_cell_mesh.dimension[0],
-                            64.26/full_pin_cell_mesh.dimension[1],
-                            128.52]
+full_pin_cell_mesh.upper_right = [ 32.13,  32.13,  64.26]
 
 assembly_mesh = openmc.Mesh()
 assembly_mesh.type = 'regular'
 assembly_mesh.dimension = [2,2,1]
 assembly_mesh.lower_left  = [-32.13, -10.71, -64.26]
-assembly_mesh.width = [42.84/assembly_mesh.dimension[0],
-                       42.84/assembly_mesh.dimension[1],
-                       128.52]
+assembly_mesh.upper_right = [ 10.71,  32.13,  64.26]
 
 full_assembly_mesh = openmc.Mesh()
 full_assembly_mesh.type = 'regular'
 full_assembly_mesh.dimension = [3,3,1]
 full_assembly_mesh.lower_left  = [-32.13, -32.13, -64.26]
-full_assembly_mesh.width = [64.26/full_assembly_mesh.dimension[0],
-                            64.26/full_assembly_mesh.dimension[1],
-                            128.52]
+full_assembly_mesh.upper_right = [ 32.13,  32.13,  64.26]
 
 # Instantiate a clock object
 clock = openmc.kinetics.Clock(start=0., end=2., dt_outer=1.e-1, dt_inner=1.e-2)
 
 # Instantiate a kinetics solver object
-solver = openmc.kinetics.Solver(name='MG_PIN_CELL', directory='C5G7_2D')
-solver.num_delayed_groups           = 8
-solver.amplitude_mesh               = full_assembly_mesh
-solver.shape_mesh                   = full_pin_cell_mesh
+solver = openmc.kinetics.Solver(name='CE_PIN_CELL', directory='C5G7_2D')
+solver.num_delayed_groups           = 6
+solver.amplitude_mesh               = full_point_mesh
+solver.shape_mesh                   = full_point_mesh
 solver.one_group                    = one_group
 solver.energy_groups                = energy_groups
 solver.fine_groups                  = fine_groups
@@ -149,9 +136,8 @@ solver.settings_file                = settings_file
 solver.materials_file               = materials_file
 solver.inner_tolerance              = np.inf
 solver.outer_tolerance              = np.inf
-solver.mgxs_lib_file                = mgxs_lib_file
-solver.method                       = 'ADIABATIC'
-solver.multi_group                  = True
+solver.method                       = 'OMEGA'
+solver.multi_group                  = False
 solver.clock                        = clock
 solver.mpi_procs                    = 4*1
 solver.threads                      = 1

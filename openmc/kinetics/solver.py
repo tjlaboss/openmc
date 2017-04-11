@@ -599,7 +599,7 @@ class Solver(object):
         if derived:
             state = openmc.kinetics.DerivedState(self.states)
         else:
-            state = openmc.kinetics.State()
+            state = openmc.kinetics.State(self.states)
 
         state.shape_mesh = self.shape_mesh
         state.amplitude_mesh = self.amplitude_mesh
@@ -968,12 +968,13 @@ class Solver(object):
 
         # Create MGXS
         state = self.states[time_point]
-        sTATE.initialize_mgxs()
 
-        if self.method == 'OMEGA':
-            state_prev = self.states['PREVIOUS_OUT']
-            self.settings_file.flux_frequency      = state.flux_frequency(state_prev).flatten()
-            self.settings_file.precursor_frequency = state.precursor_frequency().flatten()
+        if self.method == 'OMEGA' and time_point != 'START':
+            settings_file.flux_frequency      = state.flux_frequency.flatten()
+            settings_file.precursor_frequency = state.precursor_frequency.flatten()
+            settings_file.k_crit              = self.k_crit
+
+        state.initialize_mgxs()
 
         # Create the xml files
         self.geometry.time = self.clock.times[time_point]
@@ -1030,4 +1031,3 @@ class Solver(object):
                 elapsed_time += 10
 
         self.clock.times['START'] = start_time
-

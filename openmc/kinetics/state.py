@@ -8,6 +8,7 @@ import sys
 import numpy as np
 np.set_printoptions(precision=6)
 import scipy.sparse as sps
+from scipy.sparse import block_diag
 
 import openmc
 import openmc.checkvalue as cv
@@ -94,7 +95,7 @@ class State(object):
 
     """
 
-    def __init__(self):
+    def __init__(self, states):
 
         # Initialize Solver class attributes
         self._shape_mesh = None
@@ -119,6 +120,7 @@ class State(object):
         self._multi_group = True
         self._method = 'ADIABATIC'
         self._mgxs_loaded = False
+        self.states = states
 
     def __deepcopy__(self, memo):
 
@@ -145,8 +147,13 @@ class State(object):
         clone._multi_group = self._multi_group
         clone._method = self._method
         clone._mgxs_loaded = self._mgxs_loaded
+        clone._states = self.states
 
         return clone
+
+    @property
+    def states(self):
+        return self._states
 
     @property
     def shape_mesh(self):
@@ -189,7 +196,7 @@ class State(object):
 
     @property
     def precursors(self):
-        self._precursors.shape = (self.nxyz, self.ng)
+        self._precursors.shape = (self.nxyz, self.nd)
         return self._precursors
 
     @property
@@ -239,6 +246,10 @@ class State(object):
     @property
     def mgxs_loaded(self):
         return self._mgxs_loaded
+
+    @states.setter
+    def states(self, states):
+        self._states = states
 
     @shape_mesh.setter
     def shape_mesh(self, mesh):
@@ -437,7 +448,8 @@ class State(object):
 
         delayed_production = self.delayed_production * self.dxyz
         delayed_production.shape = (self.nxyz * self.nd, self.ng, self.ng)
-        delayed_production = openmc.kinetics.diagonal_matrix(delayed_production)
+        #delayed_production = openmc.kinetics.diagonal_matrix(delayed_production)
+        delayed_production = block_diag(delayed_production)
         delayed_production /= self.k_crit
 
         delayed_production *= flux.flatten()
@@ -459,7 +471,8 @@ class State(object):
 
         delayed_production = self.delayed_production * self.dxyz
         delayed_production.shape = (self.nxyz * self.nd, self.ng, self.ng)
-        delayed_production = openmc.kinetics.diagonal_matrix(delayed_production)
+        #delayed_production = openmc.kinetics.diagonal_matrix(delayed_production)
+        delayed_production = block_diag(delayed_production)
         delayed_production /= self.k_crit
 
         delayed_production *= flux.flatten()
@@ -511,7 +524,10 @@ class State(object):
         self._kappa_fission.shape = (self.nxyz, self.ng)
         return self._kappa_fission
 
-    def flux_frequency(self, state_prev):
+    @property
+    def flux_frequency(self):
+
+        state_prev = self.states['PREVIOUS_OUT']
 
         freq = (1. / self.dt_outer - state_prev.flux / self.flux / self.dt_outer) * self.dxyz
 
@@ -522,16 +538,18 @@ class State(object):
         freq.shape = self.shape_dimension + (self.ng,)
         coarse_shape = (1,1,1,self.ng)
         freq = openmc.kinetics.map_array(freq, coarse_shape, normalize=True)
+        freq.shape = (1, self.ng)
         return freq
 
+    @property
     def precursor_frequency(self):
 
-        flux = np.tile(self.flux, self.nd).flatten()
-        del_fis_rate = self.delayed_nu_fission.flatten() * flux
-        del_fis_rate.shape = (self.nxyz, self.nd, self.ng)
-        freq = del_fis_rate.sum(axis=2) / self.precursors / self.k_crit - self.decay_rate
+        flux = np.tile(self.flux, self.nd)
+        flux.shape = (self.nxyz, self.nd, self.ng)
+        del_fis_rate = self.delayed_nu_fission * flux
+        freq = del_fis_rate.sum(axis=2) / self.precursors / self.k_crit * self.dxyz - self.decay_rate
 
-        freq = self.decay_rate / (freq + self.decay_rate) * self.dxyz
+        freq = self.decay_rate / (freq + self.decay_rate)
 
         freq[freq == -np.inf] = 0.
         freq[freq ==  np.inf] = 0.
@@ -560,10 +578,18 @@ class State(object):
         else:
             inscatter.shape = (self.nxyz, self.ng, self.ng)
 
-        total = sps.diags(absorb_outscat.flatten()) - openmc.kinetics.diagonal_matrix(inscatter)
+        #total = sps.diags(absorb_outscat.flatten()) - openmc.kinetics.diagonal_matrix(inscatter)
+        total = sps.diags(absorb_outscat.flatten()) - block_diag(inscatter)
 
         if omega:
-            total -= sps.diags(self.flux_frequency(self.states['PREVIOUS_OUT']).flatten())
+            flux_frequency = self.flux_frequency
+            if collapse:
+                coarse_shape = self.amplitude_dimension + (self.ng,)
+            else:
+                coarse_shape = self.shape_dimension + (self.ng,)
+
+            flux_frequency = openmc.kinetics.map_array(flux_frequency, coarse_shape, True)
+            total += sps.diags(flux_frequency.flatten())
 
         return total + linear + non_linear
 
@@ -623,12 +649,14 @@ class State(object):
     def delayed_production_matrix(self, collapse=True, omega=False):
 
         if omega:
-            chi_delayed = self.chi_delayed * self.precursor_frequency()
+            freq = np.repeat(self.precursor_frequency, self.ng)
+            freq.shape = (self.nxyz, self.nd, self.ng)
+            chi_delayed = self.chi_delayed * freq
             chi_delayed = np.repeat(chi_delayed, self.ng)
             chi_delayed.shape = (self.nxyz, self.nd, self.ng, self.ng)
             delayed_nu_fission = np.tile(self.delayed_nu_fission, self.ng)
             delayed_nu_fission.shape = (self.nxyz, self.nd, self.ng, self.ng)
-            delayed_production = (chi_delayed * delayed_nu_fission).sum(axis=1)
+            delayed_production = (chi_delayed * delayed_nu_fission).sum(axis=1) * self.dxyz
         else:
             delayed_production = self.delayed_production.sum(axis=1) * self.dxyz
 
@@ -641,7 +669,8 @@ class State(object):
             nxyz = np.prod(self.amplitude_mesh.dimension)
             delayed_production.shape = (nxyz, self.ng, self.ng)
 
-        delayed_production = openmc.kinetics.diagonal_matrix(delayed_production)
+        #delayed_production = openmc.kinetics.diagonal_matrix(delayed_production)
+        delayed_production = block_diag(delayed_production)
         return delayed_production / self.k_crit
 
     def production_matrix(self, collapse=True, omega=False):
@@ -667,7 +696,8 @@ class State(object):
             nxyz = np.prod(self.amplitude_mesh.dimension)
             prompt_production.shape = (nxyz, self.ng, self.ng)
 
-        prompt_production = openmc.kinetics.diagonal_matrix(prompt_production)
+        #prompt_production = openmc.kinetics.diagonal_matrix(prompt_production)
+        prompt_production = block_diag(prompt_production)
         return prompt_production / self.k_crit
 
     @property
@@ -899,11 +929,9 @@ class State(object):
         fine_amp        = openmc.kinetics.map_array(amplitude, fine_shape, normalize=True)
         fine_amp.shape  = fine_shape
 
+        # Compute and normalize shape
         self.shape     = flux / fine_amp
-
-        # Normalize shape
-        if self.method == 'ADIABATIC':
-            self.shape *= power / self.core_power_density
+        self.shape *= power / self.core_power_density
 
     def coupling(self, collapse=True, check_for_diag_dominance=False):
 
@@ -1340,71 +1368,6 @@ class State(object):
 
         return dc_linear_matrix, dc_nonlinear_matrix
 
-    def create_sources(self, settings_file):
-
-        nz, ny, nx = self.shape_dimension
-        dx, dy, dz = [i/j for i,j in zip(self.shape_mesh.width, self.shape_mesh.dimension)]
-        ll = self.shape_mesh.lower_left
-        ge = self.energy_groups.group_edges
-        ng = self.ng
-        nd = self.nd
-        sources = []
-
-        #state_fwd_in = self.states['FORWARD_IN']
-        #state_pre_in = self.states['PREVIOUS_IN']
-        #time_source = self.inverse_velocity * self.shape * \
-        #    state_fwd_in.frequency_source(state_pre_in, False)
-        #time_source.shape = (nz, ny, nx, ng)
-
-        if self.multi_group:
-            delayed_source = np.repeat(self.decay_rate * self.precursors, self.ng)
-            delayed_source.shape = (self.nxyz, self.nd, self.ng)
-            delayed_source = (self.chi_delayed * delayed_source).sum(axis=1)
-            delayed_source.shape = (nz, ny, nx, ng)
-        else:
-            delayed_source = self.decay_rate * self.precursors
-            delayed_source.shape = (nz, ny, nx, nd)
-
-        library = openmc.data.DataLibrary.from_xml()
-        u235_lib = library.get_by_material('U235')
-        u235 = openmc.data.IncidentNeutron.from_hdf5(u235_lib['path'])
-
-        # Create list of sources
-        for z in range(nz):
-            for y in range(ny):
-                for x in range(nx):
-
-                    bounds = [ll[0] + x*dx, ll[1] + y*dy, ll[2] + z*dz,
-                              ll[0] + (x+1)*dx, ll[1] + (y+1)*dy, ll[2] + (z+1)*dz]
-
-                    if self.method in ['QUASI-STATIC', 'STATIC-FLUX']:
-
-                        # Create delayed source
-                        space = openmc.stats.Box(bounds[:3], bounds[3:], only_fissionable=True)
-                        if self.multi_group:
-                            for g in range(ng):
-                                if delayed_source[z,y,x,g] > 0.:
-                                    energy = openmc.stats.Uniform(ge[ng-g-1], ge[ng-g])
-                                    source = openmc.source.Source(space=space, energy=energy, strength=delayed_source[z,y,x,g])
-                                    sources.append(source)
-                        else:
-                            for d in range(nd):
-                                energy = u235.reactions[18].products[d+1].distribution[0].energy.energy_out[0]
-                                source = openmc.source.Source(space=space, energy=energy, strength=delayed_source[z,y,x,d])
-                                sources.append(source)
-
-
-                    if self.method == 'QUASI-STATIC':
-
-                        # Create time absorption source
-                        for g in range(ng):
-                            energy = openmc.stats.Uniform(ge[ng-g-1], ge[ng-g])
-                            #if time_source[z,y,x,g] > 0.0:
-                            #    source = openmc.source.Source(space=space, energy=energy, strength=time_source[z,y,x,g])
-                            #    sources.append(source)
-
-        settings_file.source = sources
-
 
 class DerivedState(State):
     """State to store all the variables that describe a specific state of the system.
@@ -1489,10 +1452,9 @@ class DerivedState(State):
     """
 
     def __init__(self, states):
-        super(DerivedState, self).__init__()
+        super(DerivedState, self).__init__(states)
 
         # Initialize Solver class attributes
-        self.states = states
         self.forward_state = 'FORWARD_OUT'
         self.previous_state = 'PREVIOUS_OUT'
 
@@ -1524,20 +1486,12 @@ class DerivedState(State):
         return clone
 
     @property
-    def states(self):
-        return self._states
-
-    @property
     def forward_state(self):
         return self._forward_state
 
     @property
     def previous_state(self):
         return self._previous_state
-
-    @states.setter
-    def states(self, states):
-        self._states = states
 
     @forward_state.setter
     def forward_state(self, forward_state):
@@ -1599,7 +1553,8 @@ class DerivedState(State):
         else:
             inscatter.shape = (self.nxyz, self.ng, self.ng)
 
-        total = sps.diags(absorb_outscat.flatten()) - openmc.kinetics.diagonal_matrix(inscatter)
+        #total = sps.diags(absorb_outscat.flatten()) - openmc.kinetics.diagonal_matrix(inscatter)
+        total = sps.diags(absorb_outscat.flatten()) - block_diag(inscatter)
         return total + linear + non_linear
 
     @property
@@ -1783,7 +1738,8 @@ class DerivedState(State):
         nxyz = np.prod(self.amplitude_mesh.dimension)
         term_k2.shape = (nxyz, self.nd, self.ng, self.ng)
 
-        return openmc.kinetics.diagonal_matrix(term_k2.sum(axis=1))
+        #return openmc.kinetics.diagonal_matrix(term_k2.sum(axis=1))
+        return block_diag(term_k2.sum(axis=1))
 
     def k3_source_matrix(self, state):
 
@@ -1804,7 +1760,8 @@ class DerivedState(State):
         nxyz = np.prod(self.amplitude_mesh.dimension)
         term_k3.shape = (nxyz, self.nd, self.ng, self.ng)
 
-        return openmc.kinetics.diagonal_matrix(term_k3.sum(axis=1))
+        #return openmc.kinetics.diagonal_matrix(term_k3.sum(axis=1))
+        return block_diag(term_k3.sum(axis=1))
 
     def propagate_precursors(self, state):
 
@@ -1822,24 +1779,3 @@ class DerivedState(State):
         term_k3 = state.k3 * (state.delayed_nu_fission * flux).sum(axis=2) * self.dxyz
 
         self._precursors = term_k1 + term_k2 - term_k3
-
-    @property
-    def frequency_source(self, state_prev, collapse=True):
-
-        # 1 / amp * (d amp / dt) * dxyz
-
-        amp_deriv = (self.amplitude - state_prev.amplitude) / self.dt_inner
-        fine_shape = self.shape_dimension + (self.ng,)
-        amp_deriv.shape = self.amplitude_dimension + (self.ng,)
-        fine_amp_deriv = openmc.kinetics.map_array(amp_deriv, fine_shape, normalize=True)
-        fine_amp_deriv.shape = (self.nxyz, self.ng)
-        frequency = fine_amp_deriv / self.amplitude * self.dxyz
-
-        if collapse:
-            coarse_shape = self.amplitude_dimension + (self.ng,)
-            frequency.shape = fine_shape
-            frequency = openmc.kinetics.map_array(frequency, coarse_shape, normalize=False)
-            nxyz = np.prod(self.amplitude_mesh.dimension)
-            frequency.shape = (nxyz, self.ng)
-
-        return frequency

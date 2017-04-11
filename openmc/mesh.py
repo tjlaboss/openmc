@@ -88,7 +88,13 @@ class Mesh(EqualityMixin):
 
     @property
     def width(self):
-        return self._width
+        if self._width == None:
+            if self.lower_left is not None and self.upper_right is not None:
+                return [i - j for i,j in zip(self.upper_right, self.lower_left)]
+            else:
+                return None
+        else:
+            return self._width
 
     @property
     def num_mesh_cells(self):
