@@ -168,6 +168,7 @@ module nuclide_header
     real(8) :: fission       ! macroscopic fission xs
     real(8) :: nu_fission    ! macroscopic production xs
     real(8) :: prompt_nu_fission ! macroscopic production xs
+    real(8) :: inverse_velocity  ! inverse velocity
     real(8) :: delayed_nu_fission(MAX_DELAYED_GROUPS) ! microscopic production xs
     real(8) :: decay_rate(MAX_DELAYED_GROUPS) ! microscopic production xs
     real(8) :: kappa_fission ! macroscopic production xs

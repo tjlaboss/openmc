@@ -64,7 +64,6 @@ contains
 
     type(Material), pointer :: mat
     real(8) :: freq
-    real(8) :: velocity
     integer :: mesh_bin
     integer :: freq_group
 
@@ -92,34 +91,47 @@ contains
         freq_group = -1
       else
         freq_group = binary_search(frequency_energy_bins, num_frequency_energy_groups + 1, p % E)
+        freq_group = num_frequency_energy_groups + 1 - freq_group
       end if
 
       if (mesh_bin /= -1 .and. freq_group /= -1) then
-
-        freq = flux_frequency(freq_group)
-        velocity = sqrt(TWO * p % E / MASS_NEUTRON_EV) * C_LIGHT * 100.0_8
-        freq = freq / velocity
-
-        if (freq > ZERO) then
-          p % wgt = p % wgt * (ONE - min(ONE, freq / material_xs % total))
-          p % last_wgt = p % wgt
-        end if
+        freq = flux_frequency(freq_group) * material_xs % inverse_velocity
+      else
+        freq = ZERO
       end if
-    end if
-
-    ! If survival biasing is being used, the following subroutine adjusts the
-    ! weight of the particle. Otherwise, it checks to see if absorption occurs
-
-    if (material_xs % absorption > ZERO) then
-      call absorption(p)
     else
-      p % absorb_wgt = ZERO
+      freq = ZERO
     end if
-    if (.not. p % alive) return
 
-    ! Sample a scattering reaction and determine the secondary energy of the
-    ! exiting neutron
-    call scatter(p)
+    if (abs(freq) > prn() * (material_xs % total + abs(freq))) then
+
+      p % event = EVENT_TIME_REMOVAL
+
+      if (freq < ZERO) then
+        call p % create_secondary(p % coord(1) % uvw, NEUTRON, run_CE=.false.)
+      else
+        p % alive = .false.
+        p % wgt = ZERO
+        p % last_wgt = ZERO
+        return
+      end if
+    else
+
+      ! If survival biasing is being used, the following subroutine adjusts the
+      ! weight of the particle. Otherwise, it checks to see if absorption occurs
+
+      if (material_xs % absorption > ZERO) then
+        call absorption(p)
+      else
+        p % absorb_wgt = ZERO
+      end if
+      if (.not. p % alive) return
+
+      ! Sample a scattering reaction and determine the secondary energy of the
+      ! exiting neutron
+      call scatter(p)
+
+    end if
 
     ! Play russian roulette if survival biasing is turned on
     if (survival_biasing) then
@@ -177,6 +189,8 @@ contains
     else
       ! See if disappearance reaction happens
       if (material_xs % absorption > prn() * material_xs % total) then
+
+        nu_fission = material_xs % prompt_nu_fission
 
         if (precursor_frequency_on) then
           call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
@@ -246,7 +260,10 @@ contains
     integer :: gout                     ! group out
     integer :: nu                       ! actual number of neutrons produced
     integer :: ijk(3)                   ! indices in ufs mesh
+    integer :: group
+    integer :: mesh_bin
     real(8) :: nu_t                     ! total nu
+    real(8) :: nu_delayed               ! nu delayed
     real(8) :: mu                       ! fission neutron angular cosine
     real(8) :: phi                      ! fission neutron azimuthal angle
     real(8) :: weight                   ! weight adjustment for ufs method
@@ -281,12 +298,26 @@ contains
     end if
 
     ! Determine expected number of neutrons produced
-    if (create_fission_delayed_neutrons) then
-      nu_t = p % wgt / keff * weight * &
-           material_xs % nu_fission / material_xs % total / k_crit
+    nu_t = p % wgt / keff * weight * &
+         material_xs % prompt_nu_fission / material_xs % total / k_crit
+
+    if (precursor_frequency_on) then
+      call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
     else
-      nu_t = p % wgt / keff * weight * &
-           material_xs % prompt_nu_fission / material_xs % total / k_crit
+      mesh_bin = -1
+    end if
+
+    if (create_fission_delayed_neutrons) then
+      do group = 1, num_delayed_groups
+        nu_delayed = p % wgt / keff * weight * material_xs % delayed_nu_fission(group) / &
+             material_xs % total / k_crit
+
+        if (mesh_bin /= -1 .and. group <= num_frequency_delayed_groups) then
+          nu_delayed = nu_delayed * precursor_frequency(mesh_bin, group)
+        end if
+
+        nu_t = nu_t + nu_delayed
+      end do
     end if
 
     ! Sample number of neutrons produced

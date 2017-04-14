@@ -293,7 +293,8 @@ module constants
        EVENT_SURFACE = -2, &
        EVENT_LATTICE = -1, &
        EVENT_SCATTER =  1, &
-       EVENT_ABSORB  =  2
+       EVENT_ABSORB  =  2, &
+       EVENT_TIME_REMOVAL = 3
 
   ! Tally score type
   integer, parameter :: N_SCORE_TYPES = 24

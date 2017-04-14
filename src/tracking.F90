@@ -1,5 +1,6 @@
 module tracking
 
+  use algorithm,          only: binary_search
   use constants,          only: MODE_EIGENVALUE
   use cross_section,      only: calculate_xs
   use error,              only: fatal_error, warning
@@ -45,7 +46,10 @@ contains
     logical :: found_cell             ! found cell which particle is in?
     real(8) :: nu_fission
     real(8) :: delayed_nu_fission
+    real(8) :: freq
+    real(8) :: velocity
     integer :: mesh_bin
+    integer :: freq_group
     integer :: d
 
 
@@ -109,9 +113,12 @@ contains
           call macro_xs(p % material) % obj % calculate_xs(p % g, &
                p % coord(p % n_coord) % uvw, material_xs)
         else
-          material_xs % total      = ZERO
-          material_xs % absorption = ZERO
-          material_xs % nu_fission = ZERO
+          material_xs % total              = ZERO
+          material_xs % absorption         = ZERO
+          material_xs % nu_fission         = ZERO
+          material_xs % prompt_nu_fission  = ZERO
+          material_xs % delayed_nu_fission = ZERO
+          material_xs % inverse_velocity   = ZERO
         end if
       end if
 
@@ -119,11 +126,36 @@ contains
       call distance_to_boundary(p, d_boundary, surface_crossed, &
            lattice_translation, next_level)
 
+      ! Adjust the weight to account for the flux frequency
+      if (flux_frequency_on) then
+
+        call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
+
+        if (p % E <= frequency_energy_bins(1) .or. p % E > frequency_energy_bins(num_frequency_energy_groups + 1)) then
+          freq_group = -1
+        else
+          freq_group = binary_search(frequency_energy_bins, num_frequency_energy_groups + 1, p % E)
+          freq_group = num_frequency_energy_groups + 1 - freq_group
+        end if
+
+        if (mesh_bin /= -1 .and. freq_group /= -1) then
+
+          freq = flux_frequency(freq_group)
+          velocity = sqrt(TWO * p % E / MASS_NEUTRON_EV) * C_LIGHT * 100.0_8
+          freq = freq / velocity
+        else
+          freq = ZERO
+        end if
+      else
+        freq = ZERO
+      end if
+
+
       ! Sample a distance to collision
-      if (material_xs % total == ZERO) then
+      if (material_xs % total == ZERO .and. freq == ZERO) then
         d_collision = INFINITY
       else
-        d_collision = -log(prn()) / material_xs % total
+        d_collision = -log(prn()) / (material_xs % total + abs(freq))
       end if
 
       ! Select smaller of the two distances

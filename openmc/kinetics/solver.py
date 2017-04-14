@@ -651,11 +651,14 @@ class Solver(object):
         # Set the unnormalized amplitude and shape
         state.amplitude = coarse_amp
         state.shape     = flux.flatten() / fine_amp.flatten()
+        state.shape[state.shape == -np.inf] = 0.0
+        state.shape[state.shape ==  np.inf] = 0.0
+        state.shape = np.nan_to_num(state.shape)
 
         # Compute the power and normalize the amplitude
         norm_factor         = self.initial_power / state.core_power_density
-        state.amplitude    *= norm_factor
-        state.adjoint_flux *= norm_factor
+        state.amplitude     = state.amplitude * norm_factor
+        state.adjoint_flux  = state.adjoint_flux * norm_factor
 
         # Compute the initial precursor concentration
         state.compute_initial_precursor_concentration()
@@ -843,7 +846,7 @@ class Solver(object):
                                                           state_fwd_out.flux_tallied)
                 elif self.method == 'OMEGA':
                     flux, k_eff = self.compute_eigenvalue(state_fwd_out.destruction_matrix(False, True),
-                                                          state_fwd_out.production_matrix(False, False),
+                                                          state_fwd_out.production_matrix(False, True),
                                                           state_fwd_out.flux_tallied)
 
                 state_fwd_out.extract_shape(flux, core_power)
@@ -863,8 +866,8 @@ class Solver(object):
         # Compute the initial source
         old_source = M * flux
         norm = old_source.mean()
-        old_source /= norm
-        flux /= norm
+        old_source  = old_source / norm
+        flux  = flux / norm
         k_eff = 1.0
 
         for i in range(10000):
@@ -879,7 +882,7 @@ class Solver(object):
             k_eff = new_source.mean()
 
             # Scale the new source by 1 / k-eff
-            new_source /= k_eff
+            new_source  = new_source / k_eff
 
             # Compute the residual
             residual_array = (new_source - old_source) / new_source
@@ -970,9 +973,8 @@ class Solver(object):
         state = self.states[time_point]
 
         if self.method == 'OMEGA' and time_point != 'START':
-            #settings_file.flux_frequency      = state.flux_frequency.flatten()
+            settings_file.flux_frequency      = state.flux_frequency.flatten()
             settings_file.precursor_frequency = state.precursor_frequency.flatten()
-        #    settings_file.k_crit              = self.k_crit
 
         state.initialize_mgxs()
 

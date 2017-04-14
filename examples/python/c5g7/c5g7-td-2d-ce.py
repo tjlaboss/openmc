@@ -48,7 +48,7 @@ for bank in range(1,5):
 # OpenMC simulation parameters
 batches = 50
 inactive = 25
-particles = 1000
+particles = 10000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -126,8 +126,8 @@ clock = openmc.kinetics.Clock(start=0., end=2., dt_outer=1.e-1, dt_inner=1.e-2)
 # Instantiate a kinetics solver object
 solver = openmc.kinetics.Solver(name='CE_PIN_CELL', directory='C5G7_2D')
 solver.num_delayed_groups           = 6
-solver.amplitude_mesh               = full_point_mesh
-solver.shape_mesh                   = full_point_mesh
+solver.amplitude_mesh               = full_assembly_mesh
+solver.shape_mesh                   = full_assembly_mesh
 solver.one_group                    = one_group
 solver.energy_groups                = energy_groups
 solver.fine_groups                  = fine_groups
@@ -139,11 +139,11 @@ solver.outer_tolerance              = np.inf
 solver.method                       = 'OMEGA'
 solver.multi_group                  = False
 solver.clock                        = clock
-solver.mpi_procs                    = 4*1
+solver.mpi_procs                    = 18*1
 solver.threads                      = 1
-solver.ppn                          = 4
+solver.ppn                          = 18
 solver.core_volume                  = 42.84 * 42.84 * 128.52
-solver.constant_seed                = True
+solver.constant_seed                = False
 solver.seed                         = 1
 solver.chi_delayed_by_delayed_group = True
 solver.chi_delayed_by_mesh          = False

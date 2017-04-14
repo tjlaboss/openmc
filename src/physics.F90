@@ -83,72 +83,70 @@ contains
     integer :: i_reaction   ! index in nuc % reactions array
     type(Nuclide), pointer :: nuc
     real(8) :: freq
-    real(8) :: velocity
+    real(8) :: inverse_velocity
     integer :: freq_group
     integer :: mesh_bin
 
     call sample_nuclide(p, 'total  ', i_nuclide, i_nuc_mat)
 
-    ! Get pointer to table
-    nuc => nuclides(i_nuclide)
-
-    ! Save which nuclide particle had collision with
-    p % event_nuclide = i_nuclide
-
-    ! Create fission bank sites. Note that while a fission reaction is sampled,
-    ! it never actually "happens", i.e. the weight of the particle does not
-    ! change when sampling fission sites. The following block handles all
-    ! absorption (including fission)
-
-    if (nuc % fissionable) then
-      if (run_mode == MODE_EIGENVALUE) then
-        call sample_fission(i_nuclide, p % E, i_reaction)
-        call create_fission_sites(p, i_nuclide, i_reaction, fission_bank, n_bank)
-      elseif (run_mode == MODE_FIXEDSOURCE .and. create_fission_neutrons) then
-        call sample_fission(i_nuclide, p % E, i_reaction)
-        call create_fission_sites(p, i_nuclide, i_reaction, &
-             p % secondary_bank, p % n_secondary)
-      end if
-    end if
-
-    ! Adjust the weight to account for the flux frequency
-    if (flux_frequency_on) then
+    if (i_nuclide == ZERO) then
 
       call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
 
-      if (p % E <= frequency_energy_bins(1) .or. p % E > frequency_energy_bins(num_frequency_energy_groups + 1)) then
-        freq_group = -1
+      freq_group = binary_search(frequency_energy_bins, num_frequency_energy_groups + 1, p % E)
+      freq_group = num_frequency_energy_groups + 1 - freq_group
+      freq = flux_frequency(freq_group)
+      inverse_velocity = 1. / ( sqrt(TWO * p % E / MASS_NEUTRON_EV) * C_LIGHT * 100.0_8)
+      freq = freq * inverse_velocity
+
+      p % event = EVENT_TIME_REMOVAL
+
+      if (freq < ZERO) then
+        call p % create_secondary(p % coord(1) % uvw, NEUTRON, run_CE=.true.)
       else
-        freq_group = binary_search(frequency_energy_bins, num_frequency_energy_groups + 1, p % E)
-        freq_group = num_frequency_energy_groups + 1 - freq_group
+        p % alive = .false.
+        p % wgt = ZERO
+        p % last_wgt = ZERO
+        return
       end if
+    else
 
-      if (mesh_bin /= -1 .and. freq_group /= -1) then
+      ! Get pointer to table
+      nuc => nuclides(i_nuclide)
 
-        freq = flux_frequency(freq_group)
-        velocity = sqrt(TWO * p % E / MASS_NEUTRON_EV) * C_LIGHT * 100.0_8
-        freq = freq / velocity
+      ! Save which nuclide particle had collision with
+      p % event_nuclide = i_nuclide
 
-        if (freq > ZERO .and. material_xs % total /= ZERO) then
-          p % wgt = p % wgt * (ONE - min(ONE, freq / material_xs % total))
-          p % last_wgt = p % wgt
+      ! Create fission bank sites. Note that while a fission reaction is sampled,
+      ! it never actually "happens", i.e. the weight of the particle does not
+      ! change when sampling fission sites. The following block handles all
+      ! absorption (including fission)
+
+      if (nuc % fissionable) then
+        if (run_mode == MODE_EIGENVALUE) then
+          call sample_fission(i_nuclide, p % E, i_reaction)
+          call create_fission_sites(p, i_nuclide, i_reaction, fission_bank, n_bank)
+        elseif (run_mode == MODE_FIXEDSOURCE .and. create_fission_neutrons) then
+          call sample_fission(i_nuclide, p % E, i_reaction)
+          call create_fission_sites(p, i_nuclide, i_reaction, &
+               p % secondary_bank, p % n_secondary)
         end if
       end if
+
+      ! If survival biasing is being used, the following subroutine adjusts the
+      ! weight of the particle. Otherwise, it checks to see if absorption occurs
+
+      if (micro_xs(i_nuclide) % absorption > ZERO) then
+        call absorption(p, i_nuclide)
+      else
+        p % absorb_wgt = ZERO
+      end if
+      if (.not. p % alive) return
+
+      ! Sample a scattering reaction and determine the secondary energy of the
+      ! exiting neutron
+      call scatter(p, i_nuclide, i_nuc_mat)
     end if
-
-    ! If survival biasing is being used, the following subroutine adjusts the
-    ! weight of the particle. Otherwise, it checks to see if absorption occurs
-
-    if (micro_xs(i_nuclide) % absorption > ZERO) then
-      call absorption(p, i_nuclide)
-    else
-      p % absorb_wgt = ZERO
-    end if
-    if (.not. p % alive) return
-
-    ! Sample a scattering reaction and determine the secondary energy of the
-    ! exiting neutron
-    call scatter(p, i_nuclide, i_nuc_mat)
 
     ! Play russian roulette if survival biasing is turned on
 
@@ -181,7 +179,35 @@ contains
     real(8) :: cutoff
     real(8) :: atom_density ! atom density of nuclide in atom/b-cm
     real(8) :: sigma        ! microscopic total xs for nuclide
+    real(8) :: freq
+    real(8) :: inverse_velocity
+    integer :: mesh_bin
+    integer :: freq_group
     type(Material), pointer :: mat
+
+    ! Adjust the weight to account for the flux frequency
+    if (flux_frequency_on .and. base == 'total') then
+
+      call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
+
+      if (p % E <= frequency_energy_bins(1) .or. p % E > frequency_energy_bins(num_frequency_energy_groups + 1)) then
+        freq_group = -1
+      else
+        freq_group = binary_search(frequency_energy_bins, num_frequency_energy_groups + 1, p % E)
+        freq_group = num_frequency_energy_groups + 1 - freq_group
+      end if
+
+      if (mesh_bin /= -1 .and. freq_group /= -1) then
+
+        freq = flux_frequency(freq_group)
+        inverse_velocity = 1. / (sqrt(TWO * p % E / MASS_NEUTRON_EV) * C_LIGHT * 100.0_8)
+        freq = freq * inverse_velocity
+      else
+        freq = ZERO
+      end if
+    else
+      freq = ZERO
+    end if
 
     ! Get pointer to current material
     mat => materials(p % material)
@@ -189,7 +215,7 @@ contains
     ! Sample cumulative distribution function
     select case (base)
     case ('total')
-      cutoff = prn() * material_xs % total
+      cutoff = prn() * (material_xs % total + abs(freq))
     case ('scatter')
       cutoff = prn() * (material_xs % total - material_xs % absorption)
     case ('fission')
@@ -197,7 +223,7 @@ contains
     end select
 
     i_nuc_mat = 0
-    prob = ZERO
+    prob = abs(freq)
     do while (prob < cutoff)
       i_nuc_mat = i_nuc_mat + 1
 

@@ -3527,6 +3527,9 @@ module mgxs_header
       xs % nu_fission    = &
            this % xs(this % index_temp) % prompt_nu_fission(gin) + &
            sum(this % xs(this % index_temp) % delayed_nu_fission(:, gin))
+      xs % prompt_nu_fission = this % xs(this % index_temp) % prompt_nu_fission(gin)
+      xs % delayed_nu_fission = this % xs(this % index_temp) % delayed_nu_fission(:, gin)
+      xs % inverse_velocity = this % xs(this % index_temp) % inverse_velocity(gin)
 
     end subroutine mgxsiso_calculate_xs
 
@@ -3547,6 +3550,10 @@ module mgxs_header
            prompt_nu_fission(gin, iazi, ipol) + &
            sum(this % xs(this % index_temp) % &
            delayed_nu_fission(:, gin, iazi, ipol))
+      xs % prompt_nu_fission  = this % xs(this % index_temp) % prompt_nu_fission(gin, iazi, ipol)
+      xs % delayed_nu_fission = this % xs(this % index_temp) % delayed_nu_fission(:, gin, iazi, ipol)
+      xs % inverse_velocity = this % xs(this % index_temp) % &
+           inverse_velocity(gin, iazi, ipol)
 
     end subroutine mgxsang_calculate_xs
 
