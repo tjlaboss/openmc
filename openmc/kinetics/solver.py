@@ -12,7 +12,7 @@ from shutil import copyfile
 
 import numpy as np
 import scipy.sparse as sps
-from scipy.sparse.linalg import spsolve
+from scipy.sparse.linalg import spsolve, bicgstab, lgmres
 
 import openmc
 import openmc.checkvalue as cv
@@ -50,11 +50,8 @@ class Solver(object):
     directory : str
         A directory to save the transient simulation data.
 
-    shape_mesh : openmc.mesh.Mesh
+    flux_mesh : openmc.mesh.Mesh
         Mesh by which shape is computed on.
-
-    amplitude_mesh : openmc.mesh.Mesh
-        Mesh by which amplitude is computed on.
 
     unity_mesh : openmc.mesh.Mesh
         Mesh with one cell convering the entire geometry.
@@ -146,8 +143,7 @@ class Solver(object):
         # Initialize Solver class attributes
         self.name = name
         self.directory = directory
-        self._shape_mesh = None
-        self._amplitude_mesh = None
+        self._flux_mesh = None
         self._pin_mesh = None
         self._unity_mesh = None
         self._geometry = None
@@ -176,7 +172,6 @@ class Solver(object):
         self._job_file = 'job.pbs'
         self._multi_group = True
         self._inner_tolerance = 1.e-6
-        self._inter_tolerance = 1.e-6
         self._outer_tolerance = 1.e-6
         self._method = 'ADIABATIC'
 
@@ -189,12 +184,8 @@ class Solver(object):
         return self._directory
 
     @property
-    def shape_mesh(self):
-        return self._shape_mesh
-
-    @property
-    def amplitude_mesh(self):
-        return self._amplitude_mesh
+    def flux_mesh(self):
+        return self._flux_mesh
 
     @property
     def pin_mesh(self):
@@ -309,10 +300,6 @@ class Solver(object):
         return self._inner_tolerance
 
     @property
-    def inter_tolerance(self):
-        return self._inter_tolerance
-
-    @property
     def outer_tolerance(self):
         return self._outer_tolerance
 
@@ -328,9 +315,9 @@ class Solver(object):
     def directory(self, directory):
         self._directory = directory
 
-    @shape_mesh.setter
-    def shape_mesh(self, mesh):
-        self._shape_mesh = mesh
+    @flux_mesh.setter
+    def flux_mesh(self, mesh):
+        self._flux_mesh = mesh
 
         unity_mesh = openmc.Mesh()
         unity_mesh.type = mesh.type
@@ -342,10 +329,6 @@ class Solver(object):
         # Set the power mesh to the shape mesh if it has not be set
         if self.pin_mesh is None:
             self.pin_mesh = mesh
-
-    @amplitude_mesh.setter
-    def amplitude_mesh(self, mesh):
-        self._amplitude_mesh = mesh
 
     @pin_mesh.setter
     def pin_mesh(self, mesh):
@@ -455,10 +438,6 @@ class Solver(object):
     def inner_tolerance(self, tolerance):
         self._inner_tolerance = tolerance
 
-    @inter_tolerance.setter
-    def inter_tolerance(self, tolerance):
-        self._inter_tolerance = tolerance
-
     @outer_tolerance.setter
     def outer_tolerance(self, tolerance):
         self._outer_tolerance = tolerance
@@ -491,21 +470,13 @@ class Solver(object):
 
         f = h5py.File(self.log_file, 'w')
 
-        f.require_group('shape')
-        f['shape'].attrs['id'] = self.shape_mesh.id
-        f['shape'].attrs['name'] = self.shape_mesh.name
-        f['shape'].attrs['type'] = self.shape_mesh.type
-        f['shape'].attrs['dimension'] = self.shape_mesh.dimension
-        f['shape'].attrs['lower_left'] = self.shape_mesh.lower_left
-        f['shape'].attrs['width'] = self.shape_mesh.width
-
-        f.require_group('amplitude')
-        f['amplitude'].attrs['id'] = self.amplitude_mesh.id
-        f['amplitude'].attrs['name'] = self.amplitude_mesh.name
-        f['amplitude'].attrs['type'] = self.amplitude_mesh.type
-        f['amplitude'].attrs['dimension'] = self.amplitude_mesh.dimension
-        f['amplitude'].attrs['lower_left'] = self.amplitude_mesh.lower_left
-        f['amplitude'].attrs['width'] = self.amplitude_mesh.width
+        f.require_group('flux')
+        f['flux'].attrs['id'] = self.flux_mesh.id
+        f['flux'].attrs['name'] = self.flux_mesh.name
+        f['flux'].attrs['type'] = self.flux_mesh.type
+        f['flux'].attrs['dimension'] = self.flux_mesh.dimension
+        f['flux'].attrs['lower_left'] = self.flux_mesh.lower_left
+        f['flux'].attrs['width'] = self.flux_mesh.width
 
         f.require_group('pin')
         f['pin'].attrs['id'] = self.pin_mesh.id
@@ -537,10 +508,8 @@ class Solver(object):
         f.attrs['method'] = self.method
         f.require_group('clock')
         f['clock'].attrs['dt_outer'] = self.clock.dt_outer
-        f['clock'].attrs['dt_inter'] = self.clock.dt_inter
         f['clock'].attrs['dt_inner'] = self.clock.dt_inner
         f.require_group('OUTER_STEPS')
-        f.require_group('INTER_STEPS')
         f.require_group('INNER_STEPS')
         f.close()
 
@@ -621,13 +590,10 @@ class Solver(object):
             state.chi_delayed_by_mesh = self.chi_delayed_by_mesh
             if time_point in ['FORWARD_OUTER', 'PREVIOUS_OUTER']:
                 state.method = self.method
-        elif time_point in ['FORWARD_INTER', 'PREVIOUS_INTER']:
-            state = openmc.kinetics.InterState(self.states)
         else:
             state = openmc.kinetics.InnerState(self.states)
 
-        state.shape_mesh = self.shape_mesh
-        state.amplitude_mesh = self.amplitude_mesh
+        state.flux_mesh = self.flux_mesh
         state.pin_mesh = self.pin_mesh
         state.unity_mesh = self.unity_mesh
         state.multi_group = self.multi_group
@@ -652,32 +618,22 @@ class Solver(object):
         state = self.states['START']
 
         # Compute the initial eigenvalue
-        flux, self.k_crit = self.compute_eigenvalue(state.destruction_matrix,
-                                                    state.production_matrix,
-                                                    state.flux_tallied)
+        state.flux, self.k_crit = self.compute_eigenvalue(state.destruction_matrix,
+                                                          state.production_matrix,
+                                                          state.flux_tallied)
 
         # Compute the initial adjoint eigenvalue
         state.adjoint_flux, k_adjoint = self.compute_eigenvalue\
             (state.destruction_matrix.transpose(), state.production_matrix.transpose(),
-             np.ones(state.shape_nxyz * self.ng))
+             np.ones(state.flux_nxyz * self.ng))
 
         # Normalize the initial flux
         state.k_crit = self.k_crit
 
-        # Get the amplitude on the fine and coarse meshes
-        flux.shape = state.shape_zyxg
-        coarse_amp = openmc.kinetics.map_array(flux, state.amplitude_zyxg, normalize=True)
-        fine_amp   = openmc.kinetics.map_array(coarse_amp, state.shape_zyxg, normalize=True)
-
-        # Set the unnormalized amplitude and shape
-        state.amplitude = coarse_amp
-        shape           = flux.flatten() / fine_amp.flatten()
-        state.shape     = openmc.kinetics.nan_inf_to_zero(shape)
-
         # Compute the power and normalize the amplitude
-        norm_factor         = self.initial_power / state.core_power_density
-        state.amplitude     = state.amplitude * norm_factor
-        state.adjoint_flux  = state.adjoint_flux * norm_factor
+        norm_factor        = self.initial_power / state.core_power_density
+        state.flux         = state.flux * norm_factor
+        state.adjoint_flux = state.adjoint_flux * norm_factor
 
         # Compute the initial precursor concentration
         state.compute_initial_precursor_concentration()
@@ -696,13 +652,9 @@ class Solver(object):
 
         state_from = self.states[time_from]
         state_to = self.states[time_to]
-        state_to.amplitude = state_from.amplitude
+        state_to.flux = state_from.flux
         state_to.adjoint_flux = state_from.adjoint_flux
         state_to.precursors = state_from.precursors
-
-        if time_to in ['START', 'END', 'PREVIOUS_OUTER', 'FORWARD_OUTER', 'PREVIOUS_INTER', 'FORWARD_INTER'] \
-                and time_from in ['START', 'END', 'PREVIOUS_OUTER', 'FORWARD_OUTER', 'PREVIOUS_INTER', 'FORWARD_INTER']:
-            state_to.shape = state_from.shape
 
         if time_to != 'END':
             self.clock.times[time_to] = self.clock.times[time_from]
@@ -712,7 +664,7 @@ class Solver(object):
             state_to.mgxs_lib = state_from.mgxs_lib
             state_to.load_mgxs()
 
-    def take_inner_step(self, transient_matrix):
+    def take_inner_step(self):
 
         # Increment clock
         times = self.clock.times
@@ -724,39 +676,27 @@ class Solver(object):
         times['FORWARD_INNER'] += self.clock.dt_inner
 
         # Form the source
-        time_source = state_fwd.time_removal_matrix * state_pre.amplitude.flatten()
-        decay_source = state_fwd.k3_source_matrix * state_pre.amplitude.flatten() - \
+        time_source = state_fwd.time_removal_matrix * state_pre.flux.flatten()
+
+
+        decay_source = state_fwd.k3_source_matrix * state_pre.flux.flatten() - \
             state_fwd.k1_source.flatten()
         source = time_source - decay_source
+        transient_matrix = state_fwd.transient_matrix
 
-        # Add in decay precursor contribution to transient matrix
-        inner_transient_matrix = transient_matrix - state_fwd.k2_source_matrix
+        # Compute the amplitude at the FORWARD_IN time step
+        print('solving linear system')
+        #state_fwd.flux = bicgstab(transient_matrix, source, x0=state_fwd.flux.flatten())[0]
+        #state_fwd.flux = spsolve(transient_matrix, source)
+        print('done solving linear system')
 
-        while True:
-
-            # Save the inner old power
-            amp_old = copy.deepcopy(state_fwd.amplitude)
-
-            # Compute the amplitude at the FORWARD_IN time step
-            state_fwd.amplitude = spsolve(inner_transient_matrix, source)
-
-            # Propagate the precursors
-            state_fwd.propagate_precursors
-
-            # Check whether the flux at the FORWARD_IN time step is converged
-            residual_array = (amp_old - state_fwd.amplitude)/state_fwd.amplitude
-            residual_array = openmc.kinetics.nan_inf_to_zero(residual_array)
-            residual = np.sqrt(np.mean(residual_array**2))
-
-            if residual < self.inner_tolerance:
-                break
-            else:
-                iteration += 1
+        # Propagate the precursors
+        state_fwd.propagate_precursors
 
         # Update the values for the time step
         self.copy_states('FORWARD_INNER', 'PREVIOUS_INNER')
 
-        # Dump data at FORWARD_INTER state to log file
+        # Dump data at FORWARD_INNER state to log file
         state_fwd.dump_to_log_file
 
         # Save the core power at FORWARD_IN
@@ -768,143 +708,31 @@ class Solver(object):
         #                 state_fwd.reactivity * 1.e5,
         #                 state_fwd.beta_eff, state_fwd.pnl))
 
-    def take_inter_step(self):
-
-        # Increment clock
-        times = self.clock.times
-        state_pre = self.states['PREVIOUS_INTER']
-        state_fwd = self.states['FORWARD_INTER']
-        iteration = 0
-
-        # Save the old power
-        power_old = state_fwd.power
-
-        # Increment the forward time
-        times['FORWARD_INTER'] = times['FORWARD_INTER'] + self.clock.dt_inter
-
-        # Compute the forward shape
-        source = state_fwd.time_removal_source + state_fwd.decay_source
-        transient_matrix = state_fwd.transient_matrix(False)
-        flux = spsolve(transient_matrix, source)
-
-        # Extract the shape
-        amp = state_fwd.amplitude
-        amp.shape = state_fwd.amplitude_zyxg
-        fine_amp = openmc.kinetics.map_array(amp, state_fwd.shape_zyxg, True)
-        fine_amp.shape = (state_fwd.shape_nxyz, state_fwd.ng)
-        flux.shape = (state_fwd.shape_nxyz, state_fwd.ng)
-        state_fwd.shape = flux / fine_amp
-
-        # Get the transient matrices
-        transient_matrix_pre = state_pre.transient_matrix(True)
-        transient_matrix_fwd = state_fwd.transient_matrix(True)
-
-        while True:
-
-            # Set the inner iteration times
-            if iteration == 0:
-                times['FORWARD_INNER']  = times['FORWARD_INTER']
-                times['PREVIOUS_INNER'] = times['FORWARD_INTER']
-            else:
-                times['FORWARD_INNER']  = times['PREVIOUS_INTER']
-                times['PREVIOUS_INNER'] = times['PREVIOUS_INTER']
-
-            while (times['FORWARD_INNER'] < t_final - 1.e-8):
-
-                # Interpolate the transient matrix
-                time_point = self.clock.times['FORWARD_INNER'] + self.clock.dt_inner
-                fwd_time = self.clock.times['FORWARD_INTER']
-                weight = 1 - (fwd_time - time_point) / self.clock.dt_inter
-                transient_matrix = transient_matrix_fwd * weight + \
-                    transient_matrix_pre * (1 - weight)
-
-                # Take inner step
-                self.take_inner_step(transient_matrix)
-
-            # Copy the shape, amp, and and precursors to FORWARD_INTER
-            self.copy_states('FORWARD_INNER', 'FORWARD_INTER')
-
-            new_power = state_fwd.power
-            residual_array = (power_old - new_power) / new_power
-            residual_array = openmc.kinetics.nan_inf_to_zero(residual_array)
-            num_fissile_regions = np.sum(power_old > 0.)
-            residual = np.sqrt((residual_array**2).sum() / num_fissile_regions)
-            power_old = new_power
-
-            if residual < self.inter_tolerance and iteration > 0:
-                print('  CONVERGED INTER residual {}'.format(residual))
-                break
-            else:
-
-                print('UNCONVERGED INTER residual {}'.format(residual))
-
-                # Increment time if first iteration
-                if iteration == 0:
-                    times['PREVIOUS_INTER'] -= self.clock.dt_inter
-
-                # Increment iteration count
-                iteration += 1
-
-                # Reset the inner states
-                self.copy_states('PREVIOUS_INTER', 'FORWARD_INNER')
-                self.copy_states('PREVIOUS_INTER', 'PREVIOUS_INNER')
-
-                # Compute shape
-                source = state_fwd.time_removal_source + state_fwd.decay_source
-                transient_matrix = state_fwd.transient_matrix(False)
-                flux = spsolve(transient_matrix, source)
-
-                # Extract the shape
-                amp = state_fwd.amplitude
-                amp.shape = state_fwd.amplitude_zyxg
-                fine_amp = openmc.kinetics.map_array(amp, state_fwd.shape_zyxg, True)
-                fine_amp.shape = (state_fwd.shape_nxyz, state_fwd.ng)
-                flux.shape = (state_fwd.shape_nxyz, state_fwd.ng)
-                state_fwd.shape = flux / fine_amp
-
-                # Recompute the forward transient matrix
-                transient_matrix_fwd = state_fwd.transient_matrix(True)
-
-        # Copy the flux, precursors, and time from FORWARD_IN to
-        # FORWARD_OUT
-        self.copy_states('FORWARD_INNER', 'FORWARD_INTER')
-
-        # Dump data at FORWARD_INTER state to log file
-        state_fwd.dump_to_log_file
-
-    def take_outer_step(self):
+    def take_outer_step(self, outer_step):
 
         # Increment clock
         times = self.clock.times
         state_fwd = self.states['FORWARD_OUTER']
         state_pre = self.states['PREVIOUS_OUTER']
         iteration = 0
-        t_final = times['FORWARD_OUTER'] + self.clock.dt_outer
 
         # Save the old power
         power_old = state_fwd.power
 
         while True:
 
-            # Set the inner and inter iteration times
+            # Take inner steps
+            for i in range(self.num_inner_time_steps):
+                self.take_inner_step()
+
             if iteration == 0:
-                times['FORWARD_INNER']  = times['FORWARD_OUTER']
-                times['PREVIOUS_INNER'] = times['FORWARD_OUTER']
-                times['FORWARD_INTER']  = times['FORWARD_OUTER']
-                times['PREVIOUS_INTER'] = times['FORWARD_OUTER']
-            else:
-                times['FORWARD_INNER']  = times['PREVIOUS_OUTER']
-                times['PREVIOUS_INNER'] = times['PREVIOUS_OUTER']
-                times['FORWARD_INTER']  = times['PREVIOUS_OUTER']
-                times['PREVIOUS_INTER'] = times['PREVIOUS_OUTER']
-
-            while (times['FORWARD_INTER'] < t_final - 1.e-8):
-
-                # Take inter step
-                self.take_inter_step()
+                if outer_step == 0:
+                    state_pre.precursors = state_fwd.precursors
+                else:
+                    self.copy_states('FORWARD_OUTER', 'PREVIOUS_OUTER')
 
             # Copy the shape, amp, and and precursors to FORWARD_OUTER
-            self.copy_states('FORWARD_INTER', 'FORWARD_OUTER')
+            self.copy_states('FORWARD_INNER', 'FORWARD_OUTER')
 
             new_power = state_fwd.power
             residual_array = (power_old - new_power) / new_power
@@ -920,12 +748,6 @@ class Solver(object):
 
                 print('UNCONVERGED OUTER residual {}'.format(residual))
 
-                # Increment time if first outer iteration
-                if iteration == 0:
-                    # Copy FORWARD_OUTER to PREVIOUS_OUTER
-                    self.copy_states('FORWARD_OUTER', 'PREVIOUS_OUTER')
-                    times['PREVIOUS_OUTER'] -= self.clock.dt_outer
-
                 # Increment outer iteration count
                 iteration += 1
 
@@ -935,18 +757,9 @@ class Solver(object):
                 # Reset the inner states
                 self.copy_states('PREVIOUS_OUTER', 'FORWARD_INNER')
                 self.copy_states('PREVIOUS_OUTER', 'PREVIOUS_INNER')
-                self.copy_states('PREVIOUS_OUTER', 'FORWARD_INTER')
-                self.copy_states('PREVIOUS_OUTER', 'PREVIOUS_INTER')
 
                 # Run OpenMC on forward out state
                 self.run_openmc('FORWARD_OUTER')
-
-                # Compute shape
-                flux, k_eff = self.compute_eigenvalue(state_fwd.destruction_matrix,
-                                                      state_fwd.production_matrix,
-                                                      state_fwd.flux_tallied)
-
-                state_fwd.extract_shape(flux, core_power)
 
         # Dump data at FORWARD_OUT state to log file
         state_fwd.dump_to_log_file
@@ -1032,13 +845,17 @@ class Solver(object):
         # Compute the initial steady state flux
         self.compute_initial_flux()
 
+        # Compute the first step cross sections
+        self.clock.times['FORWARD_OUTER'] += self.clock.dt_outer
+        self.run_openmc('FORWARD_OUTER')
+
         # Solve the transient
         for i in range(self.num_outer_time_steps):
-            self.take_outer_step()
+            self.take_outer_step(i)
 
     def create_frequency_mesh(self):
 
-        self.settings_file.frequency_mesh = self.shape_mesh
+        self.settings_file.frequency_mesh = self.flux_mesh
         self.settings_file.frequency_group_structure = self.energy_groups
         self.settings_file.frequency_num_delayed_groups = self.num_delayed_groups
 
@@ -1082,6 +899,10 @@ class Solver(object):
     def num_outer_time_steps(self):
         return int(round((self.clock.times['END'] - self.clock.times['START']) \
                              / self.clock.dt_outer))
+
+    @property
+    def num_inner_time_steps(self):
+        return int(round(self.clock.dt_outer / self.clock.dt_inner))
 
     def run_openmc_all(self):
 

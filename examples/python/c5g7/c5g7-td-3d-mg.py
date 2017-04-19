@@ -115,9 +115,9 @@ elif case == '5.4':
 
 
 # OpenMC simulation parameters
-batches = 80
-inactive = 30
-particles = 100000
+batches = 110
+inactive = 60
+particles = 10000000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -128,12 +128,21 @@ settings_file.output = {'tallies': False}
 
 # Create an initial uniform spatial source distribution over fissionable zones
 bounds = [-32.13, -10.71, -64.26, 10.71,  32.13,  64.26]
+entropy_bounds = [-32.13, -10.71, -85.68, 10.71,  32.13,  85.68]
 uniform_dist = openmc.stats.Box(bounds[:3], bounds[3:], only_fissionable=True)
 settings_file.source = openmc.source.Source(space=uniform_dist)
 
-settings_file.entropy_lower_left  = bounds[:3]
-settings_file.entropy_upper_right = bounds[3:]
-settings_file.entropy_dimension   = [34,34,1]
+sourcepoint = dict()
+sourcepoint['batches'] = []
+sourcepoint['write'] = False
+settings_file.sourcepoint = sourcepoint
+
+entropy_mesh = openmc.Mesh()
+entropy_mesh.type = 'regular'
+entropy_mesh.dimension = [4,4,32]
+entropy_mesh.lower_left  = entropy_bounds[:3]
+entropy_mesh.upper_right = entropy_bounds[3:]
+settings_file.entropy_mesh = entropy_mesh
 
 # Instantiate a 50-group EnergyGroups object
 fine_groups = openmc.mgxs.EnergyGroups()
@@ -152,37 +161,61 @@ one_group.group_edges = [fine_groups.group_edges[0], fine_groups.group_edges[-1]
 # Create pin cell mesh
 point_mesh = openmc.Mesh()
 point_mesh.type = 'regular'
-point_mesh.dimension = [34,34,1]
-point_mesh.lower_left  = [-32.13, -10.71, -85.68]
-point_mesh.width = [42.84/point_mesh.dimension[0],
-                    42.84/point_mesh.dimension[1],
-                    171.36/point_mesh.dimension[2]]
+point_mesh.dimension = [1,1,1]
+point_mesh.lower_left  = [-32.13, -10.71, -64.26]
+point_mesh.upper_right = [ 10.71,  32.13,  64.26]
+
+full_point_mesh = openmc.Mesh()
+full_point_mesh.type = 'regular'
+full_point_mesh.dimension = [1,1,1]
+full_point_mesh.lower_left  = [-32.13, -32.13, -85.68]
+full_point_mesh.upper_right = [ 32.13,  32.13,  85.68]
 
 pin_cell_mesh = openmc.Mesh()
 pin_cell_mesh.type = 'regular'
-pin_cell_mesh.dimension = [34,34,1]
-pin_cell_mesh.lower_left  = [-32.13, -10.71, -85.68]
-pin_cell_mesh.width = [42.84/pin_cell_mesh.dimension[0],
-                       42.84/pin_cell_mesh.dimension[1],
-                       171.36/pin_cell_mesh.dimension[2]]
+pin_cell_mesh.dimension = [34,34,24]
+pin_cell_mesh.lower_left  = [-32.13, -10.71, -64.26]
+pin_cell_mesh.upper_right = [ 10.71,  32.13,  64.26]
+
+full_pin_cell_mesh = openmc.Mesh()
+full_pin_cell_mesh.type = 'regular'
+full_pin_cell_mesh.dimension = [51,51,32]
+full_pin_cell_mesh.lower_left  = [-32.13, -32.13, -85.68]
+full_pin_cell_mesh.upper_right = [ 32.13,  32.13,  85.68]
 
 assembly_mesh = openmc.Mesh()
 assembly_mesh.type = 'regular'
-assembly_mesh.dimension = [2,2,1]
-assembly_mesh.lower_left  = [-32.13, -10.71, -85.68]
-assembly_mesh.width = [42.84/assembly_mesh.dimension[0],
-                       42.84/assembly_mesh.dimension[1],
-                       171.36/assembly_mesh.dimension[2]]
+assembly_mesh.dimension = [2,2,6]
+assembly_mesh.lower_left  = [-32.13, -10.71, -64.26]
+assembly_mesh.upper_right = [ 10.71,  32.13,  64.26]
+
+full_assembly_mesh = openmc.Mesh()
+full_assembly_mesh.type = 'regular'
+full_assembly_mesh.dimension = [3,3,8]
+full_assembly_mesh.lower_left  = [-32.13, -32.13, -85.68]
+full_assembly_mesh.upper_right = [ 32.13,  32.13,  85.68]
+
+quarter_assembly_mesh = openmc.Mesh()
+quarter_assembly_mesh.type = 'regular'
+quarter_assembly_mesh.dimension = [4,4,6]
+quarter_assembly_mesh.lower_left  = [-32.13, -10.71, -64.26]
+quarter_assembly_mesh.upper_right = [ 10.71,  32.13,  64.26]
+
+full_quarter_assembly_mesh = openmc.Mesh()
+full_quarter_assembly_mesh.type = 'regular'
+full_quarter_assembly_mesh.dimension = [6,6,32]
+full_quarter_assembly_mesh.lower_left  = [-32.13, -32.13, -85.68]
+full_quarter_assembly_mesh.upper_right = [ 32.13,  32.13,  85.68]
+
 
 # Instantiate a clock object
-clock = openmc.kinetics.Clock(start=0., end=4., dt_outer=5.e-1, dt_inner=1.e-2)
+clock = openmc.kinetics.Clock(start=0., end=4., dt_outer=1.5e-1, dt_inner=1.e-2)
 
 # Instantiate a kinetics solver object
-solver = openmc.kinetics.Solver(name='MG_POINT', directory='C5G7_3D')
+solver = openmc.kinetics.Solver(name='MG_OMEGA', directory='C5G7_3D')
 solver.num_delayed_groups           = 8
-solver.mesh                         = point_mesh
-solver.pin_cell_mesh                = point_mesh
-solver.assembly_mesh                = point_mesh
+solver.flux_mesh                    = full_quarter_assembly_mesh
+solver.pin_mesh                     = full_pin_cell_mesh
 solver.one_group                    = one_group
 solver.energy_groups                = energy_groups
 solver.fine_groups                  = fine_groups
@@ -190,20 +223,22 @@ solver.geometry                     = geometry
 solver.settings_file                = settings_file
 solver.materials_file               = materials_file
 solver.mgxs_lib_file                = mgxs_lib_file
+solver.inner_tolerance              = 1.e-3
+solver.outer_tolerance              = np.inf
+solver.method                       = 'OMEGA'
+solver.multi_group                  = True
 solver.clock                        = clock
-solver.mpi_procs                    = 36*1
+solver.mpi_procs                    = 36*10
 solver.threads                      = 1
-solver.ppn                          = 36
 solver.core_volume                  = 42.84 * 42.84 * 128.52
 solver.constant_seed                = False
 solver.seed                         = 1
 solver.chi_delayed_by_delayed_group = True
-solver.chi_delayed_by_mesh          = True
-solver.chi_analog                   = False
+solver.chi_delayed_by_mesh          = False
 solver.use_pregenerated_sps         = False
 solver.pregenerate_sps              = False
 solver.run_on_cluster               = False
-solver.job_file                     = 'job.pbs'
+solver.job_file                     = 'job_broadwell.pbs'
 solver.log_file_name                = 'log_file.h5'
 
 # Run OpenMC

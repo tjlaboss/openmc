@@ -13,9 +13,6 @@ lattices['Core Lattice'] = openmc.RectLattice(name='Core Lattice')
 lat = lattices['Core Lattice']
 lat.lower_left = [-32.13, -32.13]
 lat.pitch      = [ 21.42,  21.42]
-#lat.universes  = [[u1, u1, u1],
-#                  [u1, u1, u1],
-#                  [u1, u1, u1]]
 lat.universes  = [[u1, m2, r],
                   [m3, u4, r],
                   [r , r , r]]
@@ -31,9 +28,6 @@ lattices['Upper Reflector Lattice'] = openmc.RectLattice(name='Upper Reflector L
 lat = lattices['Upper Reflector Lattice']
 lat.lower_left = [-32.13, -32.13]
 lat.pitch      = [ 21.42,  21.42]
-#lat.universes  = [[c, c, c],
-#                  [c, c, c],
-#                  [c, c, c]]
 lat.universes  = [[c, c, r],
                   [c, c, r],
                   [r, r, r]]
