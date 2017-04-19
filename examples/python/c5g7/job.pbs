@@ -3,8 +3,8 @@
 # Specify nodes, processors per node and maximum running time
 ###############################################################################
 
-#PBS -l select=1:ncpus=24:mpiprocs=24
-#PBS -l walltime=12:00:00
+#PBS -l select=10:ncpus=24:mpiprocs=24
+#PBS -l walltime=01:00:00
 
 ###############################################################################
 # Enter directory and set PATH

@@ -3,6 +3,14 @@ import numpy as np
 import scipy.sparse as sps
 from copy import deepcopy
 
+def gcd(a, b):
+    while b:
+        a, b = b, a % b
+    return a
+
+def lcm(a, b):
+    return a * b // gcd(a, b)
+
 def block_diag(array):
 
     ni, ng, ng = array.shape
@@ -22,10 +30,23 @@ def block_diag(array):
 
     return sps.diags(diags2, ndiag)
 
-def map_array(array, to_shape, normalize=True):
+def map_array(array, to_shape, normalize=True, lcm_applied=False):
 
     from_shape = array.shape
     num_dims = len(from_shape)
+    if len(to_shape) != num_dims:
+        msg = 'from_shape and to_shape have different dimension!'
+        raise ValueError(msg)
+
+    if not lcm_applied:
+        lcm_shape = []
+        for d in range(num_dims):
+            lcm_shape.append(lcm(from_shape[d], to_shape[d]))
+        lcm_shape = tuple(lcm_shape)
+
+        # Map the array to the lcm mesh
+        array = map_array(array, lcm_shape, normalize, True)
+        from_shape = lcm_shape
 
     # loop over dimensions
     for d in range(num_dims):
@@ -88,3 +109,17 @@ def block_view(A, block):
     strides = strides + A.strides
 
     return ast(A, shape=shape, strides=strides)
+
+def nan_inf_to_zero(array):
+
+    array[array == -np.inf] = 0.
+    array[array ==  np.inf] = 0.
+    return np.nan_to_num(array)
+
+def nan_inf_to_one(array):
+
+    array[array == -np.inf] = 1.0
+    array[array ==  np.inf] = 1.0
+    array[array ==  np.nan] = 1.0
+    return array
+

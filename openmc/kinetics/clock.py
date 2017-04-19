@@ -3,18 +3,22 @@ import copy
 import numpy as np
 
 TIME_POINTS = ['START',
-               'PREVIOUS_OUT',
-               'PREVIOUS_IN',
-               'FORWARD_OUT',
-               'FORWARD_IN',
-               'END']
+               'PREVIOUS_OUTER',
+               'FORWARD_OUTER',
+               'PREVIOUS_INTER',
+               'FORWARD_INTER',
+               'END',
+               'PREVIOUS_INNER',
+               'FORWARD_INNER']
+
 
 class Clock(object):
 
-    def __init__(self, start=0., end=3., dt_outer=1.e-1, dt_inner=1.e-2):
+    def __init__(self, start=0., end=3., dt_outer=1.e-1, dt_inter=5.e-2, dt_inner=1.e-2):
 
         # Initialize coordinates
         self.dt_outer = dt_outer
+        self.dt_inter = dt_inter
         self.dt_inner = dt_inner
 
         # Create a dictionary of clock times
@@ -29,6 +33,7 @@ class Clock(object):
 
         string = 'Clock\n'
         string += '{0: <24}{1}{2}\n'.format('\tdt inner', '=\t', self.dt_inner)
+        string += '{0: <24}{1}{2}\n'.format('\tdt inter', '=\t', self.dt_inter)
         string += '{0: <24}{1}{2}\n'.format('\tdt outer', '=\t', self.dt_outer)
 
         for t in TIME_POINTS:
@@ -39,6 +44,10 @@ class Clock(object):
     @property
     def dt_inner(self):
         return self._dt_inner
+
+    @property
+    def dt_inter(self):
+        return self._dt_inter
 
     @property
     def dt_outer(self):
@@ -52,6 +61,10 @@ class Clock(object):
     def dt_inner(self, dt_inner):
         self._dt_inner = np.float64(dt_inner)
 
+    @dt_inter.setter
+    def dt_inter(self, dt_inter):
+        self._dt_inter = np.float64(dt_inter)
+
     @dt_outer.setter
     def dt_outer(self, dt_outer):
         self._dt_outer = np.float64(dt_outer)
@@ -59,9 +72,3 @@ class Clock(object):
     @times.setter
     def times(self, times):
         self._times = np.float64(times)
-
-    def get_inner_weight(self):
-
-        dt = self.times['FORWARD_IN'] - self.times['PREVIOUS_OUT']
-        wgt = dt / self.dt_outer
-        return wgt

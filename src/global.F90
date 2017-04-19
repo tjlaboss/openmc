@@ -90,7 +90,7 @@ module global
 
   ! Minimum/maximum energies
   real(8) :: energy_min_neutron = ZERO
-  real(8) :: energy_max_neutron = INFINITY
+  real(8) :: energy_max_neutron = 1.e7
 
   ! Dictionaries to look up cross sections and listings
   type(DictCharInt) :: sab_dict
