@@ -139,7 +139,7 @@ def compute_eigenvalue(A, M, flux):
     for i in range(10000):
 
         # Solve linear system
-        #flux = bicgstab(A, old_source, flux, 1.e-10)[0]
+        #flux = lgmres(A, old_source, flux, 1.e-10)[0]
         flux = spsolve(A, old_source)
 
         # Compute new source
@@ -165,7 +165,7 @@ def compute_eigenvalue(A, M, flux):
         print('eigen solve iter {:03d} resid {:1.5e} k-eff {:1.6f}'\
                   .format(i, residual, k_eff))
 
-        if residual < 1.e-6 and i > 2:
+        if residual < 1.e-8 and i > 2:
             break
 
     return flux, k_eff

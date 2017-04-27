@@ -340,7 +340,7 @@ class State(object):
 
     @property
     def power(self):
-        return (self.shape_dxyz * self.kappa_fission * self.flux / self.k_crit).sum(axis=1)
+        return (self.shape_dxyz * self.kappa_fission * self.flux).sum(axis=1)
 
     @property
     def core_power_density(self):
@@ -428,31 +428,28 @@ class State(object):
 
     @property
     def pnl(self):
-        inv_vel = self.inverse_velocity * self.amplitude * self.shape_dxyz
+        inv_vel = self.inverse_velocity * self.flux * self.shape_dxyz
         inv_vel = openmc.kinetics.map_array(inv_vel, self.shape_zyxg, self.amplitude_zyxg, True)
         inv_vel.shape = (self.amplitude_nxyz, self.ng)
         inv_vel *= self.adjoint_flux
-        production = self.production_matrix * self.flux.flatten()
-        production = openmc.kinetics.map_array(production, self.shape_zyxg, self.amplitude_zyxg, True)
+        production = self.production_matrix * self.amplitude.flatten()
         production = production.flatten() * self.adjoint_flux.flatten()
         return inv_vel.sum() / production.sum()
 
     @property
     def reactivity(self):
-        production = self.production_matrix * self.flux.flatten()
-        destruction = self.destruction_matrix * self.flux.flatten()
+        production = self.production_matrix * self.amplitude.flatten()
+        destruction = self.destruction_matrix * self.amplitude.flatten()
         balance = production - destruction
-        balance = openmc.kinetics.map_array(balance, self.shape_zyxg, self.amplitude_zyxg, True)
-        production = openmc.kinetics.map_array(production, self.shape_zyxg, self.amplitude_zyxg, True)
 
-        balance = balance.flatten() * self.adjoint_flux.flatten()
-        production = production.flatten() * self.adjoint_flux.flatten()
+        balance = balance * self.adjoint_flux.flatten()
+        production = production * self.adjoint_flux.flatten()
         return balance.sum() / production.sum()
 
     @property
     def beta_eff(self):
-        flux = np.tile(self.flux, self.nd)
-        adjoint_flux = np.tile(self.adjoint_flux, self.nd)
+        flux = np.tile(self.flux, self.nd).reshape((self.shape_nxyz, self.nd, self.ng))
+        adjoint_flux = np.tile(self.adjoint_flux, self.nd).reshape((self.amplitude_nxyz, self.nd, self.ng))
 
         delayed_production = self.delayed_production * self.shape_dxyz
         delayed_production.shape = (self.shape_nxyz * self.nd, self.ng, self.ng)
@@ -467,8 +464,7 @@ class State(object):
         delayed_production.shape = (self.amplitude_nxyz, self.nd, self.ng)
         delayed_production = delayed_production.sum(axis=(0,2))
 
-        production = self.production_matrix * self.flux.flatten()
-        production = openmc.kinetics.map_array(production, self.shape_zyxg, self.amplitude_zyxg, True)
+        production = self.production_matrix * self.amplitude.flatten()
         production = production.flatten() * self.adjoint_flux.flatten()
         production.shape = (self.amplitude_nxyz, self.ng)
         production = production.sum(axis=(0,1))
@@ -651,7 +647,7 @@ class OuterState(State):
     @property
     def decay_rate(self):
         if not self.mgxs_loaded:
-            self._decay_rate = self.mgxs_lib['decay-rate'].get_condensed_xs(self.energy_groups).get_xs()
+            self._decay_rate = self.mgxs_lib['decay-rate'].get_xs()
             self._decay_rate[self._decay_rate < 1.e-5] = 0.
 
         self._decay_rate.shape = (self.shape_nxyz, self.nd)
@@ -930,8 +926,8 @@ class OuterState(State):
         dc_linear[:-1, :  , :  , :, 5] = 2 * dc_nbr[:-1, :  , :  , :, 5] * dc[:-1, :  , :  , :] / (dc_nbr[:-1, :  , :  , :, 5] * dz + dc[:-1, :  , :  , :] * dz)
 
         # Make any cells that have no dif coef or flux tally highly diffusive
-        dc_linear[np.isnan(dc_linear)] = 0.
-        dc_linear[dc_linear == 0.] = 0.
+        dc_linear[np.isnan(dc_linear)] = 1.e-10
+        dc_linear[dc_linear == 0.] = 1.e-10
 
         # Compute the non-linear finite difference diffusion term for interior surfaces
         dc_nonlinear = np.zeros((nz, ny, nx, ng, 6))
@@ -946,7 +942,7 @@ class OuterState(State):
         dc_nonlinear[np.isnan(dc_nonlinear)] = 0.
 
         # Check for diagonal dominance
-        if False:
+        if True:
 
             # Make a mask of the location of all terms that need to be corrected (dd_mask) and
             # terms that don't need to be corrected (nd_mask)
@@ -1061,7 +1057,7 @@ class OuterState(State):
                 dc_linear_data[-1]    = openmc.kinetics.map_array(dc_linear_data[-i]   , fine_shape, coarse_shape, False).flatten()
                 dc_nonlinear_data[-1] = openmc.kinetics.map_array(dc_nonlinear_data[-i], fine_shape, coarse_shape, False).flatten()
                 diags = [0]
-            elif diag == -ng:
+            elif diag == -ng and nx > 1:
 
                 # Shape weight
                 dc_linear    = dc_linear_data_copy[i]    * shape_nbr[ng:, 0]
@@ -1098,7 +1094,7 @@ class OuterState(State):
                     dc_nonlinear_data.append(dc_nonlinear_off_diag)
                     diags            .append(-ng)
 
-            elif diag == ng:
+            elif diag == ng and nx > 1:
 
                 # Shape weight
                 dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-ng, 1]
@@ -1135,7 +1131,7 @@ class OuterState(State):
                     dc_nonlinear_data.append(dc_nonlinear_off_diag)
                     diags            .append(ng)
 
-            elif diag == -ng*nx:
+            elif diag == -ng*nx and ny > 1:
 
                 # Shape weight
                 dc_linear    = dc_linear_data_copy[i]    * shape_nbr[nx*ng:, 2]
@@ -1172,7 +1168,7 @@ class OuterState(State):
                     dc_nonlinear_data.append(dc_nonlinear_off_diag)
                     diags            .append(-nxa*ng)
 
-            elif diag == ng*nx:
+            elif diag == ng*nx and ny > 1:
 
                 # Shape weight
                 dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-nx*ng, 3]
@@ -1244,7 +1240,7 @@ class OuterState(State):
                     dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[nya*nxa*ng:]
                     dc_linear_data   .append(dc_linear_off_diag)
                     dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                    diags            .append(-nxa*ng)
+                    diags            .append(-nxa*nya*ng)
 
             elif diag == ng*nx*ny:
 

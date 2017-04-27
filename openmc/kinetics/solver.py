@@ -504,9 +504,8 @@ class Solver(object):
                       .format(self.directory, self.clock.times[time_point], self.settings_file.batches)
         sum_old_name = '{}/summary.h5'.format(self.directory)
         sum_new_name = '{}/summary_{:.6f}_sec.h5'.format(self.directory, self.clock.times[time_point])
-        if time_point != 'START':
-            old_source = '{}/source.{}.h5'.format(self.directory, self.settings_file.batches)
-            new_source = '{}/source.h5'.format(self.directory)
+        old_source = '{}/source.{}.h5'.format(self.directory, self.settings_file.batches)
+        new_source = '{}/source.h5'.format(self.directory)
 
         # Run OpenMC
         if not self.use_pregenerated_sps:
@@ -551,8 +550,7 @@ class Solver(object):
         # Rename the statepoint and summary files
         copyfile(sp_old_name, sp_new_name)
         copyfile(sum_old_name, sum_new_name)
-
-        if time_point != 'START':
+        if not self.use_pregenerated_sps:
             move(old_source, new_source)
 
         # Load the summary and statepoint files
@@ -626,7 +624,11 @@ class Solver(object):
         state.adjoint_flux /= np.average(state.adjoint_flux.flatten())
         norm_factor        = self.initial_power / state.core_power_density
         state.shape       *= norm_factor
-        state.extract_shape()
+        #state.extract_shape()
+
+        print(state.shape)
+        print(state.flux)
+        print(state.amplitude)
 
         # Compute the initial precursor concentration
         state.compute_initial_precursor_concentration()
@@ -682,6 +684,7 @@ class Solver(object):
 
         # Compute the amplitude at the FORWARD_IN time step
         state_fwd.amplitude = spsolve(matrix, source)
+        #state_fwd.amplitude = bicgstab(matrix, source, state_fwd.amplitude, 1.e-10)[0]
 
         # Propagate the precursors
         state_fwd.propagate_precursors
