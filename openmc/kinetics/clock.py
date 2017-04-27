@@ -12,11 +12,11 @@ TIME_POINTS = ['START',
 
 class Clock(object):
 
-    def __init__(self, start=0., end=3., dt_outer=1.e-1, dt_inner=1.e-2):
+    def __init__(self, start=0., end=3., dt_inner=1.e-2, t_outer=None):
 
         # Initialize coordinates
-        self.dt_outer = dt_outer
         self.dt_inner = dt_inner
+        self.t_outer = t_outer
 
         # Create a dictionary of clock times
         self._times = {}
@@ -25,12 +25,13 @@ class Clock(object):
 
         # Reset the end time
         self._times['END'] = end
+        self._outer_step = 0
 
     def __repr__(self):
 
         string = 'Clock\n'
         string += '{0: <24}{1}{2}\n'.format('\tdt inner', '=\t', self.dt_inner)
-        string += '{0: <24}{1}{2}\n'.format('\tdt outer', '=\t', self.dt_outer)
+        string += '{0: <24}{1}{2}\n'.format('\tt outer', '=\t', self.t_outer)
 
         for t in TIME_POINTS:
             string += '{0: <24}{1}{2}\n'.format('\tTime ' + t, '=\t', self.times[t])
@@ -42,21 +43,37 @@ class Clock(object):
         return self._dt_inner
 
     @property
-    def dt_outer(self):
-        return self._dt_outer
+    def t_outer(self):
+        return self._t_outer
 
     @property
     def times(self):
         return self._times
 
+    @property
+    def outer_step(self):
+        return self._outer_step
+
+    @property
+    def num_outer_steps(self):
+        return len(self.t_outer) - 1
+
     @dt_inner.setter
     def dt_inner(self, dt_inner):
         self._dt_inner = np.float64(dt_inner)
 
-    @dt_outer.setter
-    def dt_outer(self, dt_outer):
-        self._dt_outer = np.float64(dt_outer)
+    @t_outer.setter
+    def t_outer(self, t_outer):
+        self._t_outer = np.float64(t_outer)
+
+    @property
+    def dt_outer(self):
+        return self.t_outer[self.outer_step + 1] - self.t_outer[self.outer_step]
 
     @times.setter
     def times(self, times):
         self._times = np.float64(times)
+
+    @outer_step.setter
+    def outer_step(self, outer_step):
+        self._outer_step = outer_step

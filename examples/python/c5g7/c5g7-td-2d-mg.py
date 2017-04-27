@@ -49,7 +49,7 @@ for bank in range(1,5):
 # OpenMC simulation parameters
 batches = 70
 inactive = 40
-particles = 1000000
+particles = 10000000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -82,6 +82,9 @@ fine_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 1.0e7]
 # Instantiate an EnergyGroups object for the transient solve
 energy_groups = openmc.mgxs.EnergyGroups()
 energy_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 1.0e7]
+
+two_groups = openmc.mgxs.EnergyGroups()
+two_groups.group_edges = [0., 0.63, 1.0e7]
 
 # Instantiate an EnergyGroups object for one group data
 one_group = openmc.mgxs.EnergyGroups()
@@ -149,29 +152,29 @@ full_quarter_assembly_mesh.lower_left  = [-32.13, -32.13, -64.26]
 full_quarter_assembly_mesh.upper_right = [ 32.13,  32.13,  64.26]
 
 # Instantiate a clock object
-clock = openmc.kinetics.Clock(start=0., end=2., dt_outer=2.5e-1, dt_inner=1.e-2)
+clock = openmc.kinetics.Clock(start=0., end=2., dt_outer=1.0e-1, dt_inner=1.e-3)
 
 # Instantiate a kinetics solver object
 solver = openmc.kinetics.Solver(name='MG_OMEGA', directory='C5G7_2D')
 solver.num_delayed_groups           = 8
-solver.flux_mesh                    = full_pin_cell_mesh
+solver.flux_mesh                    = full_quarter_assembly_mesh
 solver.pin_mesh                     = full_pin_cell_mesh
 solver.one_group                    = one_group
-solver.energy_groups                = energy_groups
+solver.energy_groups                = two_groups
 solver.fine_groups                  = fine_groups
 solver.geometry                     = geometry
 solver.settings_file                = settings_file
 solver.materials_file               = materials_file
 solver.inner_tolerance              = 1.e-3
-solver.outer_tolerance              = np.inf
+solver.outer_tolerance              = 1.e-3
 solver.mgxs_lib_file                = mgxs_lib_file
-solver.method                       = 'OMEGA'
+solver.method                       = 'ADIABATIC'
 solver.multi_group                  = True
 solver.clock                        = clock
-solver.mpi_procs                    = 36*30
+solver.mpi_procs                    = 36*10
 solver.threads                      = 1
 solver.core_volume                  = 42.84 * 42.84 * 128.52
-solver.constant_seed                = True
+solver.constant_seed                = False
 solver.seed                         = 1
 solver.chi_delayed_by_delayed_group = True
 solver.chi_delayed_by_mesh          = False

@@ -2,6 +2,7 @@ from numpy.lib.stride_tricks import as_strided as ast
 import numpy as np
 import scipy.sparse as sps
 from copy import deepcopy
+from scipy.sparse.linalg import spsolve, bicgstab, lgmres, minres, cg
 
 def gcd(a, b):
     while b:
@@ -30,9 +31,9 @@ def block_diag(array):
 
     return sps.diags(diags2, ndiag)
 
-def map_array(array, to_shape, normalize=True, lcm_applied=False):
+def map_array(array, from_shape, to_shape, normalize=True, lcm_applied=False):
 
-    from_shape = array.shape
+    array.shape = from_shape
     num_dims = len(from_shape)
     if len(to_shape) != num_dims:
         msg = 'from_shape and to_shape have different dimension!'
@@ -45,7 +46,7 @@ def map_array(array, to_shape, normalize=True, lcm_applied=False):
         lcm_shape = tuple(lcm_shape)
 
         # Map the array to the lcm mesh
-        array = map_array(array, lcm_shape, normalize, True)
+        array = map_array(array, from_shape, lcm_shape, normalize, True)
         from_shape = lcm_shape
 
     # loop over dimensions
@@ -122,4 +123,50 @@ def nan_inf_to_one(array):
     array[array ==  np.inf] = 1.0
     array[array ==  np.nan] = 1.0
     return array
+
+def compute_eigenvalue(A, M, flux):
+
+    # Ensure flux is a 1D array
+    flux = flux.flatten()
+
+    # Compute the initial source
+    old_source = M * flux
+    norm = old_source.mean()
+    old_source  = old_source / norm
+    flux  = flux / norm
+    k_eff = 1.0
+
+    for i in range(10000):
+
+        # Solve linear system
+        #flux = bicgstab(A, old_source, flux, 1.e-10)[0]
+        flux = spsolve(A, old_source)
+
+        # Compute new source
+        new_source = M * flux
+
+        # Compute and set k-eff
+        k_eff = new_source.mean()
+
+        # Scale the new source by 1 / k-eff
+        new_source  = new_source / k_eff
+
+        # Compute the residual
+        residual_array = (new_source - old_source) / new_source
+        residual_array[residual_array == -np.inf] = 0.
+        residual_array[residual_array ==  np.inf] = 0.
+        residual_array = np.nan_to_num(residual_array)
+        residual_array = np.square(residual_array)
+        residual = np.sqrt(residual_array.mean())
+
+        # Copy new source to old source
+        old_source = np.copy(new_source)
+
+        print('eigen solve iter {:03d} resid {:1.5e} k-eff {:1.6f}'\
+                  .format(i, residual, k_eff))
+
+        if residual < 1.e-6 and i > 2:
+            break
+
+    return flux, k_eff
 

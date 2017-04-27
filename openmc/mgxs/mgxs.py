@@ -2952,9 +2952,17 @@ class DiffusionCoefficient(TransportXS):
             new_filt.stride = old_filt.stride
             self.tallies['scatter-1'].filters[-1] = new_filt
 
-            transport = (self.tallies['total'] - self.tallies['scatter-1'])
+            # Compute total cross section
+            total_xs = self.tallies['total'] / self.tallies['flux (tracklength)']
 
-            self._rxn_rate_tally = transport**(-1) / 3.0
+            # Compute transport correction term
+            trans_corr = self.tallies['scatter-1'] / self.tallies['flux (analog)']
+
+            # Compute the diffusion coefficient
+            transport = total_xs - trans_corr
+            dif_coef = transport**(-1) / 3.0
+
+            self._rxn_rate_tally = dif_coef * self.tallies['flux (tracklength)']
             self._rxn_rate_tally.sparse = self.sparse
 
         return self._rxn_rate_tally
@@ -2972,7 +2980,7 @@ class DiffusionCoefficient(TransportXS):
 
         return self._xs_tally
 
-    def get_condensed_xs(self, coarse_groups):
+    def get_condensed_xs(self, coarse_groups, condense_dif_coef=True):
         """Construct an energy-condensed version of this cross section.
 
         Parameters
@@ -2998,22 +3006,32 @@ class DiffusionCoefficient(TransportXS):
         # Clone this MGXS to initialize the condensed version
         condensed_xs = copy.deepcopy(self)
 
-        if self._rxn_rate_tally is None:
-            old_filt = self.tallies['scatter-1'].filters[-1]
-            new_filt = openmc.EnergyFilter(old_filt.bins)
-            new_filt.stride = old_filt.stride
-            self.tallies['scatter-1'].filters[-1] = new_filt
+        if condense_dif_coef:
+            if self._rxn_rate_tally is None:
+                old_filt = self.tallies['scatter-1'].filters[-1]
+                new_filt = openmc.EnergyFilter(old_filt.bins)
+                new_filt.stride = old_filt.stride
+                self.tallies['scatter-1'].filters[-1] = new_filt
 
-        transport = (self.tallies['total'] - self.tallies['scatter-1'])
-        dif_coef = transport**(-1) / 3.0
-        flux_tally = condensed_xs.tallies['flux (tracklength)']
-        condensed_xs._tallies = OrderedDict()
-        condensed_xs._tallies[self._rxn_type] = dif_coef
-        condensed_xs._tallies['flux (tracklength)'] = flux_tally
-        condensed_xs._rxn_rate_tally = dif_coef
-        condensed_xs._xs_tally = None
-        condensed_xs._sparse = False
-        condensed_xs._energy_groups = coarse_groups
+            total = self.tallies['total'] / self.tallies['flux (tracklength)']
+            trans_corr = self.tallies['scatter-1'] / self.tallies['flux (analog)']
+            transport = (total - trans_corr)
+            dif_coef = transport**(-1) / 3.0
+            dif_coef *= self.tallies['flux (tracklength)']
+            flux_tally = condensed_xs.tallies['flux (tracklength)']
+            condensed_xs._tallies = OrderedDict()
+            condensed_xs._tallies[self._rxn_type] = dif_coef
+            condensed_xs._tallies['flux (tracklength)'] = flux_tally
+            condensed_xs._rxn_rate_tally = dif_coef
+            condensed_xs._xs_tally = None
+            condensed_xs._sparse = False
+            condensed_xs._energy_groups = coarse_groups
+
+        else:
+            condensed_xs._rxn_rate_tally = None
+            condensed_xs._xs_tally = None
+            condensed_xs._sparse = False
+            condensed_xs._energy_groups = coarse_groups
 
         # Build energy indices to sum across
         energy_indices = []

@@ -8,7 +8,6 @@ import sys
 import numpy as np
 np.set_printoptions(precision=6)
 import scipy.sparse as sps
-from scipy.sparse import block_diag
 
 import openmc
 import openmc.checkvalue as cv
@@ -33,10 +32,10 @@ class State(object):
 
     Attributes
     ----------
-    flux_mesh : openmc.mesh.Mesh
+    amplitude_mesh : openmc.mesh.Mesh
         Mesh by which shape is computed on.
 
-    pin_mesh : openmc.mesh.Mesh
+    shape_mesh : openmc.mesh.Mesh
         Mesh by which power is reconstructed on.
 
     unity_mesh : openmc.mesh.Mesh
@@ -101,19 +100,19 @@ class State(object):
     def __init__(self, states):
 
         # Initialize Solver class attributes
-        self._flux_mesh = None
-        self._pin_mesh = None
+        self._amplitude_mesh = None
+        self._shape_mesh = None
         self._unity_mesh = None
 
         self._one_group = None
         self._energy_groups = None
         self._fine_groups = None
+        self._tally_groups = None
         self._num_delayed_groups = 6
 
-        self._flux = None
         self._precursors = None
         self._adjoint_flux = None
-
+        self._amplitude = None
         self._k_crit = 1.0
 
         self._time_point = None
@@ -122,6 +121,7 @@ class State(object):
 
         self._log_file = None
         self._multi_group = True
+        self._condense_dif_coef = True
         self.states = states
 
     @property
@@ -129,12 +129,12 @@ class State(object):
         return self._states
 
     @property
-    def flux_mesh(self):
-        return self._flux_mesh
+    def amplitude_mesh(self):
+        return self._amplitude_mesh
 
     @property
-    def pin_mesh(self):
-        return self._pin_mesh
+    def shape_mesh(self):
+        return self._shape_mesh
 
     @property
     def unity_mesh(self):
@@ -153,18 +153,22 @@ class State(object):
         return self._fine_groups
 
     @property
-    def flux(self):
-        self._flux.shape = (self.flux_nxyz, self.ng)
-        return self._flux
+    def tally_groups(self):
+        return self._tally_groups
+
+    @property
+    def amplitude(self):
+        self._amplitude.shape = (self.amplitude_nxyz, self.ng)
+        return self._amplitude
 
     @property
     def adjoint_flux(self):
-        self._adjoint_flux.shape = (self.flux_nxyz, self.ng)
+        self._adjoint_flux.shape = (self.amplitude_nxyz, self.ng)
         return self._adjoint_flux
 
     @property
     def precursors(self):
-        self._precursors.shape = (self.flux_nxyz, self.nd)
+        self._precursors.shape = (self.shape_nxyz, self.nd)
         return self._precursors
 
     @property
@@ -195,17 +199,21 @@ class State(object):
     def multi_group(self):
         return self._multi_group
 
+    @property
+    def condense_dif_coef(self):
+        return self._condense_dif_coef
+
     @states.setter
     def states(self, states):
         self._states = states
 
-    @flux_mesh.setter
-    def flux_mesh(self, mesh):
-        self._flux_mesh = mesh
+    @shape_mesh.setter
+    def shape_mesh(self, mesh):
+        self._shape_mesh = mesh
 
-    @pin_mesh.setter
-    def pin_mesh(self, mesh):
-        self._pin_mesh = mesh
+    @amplitude_mesh.setter
+    def amplitude_mesh(self, mesh):
+        self._amplitude_mesh = mesh
 
     @unity_mesh.setter
     def unity_mesh(self, mesh):
@@ -223,20 +231,24 @@ class State(object):
     def fine_groups(self, fine_groups):
         self._fine_groups = fine_groups
 
-    @flux.setter
-    def flux(self, flux):
-        self._flux = copy.deepcopy(flux)
-        self._flux.shape = (self.flux_nxyz, self.ng)
+    @tally_groups.setter
+    def tally_groups(self, tally_groups):
+        self._tally_groups = tally_groups
+
+    @amplitude.setter
+    def amplitude(self, amp):
+        self._amplitude = copy.deepcopy(amp)
+        self._amplitude.shape = (self.amplitude_nxyz, self.ng)
 
     @adjoint_flux.setter
     def adjoint_flux(self, adjoint_flux):
         self._adjoint_flux = copy.deepcopy(adjoint_flux)
-        self._adjoint_flux.shape = (self.flux_nxyz, self.ng)
+        self._adjoint_flux.shape = (self.amplitude_nxyz, self.ng)
 
     @precursors.setter
     def precursors(self, precursors):
         self._precursors = copy.deepcopy(precursors)
-        self._precursors.shape = (self.flux_nxyz, self.nd)
+        self._precursors.shape = (self.shape_nxyz, self.nd)
 
     @k_crit.setter
     def k_crit(self, k_crit):
@@ -266,21 +278,33 @@ class State(object):
     def multi_group(self, multi_group):
         self._multi_group = multi_group
 
-    @property
-    def flux_dimension(self):
-        return tuple(self.flux_mesh.dimension[::-1])
+    @condense_dif_coef.setter
+    def condense_dif_coef(self, condense):
+        self._condense_dif_coef = condense
 
     @property
-    def pin_dimension(self):
-        return tuple(self.pin_mesh.dimension[::-1])
+    def shape_dimension(self):
+        return tuple(self.shape_mesh.dimension[::-1])
 
     @property
-    def flux_zyxg(self):
-        return self.flux_dimension + (self.ng,)
+    def amplitude_dimension(self):
+        return tuple(self.amplitude_mesh.dimension[::-1])
 
     @property
-    def pin_zyxg(self):
-        return self.pin_dimension + (self.ng,)
+    def shape_zyxg(self):
+        return self.shape_dimension + (self.ng,)
+
+    @property
+    def amplitude_zyxg(self):
+        return self.amplitude_dimension + (self.ng,)
+
+    @property
+    def shape_zyxgg(self):
+        return self.shape_dimension + (self.ng, self.ng)
+
+    @property
+    def amplitude_zyxgg(self):
+        return self.amplitude_dimension + (self.ng, self.ng)
 
     @property
     def ng(self):
@@ -299,62 +323,63 @@ class State(object):
         return self.clock.dt_outer
 
     @property
-    def flux_nxyz(self):
-        return np.prod(self.flux_dimension)
+    def shape_nxyz(self):
+        return np.prod(self.shape_dimension)
 
     @property
-    def pin_nxyz(self):
-        return np.prod(self.pin_dimension)
+    def amplitude_nxyz(self):
+        return np.prod(self.amplitude_dimension)
 
     @property
-    def flux_dxyz(self):
-        return np.prod(self.flux_mesh.width)
+    def shape_dxyz(self):
+        return np.prod(self.shape_mesh.width)
 
     @property
-    def pin_dxyz(self):
-        return np.prod(self.pin_mesh.width)
+    def amplitude_dxyz(self):
+        return np.prod(self.amplitude_mesh.width)
 
     @property
     def power(self):
-        return (self.flux_dxyz * self.kappa_fission * self.flux / self.k_crit).sum(axis=1)
+        return (self.shape_dxyz * self.kappa_fission * self.flux / self.k_crit).sum(axis=1)
 
     @property
     def core_power_density(self):
-        mesh_volume = self.flux_dxyz * self.flux_nxyz
+        mesh_volume = self.shape_dxyz * self.shape_nxyz
         return self.power.sum() * mesh_volume / self.core_volume
 
     @property
-    def pin_flux(self):
-        flux = self.flux
-        flux.shape = self.flux_zyxg
-        flux = openmc.kinetics.map_array(flux, self.pin_zyxg, normalize=True)
-        return flux.reshape((self.pin_nxyz, self.ng)) * self.pin_shape
-
-    @property
-    def pin_power(self):
-        power = (self.pin_dxyz * self.pin_kappa_fission * self.pin_flux / self.k_crit).sum(axis=1)
-        pin_core_power = power.sum() * (self.pin_dxyz * self.pin_nxyz) / self.core_volume
-        return power * self.core_power_density / pin_core_power
+    def flux(self):
+        amp = self.amplitude
+        amp = openmc.kinetics.map_array(amp, self.amplitude_zyxg, self.shape_zyxg, True)
+        amp.shape = (self.shape_nxyz, self.ng)
+        return amp * self.shape
 
     @property
     def delayed_production(self):
         chi_delayed = np.repeat(self.chi_delayed, self.ng)
-        chi_delayed.shape = (self.flux_nxyz, self.nd, self.ng, self.ng)
+        chi_delayed.shape = (self.shape_nxyz, self.nd, self.ng, self.ng)
         delayed_nu_fission = np.tile(self.delayed_nu_fission, self.ng)
-        delayed_nu_fission.shape = (self.flux_nxyz, self.nd, self.ng, self.ng)
+        delayed_nu_fission.shape = (self.shape_nxyz, self.nd, self.ng, self.ng)
         return (chi_delayed * delayed_nu_fission)
 
     @property
     def prompt_production(self):
         chi_prompt = np.repeat(self.chi_prompt, self.ng)
-        chi_prompt.shape = (self.flux_nxyz, self.ng, self.ng)
+        chi_prompt.shape = (self.shape_nxyz, self.ng, self.ng)
         prompt_nu_fission = np.tile(self.prompt_nu_fission, self.ng)
-        prompt_nu_fission.shape = (self.flux_nxyz, self.ng, self.ng)
+        prompt_nu_fission.shape = (self.shape_nxyz, self.ng, self.ng)
         return (chi_prompt * prompt_nu_fission)
 
     @property
     def delayed_production_matrix(self):
-        delayed_production = self.delayed_production.sum(axis=1) * self.flux_dxyz / self.k_crit
+        delayed_production = self.delayed_production.sum(axis=1)
+        shape = np.tile(self.shape, self.ng).reshape((self.shape_nxyz, self.ng, self.ng))
+        delayed_production *= shape * self.shape_dxyz / self.k_crit
+
+        # Condense down to the coarse mesh
+        delayed_production = openmc.kinetics.map_array(delayed_production, self.shape_zyxgg, self.amplitude_zyxgg, False)
+        delayed_production.shape = (self.amplitude_nxyz, self.ng, self.ng)
+
         return openmc.kinetics.block_diag(delayed_production)
 
     @property
@@ -363,27 +388,32 @@ class State(object):
 
     @property
     def prompt_production_matrix(self):
-        return openmc.kinetics.block_diag(self.prompt_production * self.flux_dxyz / self.k_crit)
+        prompt_production = self.prompt_production * self.shape_dxyz / self.k_crit
+
+        shape = np.tile(self.shape, self.ng).reshape((self.shape_nxyz, self.ng, self.ng))
+        prompt_production = prompt_production * shape
+        prompt_production = openmc.kinetics.map_array(prompt_production, self.shape_zyxgg, self.amplitude_zyxgg, False)
+        prompt_production.shape = (self.amplitude_nxyz, self.ng, self.ng)
+
+        return openmc.kinetics.block_diag(prompt_production)
 
     @property
     def destruction_matrix(self):
 
         linear, non_linear = self.coupling_matrix
-        inscatter       = self.inscatter * self.flux_dxyz
-        absorb_outscat  = self.outscatter + self.absorption
-        absorb_outscat  = absorb_outscat * self.flux_dxyz
-        inscatter.shape = (self.flux_nxyz, self.ng, self.ng)
-        total = sps.diags([absorb_outscat.flatten()], [0]) - openmc.kinetics.block_diag(inscatter)
+        shape              = np.tile(self.shape, self.ng).reshape((self.shape_nxyz, self.ng, self.ng))
+        inscatter          = self.inscatter * self.shape_dxyz * shape
+        absorb_outscat     = self.outscatter + self.absorption
+        absorb_outscat     = absorb_outscat * self.shape_dxyz * self.shape
+
+        # Condense down to the coarse mesh
+        inscatter       = openmc.kinetics.map_array(inscatter, self.shape_zyxgg, self.amplitude_zyxgg, False)
+        absorb_outscat  = openmc.kinetics.map_array(absorb_outscat, self.shape_zyxg, self.amplitude_zyxg, False)
+        inscatter.shape = (self.amplitude_nxyz, self.ng, self.ng)
+
+        total = sps.diags(absorb_outscat.flatten()) - openmc.kinetics.block_diag(inscatter)
 
         return total + linear + non_linear
-
-    @property
-    def decay_source(self):
-        decay_source = self.decay_rate * self.precursors
-        decay_source = np.repeat(decay_source, self.ng)
-        decay_source.shape = (self.flux_nxyz, self.nd, self.ng)
-        decay_source *= self.chi_delayed
-        return decay_source.sum(axis=1).flatten()
 
     @property
     def coupling_matrix(self):
@@ -395,6 +425,76 @@ class State(object):
         dc_nonlinear_matrix = sps.diags(dc_nonlinear_data, diags)
 
         return dc_linear_matrix, dc_nonlinear_matrix
+
+    @property
+    def pnl(self):
+        inv_vel = self.inverse_velocity * self.amplitude * self.shape_dxyz
+        inv_vel = openmc.kinetics.map_array(inv_vel, self.shape_zyxg, self.amplitude_zyxg, True)
+        inv_vel.shape = (self.amplitude_nxyz, self.ng)
+        inv_vel *= self.adjoint_flux
+        production = self.production_matrix * self.flux.flatten()
+        production = openmc.kinetics.map_array(production, self.shape_zyxg, self.amplitude_zyxg, True)
+        production = production.flatten() * self.adjoint_flux.flatten()
+        return inv_vel.sum() / production.sum()
+
+    @property
+    def reactivity(self):
+        production = self.production_matrix * self.flux.flatten()
+        destruction = self.destruction_matrix * self.flux.flatten()
+        balance = production - destruction
+        balance = openmc.kinetics.map_array(balance, self.shape_zyxg, self.amplitude_zyxg, True)
+        production = openmc.kinetics.map_array(production, self.shape_zyxg, self.amplitude_zyxg, True)
+
+        balance = balance.flatten() * self.adjoint_flux.flatten()
+        production = production.flatten() * self.adjoint_flux.flatten()
+        return balance.sum() / production.sum()
+
+    @property
+    def beta_eff(self):
+        flux = np.tile(self.flux, self.nd)
+        adjoint_flux = np.tile(self.adjoint_flux, self.nd)
+
+        delayed_production = self.delayed_production * self.shape_dxyz
+        delayed_production.shape = (self.shape_nxyz * self.nd, self.ng, self.ng)
+        delayed_production = openmc.kinetics.block_diag(delayed_production)
+        delayed_production /= self.k_crit
+
+        delayed_production *= flux.flatten()
+        old_shape = (self.shape_nxyz, self.nd, self.ng)
+        new_shape = (self.amplitude_nxyz, self.nd, self.ng)
+        delayed_production = openmc.kinetics.map_array(delayed_production, old_shape, new_shape, True)
+        delayed_production = delayed_production.flatten() * adjoint_flux.flatten()
+        delayed_production.shape = (self.amplitude_nxyz, self.nd, self.ng)
+        delayed_production = delayed_production.sum(axis=(0,2))
+
+        production = self.production_matrix * self.flux.flatten()
+        production = openmc.kinetics.map_array(production, self.shape_zyxg, self.amplitude_zyxg, True)
+        production = production.flatten() * self.adjoint_flux.flatten()
+        production.shape = (self.amplitude_nxyz, self.ng)
+        production = production.sum(axis=(0,1))
+        production = np.repeat(production, self.nd)
+
+        return (delayed_production / production).sum()
+
+    @property
+    def beta(self):
+        amp = np.tile(self.amplitude, self.nd)
+
+        delayed_production = self.delayed_production * self.shape_dxyz
+        delayed_production.shape = (self.amplitude_nxyz * self.nd, self.ng, self.ng)
+        delayed_production = openmc.kinetics.block_diag(delayed_production)
+        delayed_production /= self.k_crit
+
+        delayed_production *= amp.flatten()
+        delayed_production.shape = (self.amplitude_nxyz, self.nd, self.ng)
+        delayed_production = delayed_production.sum(axis=(0,2))
+
+        production = self.production_matrix * self.amplitude.flatten()
+        production.shape = (self.amplitude_nxyz, self.ng)
+        production = production.sum(axis=(0,1))
+        production = np.repeat(production, self.nd)
+
+        return (delayed_production / production).sum()
 
 
 class OuterState(State):
@@ -408,6 +508,12 @@ class OuterState(State):
         self._chi_delayed_by_mesh = False
         self._method = 'ADIABATIC'
         self._mgxs_loaded = False
+        self._shape = None
+
+    @property
+    def shape(self):
+        self._shape.shape = (self.shape_nxyz, self.ng)
+        return self._shape
 
     @property
     def mgxs_lib(self):
@@ -428,6 +534,11 @@ class OuterState(State):
     @property
     def mgxs_loaded(self):
         return self._mgxs_loaded
+
+    @shape.setter
+    def shape(self, shape):
+        self._shape = copy.deepcopy(shape)
+        self._shape.shape = (self.shape_nxyz, self.ng)
 
     @mgxs_lib.setter
     def mgxs_lib(self, mgxs_lib):
@@ -453,11 +564,11 @@ class OuterState(State):
     def inscatter(self):
         if not self.mgxs_loaded:
             if self.multi_group:
-                self._inscatter = self.mgxs_lib['nu-scatter matrix'].get_xs(row_column='outin')
+                self._inscatter = self.mgxs_lib['nu-scatter matrix'].get_condensed_xs(self.energy_groups).get_xs(row_column='outin')
             else:
-                self._inscatter = self.mgxs_lib['consistent nu-scatter matrix'].get_xs(row_column='outin')
+                self._inscatter = self.mgxs_lib['consistent nu-scatter matrix'].get_condensed_xs(self.energy_groups).get_xs(row_column='outin')
 
-        self._inscatter.shape = (self.flux_nxyz, self.ng, self.ng)
+        self._inscatter.shape = (self.shape_nxyz, self.ng, self.ng)
         return self._inscatter
 
     @property
@@ -467,113 +578,99 @@ class OuterState(State):
     @property
     def absorption(self):
         if not self.mgxs_loaded:
-            self._absorption = self.mgxs_lib['absorption'].get_xs()
+            self._absorption = self.mgxs_lib['absorption'].get_condensed_xs(self.energy_groups).get_xs()
 
-        self._absorption.shape = (self.flux_nxyz, self.ng)
+        self._absorption.shape = (self.shape_nxyz, self.ng)
         return self._absorption
 
     @property
     def kappa_fission(self):
         if not self.mgxs_loaded:
-            self._kappa_fission = self.mgxs_lib['kappa-fission'].get_xs()
+            self._kappa_fission = self.mgxs_lib['kappa-fission'].get_condensed_xs(self.energy_groups).get_xs()
 
-        self._kappa_fission.shape = (self.flux_nxyz, self.ng)
+        self._kappa_fission.shape = (self.shape_nxyz, self.ng)
         return self._kappa_fission
-
-    @property
-    def pin_kappa_fission(self):
-        if not self.mgxs_loaded:
-            self._pin_kappa_fission = self.mgxs_lib['pin-kappa-fission'].get_xs()
-
-        self._pin_kappa_fission.shape = (self.pin_nxyz, self.ng)
-        return self._pin_kappa_fission
 
     @property
     def chi_prompt(self):
         if not self.mgxs_loaded:
-            self._chi_prompt = self.mgxs_lib['chi-prompt'].get_xs()
+            self._chi_prompt = self.mgxs_lib['chi-prompt'].get_condensed_xs(self.energy_groups).get_xs()
 
-        self._chi_prompt.shape = (self.flux_nxyz, self.ng)
+        self._chi_prompt.shape = (self.shape_nxyz, self.ng)
         return self._chi_prompt
 
     @property
     def prompt_nu_fission(self):
         if not self.mgxs_loaded:
-            self._prompt_nu_fission = self.mgxs_lib['prompt-nu-fission'].get_xs()
+            self._prompt_nu_fission = self.mgxs_lib['prompt-nu-fission'].get_condensed_xs(self.energy_groups).get_xs()
 
-        self._prompt_nu_fission.shape = (self.flux_nxyz, self.ng)
+        self._prompt_nu_fission.shape = (self.shape_nxyz, self.ng)
         return self._prompt_nu_fission
+
+    @property
+    def nu_fission(self):
+        return self.delayed_nu_fission.sum(axis=1) + self.prompt_nu_fission
 
     @property
     def chi_delayed(self):
 
         if not self.mgxs_loaded:
-            self._chi_delayed = self.mgxs_lib['chi-delayed'].get_xs()
+            self._chi_delayed = self.mgxs_lib['chi-delayed'].get_condensed_xs(self.energy_groups).get_xs()
 
             if self.chi_delayed_by_mesh:
                 if not self.chi_delayed_by_delayed_group:
-                    self._chi_delayed.shape = (self.flux_nxyz, self.ng)
+                    self._chi_delayed.shape = (self.shape_nxyz, self.ng)
                     self._chi_delayed = np.tile(self._chi_delayed, self.nd)
             else:
                 if self.chi_delayed_by_delayed_group:
-                    self._chi_delayed = np.tile(self._chi_delayed.flatten(), self.flux_nxyz)
+                    self._chi_delayed = np.tile(self._chi_delayed.flatten(), self.shape_nxyz)
                 else:
-                    self._chi_delayed = np.tile(self._chi_delayed.flatten(), self.flux_nxyz)
-                    self._chi_delayed.shape = (self.flux_nxyz, self.ng)
+                    self._chi_delayed = np.tile(self._chi_delayed.flatten(), self.shape_nxyz)
+                    self._chi_delayed.shape = (self.shape_nxyz, self.ng)
                     self._chi_delayed = np.tile(self._chi_delayed, self.nd)
 
-        self._chi_delayed.shape = (self.flux_nxyz, self.nd, self.ng)
+        self._chi_delayed.shape = (self.shape_nxyz, self.nd, self.ng)
         return self._chi_delayed
 
     @property
     def delayed_nu_fission(self):
         if not self.mgxs_loaded:
-            self._delayed_nu_fission = self.mgxs_lib['delayed-nu-fission'].get_xs()
+            self._delayed_nu_fission = self.mgxs_lib['delayed-nu-fission'].get_condensed_xs(self.energy_groups).get_xs()
 
-        self._delayed_nu_fission.shape = (self.flux_nxyz, self.nd, self.ng)
+        self._delayed_nu_fission.shape = (self.shape_nxyz, self.nd, self.ng)
         return self._delayed_nu_fission
 
     @property
     def inverse_velocity(self):
         if not self.mgxs_loaded:
-            self._inverse_velocity = self.mgxs_lib['inverse-velocity'].get_xs()
+            self._inverse_velocity = self.mgxs_lib['inverse-velocity'].get_condensed_xs(self.energy_groups).get_xs()
 
-        self._inverse_velocity.shape = (self.flux_nxyz, self.ng)
+        self._inverse_velocity.shape = (self.shape_nxyz, self.ng)
         return self._inverse_velocity
 
     @property
     def decay_rate(self):
         if not self.mgxs_loaded:
-            self._decay_rate = self.mgxs_lib['decay-rate'].get_xs()
+            self._decay_rate = self.mgxs_lib['decay-rate'].get_condensed_xs(self.energy_groups).get_xs()
             self._decay_rate[self._decay_rate < 1.e-5] = 0.
 
-        self._decay_rate.shape = (self.flux_nxyz, self.nd)
+        self._decay_rate.shape = (self.shape_nxyz, self.nd)
         return self._decay_rate
 
     @property
     def flux_tallied(self):
         if not self.mgxs_loaded:
-            self._flux_tallied = self.mgxs_lib['kappa-fission'].tallies['flux'].get_values()
-            self._flux_tallied.shape = (self.flux_nxyz, self.ng)
+            self._flux_tallied = self.mgxs_lib['absorption'].get_condensed_xs(self.energy_groups).tallies['flux'].get_values()
+            self._flux_tallied.shape = (self.shape_nxyz, self.ng)
             self._flux_tallied = self._flux_tallied[:, ::-1]
 
-        self._flux_tallied.shape = (self.flux_nxyz, self.ng)
+        self._flux_tallied.shape = (self.shape_nxyz, self.ng)
         return self._flux_tallied
-
-    @property
-    def pin_flux_tallied(self):
-        if not self.mgxs_loaded:
-            self._pin_flux_tallied = self.mgxs_lib['pin-kappa-fission'].tallies['flux'].get_values()
-            self._pin_flux_tallied.shape = (self.pin_nxyz, self.ng)
-            self._pin_flux_tallied = self._pin_flux_tallied[:, ::-1]
-
-        self._pin_flux_tallied.shape = (self.pin_nxyz, self.ng)
-        return self._pin_flux_tallied
 
     @property
     def current_tallied(self):
         if not self.mgxs_loaded:
-            self._current_tallied = self.mgxs_lib['current'].get_xs()
+            self._current_tallied = self.mgxs_lib['current'].get_condensed_xs(self.energy_groups).get_xs()
 
         return self._current_tallied
 
@@ -581,9 +678,10 @@ class OuterState(State):
     def diffusion_coefficient(self):
         if not self.mgxs_loaded:
             self._diffusion_coefficient = self.mgxs_lib['diffusion-coefficient']
-            self._diffusion_coefficient = self._diffusion_coefficient.get_condensed_xs(self.energy_groups).get_xs()
+            self._diffusion_coefficient = self._diffusion_coefficient.\
+                get_condensed_xs(self.energy_groups, self.condense_dif_coef).get_xs()
 
-        self._diffusion_coefficient.shape = (self.flux_nxyz, self.ng)
+        self._diffusion_coefficient.shape = (self.shape_nxyz, self.ng)
         return self._diffusion_coefficient
 
     @property
@@ -594,9 +692,8 @@ class OuterState(State):
         freq = (1. / self.dt_outer - state_pre.flux / self.flux / self.dt_outer)
         freq = openmc.kinetics.nan_inf_to_zero(freq)
 
-        freq.shape = self.flux_dimension + (self.ng,)
-        coarse_shape = (1,1,1,self.ng)
-        freq = openmc.kinetics.map_array(freq, coarse_shape, normalize=True)
+        unity_shape = (1,1,1,self.ng)
+        freq = openmc.kinetics.map_array(freq, self.shape_zyxg, unity_shape, normalize=True)
         freq.shape = (1, self.ng)
         return freq
 
@@ -604,29 +701,30 @@ class OuterState(State):
     def precursor_frequency(self):
 
         flux = np.tile(self.flux, self.nd)
-        flux.shape = (self.flux_nxyz, self.nd, self.ng)
+        flux.shape = (self.shape_nxyz, self.nd, self.ng)
         del_fis_rate = self.delayed_nu_fission * flux
-        freq = del_fis_rate.sum(axis=2) / self.precursors / self.k_crit * self.flux_dxyz - self.decay_rate
+        freq = del_fis_rate.sum(axis=2) / self.precursors / self.k_crit * self.shape_dxyz - self.decay_rate
 
         freq = self.decay_rate / (freq + self.decay_rate)
         freq = openmc.kinetics.nan_inf_to_zero(freq)
 
         return freq
 
-    @property
-    def pin_shape(self):
+    def extract_shape(self):
 
-        # Normalize the power mesh flux to the shape mesh
-        pm_flux = self.pin_flux_tallied
-        pm_flux.shape = self.pin_zyxg
-        sm_amp = openmc.kinetics.map_array(pm_flux, self.flux_zyxg, normalize=True)
-        pm_amp = openmc.kinetics.map_array(sm_amp, self.pin_zyxg, normalize=True)
+        # Get the current power
+        power = self.core_power_density
 
-        pm_shape = pm_flux / pm_amp
-        pm_shape = openmc.kinetics.nan_inf_to_zero(pm_shape)
-        pm_shape = (self.pin_nxyz, self.ng)
+        # Get the tallied pin-wise flux
+        flux = self.flux_tallied
+        flux.shape = self.shape_zyxg
 
-        return pm_shape
+        # Expand the coarse mesh amplitude to the pin mesh
+        amp = openmc.kinetics.map_array(self.amplitude, self.amplitude_zyxg, self.shape_zyxg, True)
+
+        # Compute the pin shape
+        self.shape = flux / amp
+        self.shape *= power / self.core_power_density
 
     @property
     def dump_to_log_file(self):
@@ -636,38 +734,36 @@ class OuterState(State):
         if time_point not in f['OUTER_STEPS'].keys():
             f['OUTER_STEPS'].require_group(time_point)
 
-        if 'pin_shape' not in f['OUTER_STEPS'][time_point].keys():
-            f['OUTER_STEPS'][time_point].create_dataset('pin_shape', data=self.pin_shape)
-            f['OUTER_STEPS'][time_point].create_dataset('pin_kappa_fission', data=self.pin_kappa_fission)
+        if 'shape' not in f['OUTER_STEPS'][time_point].keys():
+            f['OUTER_STEPS'][time_point].create_dataset('shape', data=self.shape)
+            f['OUTER_STEPS'][time_point].create_dataset('kappa_fission', data=self.kappa_fission)
         else:
-            pin_shape = f['OUTER_STEPS'][time_point]['pin_shape']
-            pin_shape[...] = self.pin_shape
-            pin_kappa_fission = f['OUTER_STEPS'][time_point]['pin_kappa_fission']
-            pin_kappa_fission[...] = self.pin_kappa_fission
+            shape = f['OUTER_STEPS'][time_point]['shape']
+            shape[...] = self.shape
+            kappa_fission = f['OUTER_STEPS'][time_point]['kappa_fission']
+            kappa_fission[...] = self.kappa_fission
 
         f.close()
 
     def compute_initial_precursor_concentration(self):
         flux = np.tile(self.flux, self.nd).flatten()
         del_fis_rate = self.delayed_nu_fission.flatten() * flux
-        del_fis_rate.shape = (self.flux_nxyz, self.nd, self.ng)
-        precursors = del_fis_rate.sum(axis=2) / self.decay_rate / self.k_crit * self.flux_dxyz
+        del_fis_rate.shape = (self.shape_nxyz, self.nd, self.ng)
+        precursors = del_fis_rate.sum(axis=2) / self.decay_rate / self.k_crit * self.shape_dxyz
         self.precursors = openmc.kinetics.nan_inf_to_zero(precursors)
 
     def load_mgxs(self):
         self.mgxs_loaded = False
+        self.delayed_nu_fission
         self.inscatter
         self.absorption
         self.chi_prompt
         self.prompt_nu_fission
         self.chi_delayed
-        self.delayed_nu_fission
         self.kappa_fission
-        self.pin_kappa_fission
         self.inverse_velocity
         self.decay_rate
         self.flux_tallied
-        self.pin_flux_tallied
         self.current_tallied
         self.diffusion_coefficient
         self.mgxs_loaded = True
@@ -692,15 +788,9 @@ class OuterState(State):
         else:
             mgxs_types.append('consistent nu-scatter matrix')
 
-        # Add the pin-wise kappa fission
-        self._mgxs_lib['pin-kappa-fission'] = openmc.mgxs.MGXS.get_mgxs(
-            'kappa-fission', domain=self.pin_mesh, domain_type='mesh',
-            energy_groups=self.energy_groups, by_nuclide=False,
-            name= self.time_point + ' - ' + 'pin-kappa-fission')
-
         # Populate the MGXS in the MGXS lib
         for mgxs_type in mgxs_types:
-            mesh = self.flux_mesh
+            mesh = self.shape_mesh
             if mgxs_type == 'diffusion-coefficient':
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=mesh, domain_type='mesh',
@@ -709,7 +799,7 @@ class OuterState(State):
             elif 'nu-scatter matrix' in mgxs_type:
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=mesh, domain_type='mesh',
-                    energy_groups=self.energy_groups, by_nuclide=False,
+                    energy_groups=self.tally_groups, by_nuclide=False,
                     name= self.time_point + ' - ' + mgxs_type)
                 self._mgxs_lib[mgxs_type].correction = None
             elif mgxs_type == 'decay-rate':
@@ -721,42 +811,42 @@ class OuterState(State):
             elif mgxs_type == 'chi-prompt':
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=mesh, domain_type='mesh',
-                    energy_groups=self.energy_groups, by_nuclide=False,
+                    energy_groups=self.tally_groups, by_nuclide=False,
                     name= self.time_point + ' - ' + mgxs_type)
             elif mgxs_type in openmc.mgxs.MGXS_TYPES:
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
                     mgxs_type, domain=mesh, domain_type='mesh',
-                    energy_groups=self.energy_groups, by_nuclide=False,
+                    energy_groups=self.tally_groups, by_nuclide=False,
                     name= self.time_point + ' - ' + mgxs_type)
             elif mgxs_type == 'chi-delayed':
                 if self.chi_delayed_by_delayed_group:
                     if self.chi_delayed_by_mesh:
                         self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                             mgxs_type, domain=mesh, domain_type='mesh',
-                            energy_groups=self.energy_groups,
+                            energy_groups=self.tally_groups,
                             delayed_groups=delayed_groups, by_nuclide=False,
                             name= self.time_point + ' - ' + mgxs_type)
                     else:
                         self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                             mgxs_type, domain=self.unity_mesh, domain_type='mesh',
-                            energy_groups=self.energy_groups,
+                            energy_groups=self.tally_groups,
                             delayed_groups=delayed_groups, by_nuclide=False,
                             name= self.time_point + ' - ' + mgxs_type)
                 else:
                     if self.chi_delayed_by_mesh:
                         self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                             mgxs_type, domain=mesh, domain_type='mesh',
-                            energy_groups=self.energy_groups, by_nuclide=False,
+                            energy_groups=self.tally_groups, by_nuclide=False,
                             name= self.time_point + ' - ' + mgxs_type)
                     else:
                         self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                             mgxs_type, domain=self.unity_mesh, domain_type='mesh',
-                            energy_groups=self.energy_groups, by_nuclide=False,
+                            energy_groups=self.tally_groups, by_nuclide=False,
                             name= self.time_point + ' - ' + mgxs_type)
             elif mgxs_type in openmc.mgxs.MDGXS_TYPES:
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MDGXS.get_mgxs(
                     mgxs_type, domain=mesh, domain_type='mesh',
-                    energy_groups=self.energy_groups,
+                    energy_groups=self.tally_groups,
                     delayed_groups=delayed_groups, by_nuclide=False,
                     name= self.time_point + ' - ' + mgxs_type)
 
@@ -766,8 +856,9 @@ class OuterState(State):
     def coupling_terms(self):
 
         # Get the dimensions of the mesh
-        nz , ny , nx  = self.flux_dimension
-        dx , dy , dz  = self.flux_mesh.width
+        nz , ny , nx  = self.shape_dimension
+        nza, nya, nxa = self.amplitude_dimension
+        dx , dy , dz  = self.shape_mesh.width
         ng            = self.ng
 
         # Get the array of the surface-integrated surface net currents
@@ -775,7 +866,7 @@ class OuterState(State):
         partial_current = partial_current.reshape(np.prod(partial_current.shape) / 12, 12)
         net_current = partial_current[:, range(0,12,2)] - partial_current[:, range(1,13,2)]
         net_current[:, 0:6:2] = -net_current[:, 0:6:2]
-        net_current.shape = (nz, ny, nx, ng, 6)
+        net_current.shape = self.shape_zyxg + (6,)
 
         # Convert from surface-integrated to surface-averaged net current
         net_current[..., 0:2]  = net_current[..., 0:2] / (dy * dz)
@@ -784,7 +875,7 @@ class OuterState(State):
 
         # Get the flux
         flux = copy.deepcopy(self.flux_tallied)
-        flux.shape = self.flux_zyxg
+        flux.shape = self.shape_zyxg
 
         # Convert from volume-integrated to volume-averaged flux
         flux  = flux / (dx * dy * dz)
@@ -798,10 +889,28 @@ class OuterState(State):
         flux_nbr[1: , :  , :  , :, 4] = flux[:-1, :  , :  , :]
         flux_nbr[:-1, :  , :  , :, 5] = flux[1: , :  , :  , :]
 
+        # Get the shape
+        shape       = self.shape
+        shape.shape = (nz, ny, nx, ng)
+
+        # Create an array of the neighbor cell shapes
+        shape_nbr = np.zeros((nz, ny, nx, ng, 6))
+        shape_nbr[:  , :  , 1: , :, 0] = shape[:  , :  , :-1, :]
+        shape_nbr[:  , :  , :-1, :, 1] = shape[:  , :  , 1: , :]
+        shape_nbr[:  , 1: , :  , :, 2] = shape[:  , :-1, :  , :]
+        shape_nbr[:  , :-1, :  , :, 3] = shape[:  , 1: , :  , :]
+        shape_nbr[1: , :  , :  , :, 4] = shape[:-1, :  , :  , :]
+        shape_nbr[:-1, :  , :  , :, 5] = shape[1: , :  , :  , :]
+
         # Get the diffusion coefficients tally
         dc       = self.diffusion_coefficient
-        dc.shape = self.flux_zyxg
-        dc_nbr   = np.zeros(self.flux_zyxg + (6,))
+        dc.shape = (nz, ny, nx, ng)
+        dc_nbr   = np.zeros((nz, ny, nx, ng, 6))
+
+        # Get the diffusion coefficients tally
+        dc       = self.diffusion_coefficient
+        dc.shape = self.shape_zyxg
+        dc_nbr   = np.zeros(self.shape_zyxg + (6,))
 
         # Create array of neighbor cell diffusion coefficients
         dc_nbr[:  , :  , 1: , :, 0] = dc[:  , :  , :-1, :]
@@ -821,8 +930,8 @@ class OuterState(State):
         dc_linear[:-1, :  , :  , :, 5] = 2 * dc_nbr[:-1, :  , :  , :, 5] * dc[:-1, :  , :  , :] / (dc_nbr[:-1, :  , :  , :, 5] * dz + dc[:-1, :  , :  , :] * dz)
 
         # Make any cells that have no dif coef or flux tally highly diffusive
-        dc_linear[np.isnan(dc_linear)] = 1.e-10
-        dc_linear[dc_linear == 0.] = 1.e-10
+        dc_linear[np.isnan(dc_linear)] = 0.
+        dc_linear[dc_linear == 0.] = 0.
 
         # Compute the non-linear finite difference diffusion term for interior surfaces
         dc_nonlinear = np.zeros((nz, ny, nx, ng, 6))
@@ -836,8 +945,43 @@ class OuterState(State):
         # Ensure there are no nans
         dc_nonlinear[np.isnan(dc_nonlinear)] = 0.
 
+        # Check for diagonal dominance
+        if False:
+
+            # Make a mask of the location of all terms that need to be corrected (dd_mask) and
+            # terms that don't need to be corrected (nd_mask)
+            dd_mask = (np.abs(dc_nonlinear) > dc_linear)
+            nd_mask = (dd_mask == False)
+
+            # Save arrays as to whether the correction term is positive or negative.
+            sign = np.abs(dc_nonlinear) / dc_nonlinear
+            sign_pos  = (dc_nonlinear > 0.)
+            sense_pos = np.zeros((nz, ny, nx, ng, 6))
+            sense_pos[..., 0:6:2] = False
+            sense_pos[..., 1:6:2] = True
+            sign_sense = (sign_pos == sense_pos)
+            not_sign_sense = (sign_sense == False)
+
+            # Correct dc_linear
+            dc_linear[:  , :  , 1: , :, 0] = nd_mask[:  , :  , 1: , :, 0] * dc_linear[:  , :  , 1: , :, 0] + dd_mask[:  , :  , 1: , :, 0] * (sign_sense[:  , :  , 1: , :, 0] * np.abs(net_current[:  , :  , 1: , :, 0] / (2 * flux_nbr[:  , :  , 1: , :, 0])) + not_sign_sense[:  , :  , 1: , :, 0] * np.abs(net_current[:  , :  , 1: , :, 0] / (2 * flux[:  , :  , 1: , :])))
+            dc_linear[:  , :  , :-1, :, 1] = nd_mask[:  , :  , :-1, :, 1] * dc_linear[:  , :  , :-1, :, 1] + dd_mask[:  , :  , :-1, :, 1] * (sign_sense[:  , :  , :-1, :, 1] * np.abs(net_current[:  , :  , :-1, :, 1] / (2 * flux_nbr[:  , :  , :-1, :, 1])) + not_sign_sense[:  , :  , :-1, :, 1] * np.abs(net_current[:  , :  , :-1, :, 1] / (2 * flux[:  , :  , :-1, :])))
+            dc_linear[:  , 1: , :  , :, 2] = nd_mask[:  , 1: , :  , :, 2] * dc_linear[:  , 1: , :  , :, 2] + dd_mask[:  , 1: , :  , :, 2] * (sign_sense[:  , 1: , :  , :, 2] * np.abs(net_current[:  , 1: , :  , :, 2] / (2 * flux_nbr[:  , 1: , :  , :, 2])) + not_sign_sense[:  , 1: , :  , :, 2] * np.abs(net_current[:  , 1: , :  , :, 2] / (2 * flux[:  , 1: , :  , :])))
+            dc_linear[:  , :-1, :  , :, 3] = nd_mask[:  , :-1, :  , :, 3] * dc_linear[:  , :-1, :  , :, 3] + dd_mask[:  , :-1, :  , :, 3] * (sign_sense[:  , :-1, :  , :, 3] * np.abs(net_current[:  , :-1, :  , :, 3] / (2 * flux_nbr[:  , :-1, :  , :, 3])) + not_sign_sense[:  , :-1, :  , :, 3] * np.abs(net_current[:  , :-1, :  , :, 3] / (2 * flux[:  , :-1, :  , :])))
+            dc_linear[1: , :  , :  , :, 4] = nd_mask[1: , :  , :  , :, 4] * dc_linear[1: , :  , :  , :, 4] + dd_mask[1: , :  , :  , :, 4] * (sign_sense[1: , :  , :  , :, 4] * np.abs(net_current[1: , :  , :  , :, 4] / (2 * flux_nbr[1: , :  , :  , :, 4])) + not_sign_sense[1: , :  , :  , :, 4] * np.abs(net_current[1: , :  , :  , :, 4] / (2 * flux[1: , :  , :  , :])))
+            dc_linear[:-1, :  , :  , :, 5] = nd_mask[:-1, :  , :  , :, 5] * dc_linear[:-1, :  , :  , :, 5] + dd_mask[:-1, :  , :  , :, 5] * (sign_sense[:-1, :  , :  , :, 5] * np.abs(net_current[:-1, :  , :  , :, 5] / (2 * flux_nbr[:-1, :  , :  , :, 5])) + not_sign_sense[:-1, :  , :  , :, 5] * np.abs(net_current[:-1, :  , :  , :, 5] / (2 * flux[:-1, :  , :  , :])))
+
+            dc_nonlinear[:  , :  , 1: , :, 0] = nd_mask[:  , :  , 1: , :, 0] * dc_nonlinear[:  , :  , 1: , :, 0] + dd_mask[:  , :  , 1: , :, 0] * sign[:  , :  , 1: , :, 0] * dc_linear[:  , :  , 1: , :, 0]
+            dc_nonlinear[:  , :  , :-1, :, 1] = nd_mask[:  , :  , :-1, :, 1] * dc_nonlinear[:  , :  , :-1, :, 1] + dd_mask[:  , :  , :-1, :, 1] * sign[:  , :  , :-1, :, 1] * dc_linear[:  , :  , :-1, :, 1]
+            dc_nonlinear[:  , 1: , :  , :, 2] = nd_mask[:  , 1: , :  , :, 2] * dc_nonlinear[:  , 1: , :  , :, 2] + dd_mask[:  , 1: , :  , :, 2] * sign[:  , 1: , :  , :, 2] * dc_linear[:  , 1: , :  , :, 2]
+            dc_nonlinear[:  , :-1, :  , :, 3] = nd_mask[:  , :-1, :  , :, 3] * dc_nonlinear[:  , :-1, :  , :, 3] + dd_mask[:  , :-1, :  , :, 3] * sign[:  , :-1, :  , :, 3] * dc_linear[:  , :-1, :  , :, 3]
+            dc_nonlinear[1: , :  , :  , :, 4] = nd_mask[1: , :  , :  , :, 4] * dc_nonlinear[1: , :  , :  , :, 4] + dd_mask[1: , :  , :  , :, 4] * sign[1: , :  , :  , :, 4] * dc_linear[1: , :  , :  , :, 4]
+            dc_nonlinear[:-1, :  , :  , :, 5] = nd_mask[:-1, :  , :  , :, 5] * dc_nonlinear[:-1, :  , :  , :, 5] + dd_mask[:-1, :  , :  , :, 5] * sign[:-1, :  , :  , :, 5] * dc_linear[:-1, :  , :  , :, 5]
+
         flux_array = np.repeat(flux, 6)
-        flux_array.shape = self.flux_zyxg + (6,)
+        flux_array.shape = (nx*ny*nz*ng, 6)
+        flux_nbr.shape = (nx*ny*nz*ng, 6)
+        net_current.shape = (nx*ny*nz*ng, 6)
+        dc = dc.flatten()
 
         # Multiply by the surface are to make the terms surface integrated
         dc_linear[..., 0:2]  = dc_linear[..., 0:2] * dy*dz
@@ -861,7 +1005,7 @@ class OuterState(State):
         dc_nonlinear_copy = np.copy(dc_nonlinear)
 
         # Zero boundary dc_nonlinear
-        dc_nonlinear_copy.shape = self.flux_zyxg + (6,)
+        dc_nonlinear_copy.shape = self.shape_zyxg + (6,)
         dc_nonlinear_copy[:  ,  :,  0, :, 0] = 0.
         dc_nonlinear_copy[:  ,  :, -1, :, 1] = 0.
         dc_nonlinear_copy[:  ,  0,  :, :, 2] = 0.
@@ -892,6 +1036,252 @@ class OuterState(State):
             dc_nonlinear_data.append(-dc_nonlinear_copy[:-nx*ny*ng, 5])
             diags.append(-nx*ny*ng)
             diags.append(nx*ny*ng)
+
+        # reshape the flux shape
+        shape.shape     = (nx*ny*nz*ng,)
+        shape_nbr.shape = (nx*ny*nz*ng, 6)
+        coarse_shape    = (nza, nya, nxa, ng)
+        fine_shape      = (nz, ny, nx, ng)
+
+        # copy arrays
+        dc_linear_data_copy = copy.deepcopy(dc_linear_data)
+        dc_nonlinear_data_copy = copy.deepcopy(dc_nonlinear_data)
+        diags_copy = copy.deepcopy(diags)
+
+        # reinitialize the arrays
+        dc_linear_data = []
+        dc_nonlinear_data = []
+        diags = []
+
+        # shape weight and spatially collapse the dc_linear and dc_nonlinear
+        for i,diag in enumerate(diags_copy):
+            if diag == 0:
+                dc_linear_data   .append(dc_linear_data_copy[i]    * shape)
+                dc_nonlinear_data.append(dc_nonlinear_data_copy[i] * shape)
+                dc_linear_data[-1]    = openmc.kinetics.map_array(dc_linear_data[-i]   , fine_shape, coarse_shape, False).flatten()
+                dc_nonlinear_data[-1] = openmc.kinetics.map_array(dc_nonlinear_data[-i], fine_shape, coarse_shape, False).flatten()
+                diags = [0]
+            elif diag == -ng:
+
+                # Shape weight
+                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[ng:, 0]
+                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[ng:, 0]
+
+                # Elongate
+                dc_linear    = np.append(np.zeros(ng), dc_linear)
+                dc_nonlinear = np.append(np.zeros(ng), dc_nonlinear)
+
+                # Reshape
+                dc_linear.shape    = fine_shape
+                dc_nonlinear.shape = fine_shape
+
+                # Extract
+                #ind_diag     = sum([range(i*nx/nxa + 1, (i+1)*nx/nxa) for i in range(nxa)], [])
+                #ind_off_diag = sum([range(i*nx/nxa    , i*nx/nxa + 1) for i in range(nxa)], [])
+                #dc_linear_diag        = dc_linear   [:, :, ind_diag    , :]
+                #dc_linear_off_diag    = dc_linear   [:, :, ind_off_diag, :]
+                #dc_nonlinear_diag     = dc_nonlinear[:, :, ind_diag    , :]
+                #dc_nonlinear_off_diag = dc_nonlinear[:, :, ind_off_diag, :]
+
+                # Condense and add values to diag
+                if nx != nxa:
+                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                    dc_linear_data[0]    += dc_linear_diag.flatten()
+                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
+
+                # Condense and add values to off diag
+                if nxa > 1:
+                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[ng:]
+                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[ng:]
+                    dc_linear_data   .append(dc_linear_off_diag)
+                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                    diags            .append(-ng)
+
+            elif diag == ng:
+
+                # Shape weight
+                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-ng, 1]
+                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-ng, 1]
+
+                # Elongate
+                dc_linear    = np.append(dc_linear   , np.zeros(ng))
+                dc_nonlinear = np.append(dc_nonlinear, np.zeros(ng))
+
+                # Reshape
+                dc_linear.shape    = fine_shape
+                dc_nonlinear.shape = fine_shape
+
+                # Extract
+                #ind_diag     = sum([range(i*nx/nxa      , (i+1)*nx/nxa-1) for i in range(nxa)], [])
+                #ind_off_diag = sum([range((i+1)*nx/nxa-1, (i+1)*nx/nxa  ) for i in range(nxa)], [])
+                #dc_linear_diag        = dc_linear   [:, :, ind_diag    , :]
+                #dc_linear_off_diag    = dc_linear   [:, :, ind_off_diag, :]
+                #dc_nonlinear_diag     = dc_nonlinear[:, :, ind_diag    , :]
+                #dc_nonlinear_off_diag = dc_nonlinear[:, :, ind_off_diag, :]
+
+                # Condense and add values to diag
+                if nx != nxa:
+                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                    dc_linear_data[0]    += dc_linear_diag.flatten()
+                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
+
+                # Condense and add values to off diag
+                if nxa > 1:
+                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-ng]
+                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-ng]
+                    dc_linear_data   .append(dc_linear_off_diag)
+                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                    diags            .append(ng)
+
+            elif diag == -ng*nx:
+
+                # Shape weight
+                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[nx*ng:, 2]
+                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[nx*ng:, 2]
+
+                # Elongate
+                dc_linear    = np.append(np.zeros(nx*ng), dc_linear)
+                dc_nonlinear = np.append(np.zeros(nx*ng), dc_nonlinear)
+
+                # Reshape
+                dc_linear.shape    = fine_shape
+                dc_nonlinear.shape = fine_shape
+
+                # Extract
+                #ind_diag     = sum([range(i*ny/nya + 1, (i+1)*ny/nya) for i in range(nya)], [])
+                #ind_off_diag = sum([range(i*ny/nya    , i*ny/nya + 1) for i in range(nya)], [])
+                #dc_linear_diag        = dc_linear   [:, ind_diag    , :, :]
+                #dc_linear_off_diag    = dc_linear   [:, ind_off_diag, :, :]
+                #dc_nonlinear_diag     = dc_nonlinear[:, ind_diag    , :, :]
+                #dc_nonlinear_off_diag = dc_nonlinear[:, ind_off_diag, :, :]
+
+                # Condense and add values to diag
+                if ny != nya:
+                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                    dc_linear_data[0]    += dc_linear_diag.flatten()
+                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
+
+                # Condense and add values to off diag
+                if nya > 1:
+                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[nxa*ng:]
+                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[nxa*ng:]
+                    dc_linear_data   .append(dc_linear_off_diag)
+                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                    diags            .append(-nxa*ng)
+
+            elif diag == ng*nx:
+
+                # Shape weight
+                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-nx*ng, 3]
+                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-nx*ng, 3]
+
+                # Elongate
+                dc_linear    = np.append(dc_linear   , np.zeros(nx*ng))
+                dc_nonlinear = np.append(dc_nonlinear, np.zeros(nx*ng))
+
+                # Reshape
+                dc_linear.shape    = fine_shape
+                dc_nonlinear.shape = fine_shape
+
+                # Extract
+                #ind_diag     = sum([range(i*ny/nya      , (i+1)*ny/nya-1) for i in range(nya)], [])
+                #ind_off_diag = sum([range((i+1)*ny/nya-1, (i+1)*ny/nya  ) for i in range(nya)], [])
+                #dc_linear_diag        = dc_linear   [:, ind_diag    , :, :]
+                #dc_linear_off_diag    = dc_linear   [:, ind_off_diag, :, :]
+                #dc_nonlinear_diag     = dc_nonlinear[:, ind_diag    , :, :]
+                #dc_nonlinear_off_diag = dc_nonlinear[:, ind_off_diag, :, :]
+
+                # Condense and add values to diag
+                if ny != nya:
+                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                    dc_linear_data[0]    += dc_linear_diag.flatten()
+                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
+
+                # Condense and add values to off diag
+                if nya > 1:
+                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-nxa*ng]
+                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-nxa*ng]
+                    dc_linear_data   .append(dc_linear_off_diag)
+                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                    diags            .append(nxa*ng)
+
+            elif diag == -ng*nx*ny:
+
+                # Shape weight
+                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[ny*nx*ng:, 4]
+                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[ny*nx*ng:, 4]
+
+                # Elongate
+                dc_linear    = np.append(np.zeros(ny*nx*ng), dc_linear)
+                dc_nonlinear = np.append(np.zeros(ny*nx*ng), dc_nonlinear)
+
+                # Reshape
+                dc_linear.shape    = fine_shape
+                dc_nonlinear.shape = fine_shape
+
+                # Extract
+                #ind_diag     = sum([range(i*nz/nza + 1, (i+1)*nz/nza) for i in range(nza)], [])
+                #ind_off_diag = sum([range(i*nz/nza    , i*nz/nza + 1) for i in range(nza)], [])
+                #dc_linear_diag        = dc_linear   [ind_diag    , :, :, :]
+                #dc_linear_off_diag    = dc_linear   [ind_off_diag, :, :, :]
+                #dc_nonlinear_diag     = dc_nonlinear[ind_diag    , :, :, :]
+                #dc_nonlinear_off_diag = dc_nonlinear[ind_off_diag, :, :, :]
+
+                # Condense and add values to diag
+                if nz != nza:
+                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                    dc_linear_data[0]    += dc_linear_diag.flatten()
+                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
+
+                # Condense and add values to off diag
+                if nza > 1:
+                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[nya*nxa*ng:]
+                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[nya*nxa*ng:]
+                    dc_linear_data   .append(dc_linear_off_diag)
+                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                    diags            .append(-nxa*ng)
+
+            elif diag == ng*nx*ny:
+
+                # Shape weight
+                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-ny*nx*ng, 5]
+                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-ny*nx*ng, 5]
+
+                # Elongate
+                dc_linear    = np.append(dc_linear   , np.zeros(ny*nx*ng))
+                dc_nonlinear = np.append(dc_nonlinear, np.zeros(ny*nx*ng))
+
+                # Reshape
+                dc_linear.shape    = fine_shape
+                dc_nonlinear.shape = fine_shape
+
+                # Extract
+                #ind_diag     = sum([range(i*nz/nza      , (i+1)*nz/nza-1) for i in range(nza)], [])
+                #ind_off_diag = sum([range((i+1)*nz/nza-1, (i+1)*nz/nza  ) for i in range(nza)], [])
+                #dc_linear_diag        = dc_linear   [ind_diag    , :, :, :]
+                #dc_linear_off_diag    = dc_linear   [ind_off_diag, :, :, :]
+                #dc_nonlinear_diag     = dc_nonlinear[ind_diag    , :, :, :]
+                #dc_nonlinear_off_diag = dc_nonlinear[ind_off_diag, :, :, :]
+
+                # Condense and add values to diag
+                if nz != nza:
+                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                    dc_linear_data[0]    += dc_linear_diag.flatten()
+                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
+
+                # Condense and add values to off diag
+                if nza > 1:
+                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-nya*nxa*ng]
+                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-nya*nxa*ng]
+                    dc_linear_data   .append(dc_linear_off_diag)
+                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                    diags            .append(nya*nxa*ng)
 
         return diags, dc_linear_data, dc_nonlinear_data
 
@@ -960,15 +1350,6 @@ class InnerState(State):
         return kappa_fission
 
     @property
-    def pin_kappa_fission(self):
-        wgt = self.weight
-        kappa_fission_fwd  = self.fwd_state.pin_mesh_kappa_fission
-        kappa_fission_prev = self.pre_state.pin_mesh_kappa_fission
-        kappa_fission = kappa_fission_fwd * wgt + kappa_fission_prev * (1 - wgt)
-        kappa_fission[kappa_fission < 0.] = 0.
-        return kappa_fission
-
-    @property
     def chi_prompt(self):
         wgt = self.weight
         chi_prompt_fwd  = self.fwd_state.chi_prompt
@@ -1024,13 +1405,20 @@ class InnerState(State):
         return decay_rate
 
     @property
-    def pin_shape(self):
+    def shape(self):
         wgt = self.weight
-        shape_fwd  = self.fwd_state.pin_shape
-        shape_prev = self.pre_state.pin_shape
+        shape_fwd  = self.fwd_state.shape
+        shape_prev = self.pre_state.shape
         shape = shape_fwd * wgt + shape_prev * (1 - wgt)
         shape[shape < 0.] = 0.
         return shape
+
+    @property
+    def shape_deriv(self):
+        shape_fwd  = self.fwd_state.shape
+        shape_prev = self.pre_state.shape
+        deriv = (shape_fwd - shape_prev) / self.dt_outer
+        return deriv
 
     @property
     def coupling_terms(self):
@@ -1046,17 +1434,53 @@ class InnerState(State):
 
     @property
     def time_removal_source(self):
-        return self.time_removal_matrix * self.states['PREVIOUS_INNER'].flux.flatten()
+        state = self.states['PREVIOUS_INNER']
+        time_removal = self.inverse_velocity / self.dt_inner * self.shape_dxyz * self.shape
+        time_removal = openmc.kinetics.map_array(time_removal, self.shape_zyxg, self.amplitude_zyxg, False)
+        time_removal.shape = (self.amplitude_nxyz, self.ng)
+        time_removal *= state.amplitude
+
+        return time_removal
 
     @property
-    def time_removal_matrix(self):
-        time_removal = self.inverse_velocity / self.dt_inner * self.flux_dxyz
-        return sps.diags([time_removal.flatten()], [0])
+    def k1_source(self):
+        state = self.states['PREVIOUS_INNER']
+        decay_source = self.decay_rate * state.k1 * state.precursors
+        decay_source = np.repeat(decay_source, self.ng)
+        decay_source.shape = (self.shape_nxyz, self.nd, self.ng)
+        decay_source *= self.chi_delayed
+        decay_source = openmc.kinetics.map_array(decay_source.sum(axis=1), self.shape_zyxg, self.amplitude_zyxg, False)
+        decay_source.shape = (self.amplitude_nxyz, self.ng)
+
+        return decay_source
+
+    @property
+    def k3_source(self):
+        state = self.states['PREVIOUS_INNER']
+        k3_source = self.k3_source_matrix * state.amplitude.flatten()
+        k3_source.shape = (self.amplitude_nxyz, self.ng)
+
+        return k3_source
+
+    @property
+    def transient_source(self):
+        k3_src = self.k3_source.flatten()
+        k1_src = self.k1_source.flatten()
+        time_src = self.time_removal_source.flatten()
+
+        return time_src + k1_src - k3_src
 
     @property
     def transient_matrix(self):
-        return self.time_removal_matrix - self.prompt_production_matrix \
-            + self.destruction_matrix - self.k2_source_matrix
+        time_removal = self.inverse_velocity / self.dt_inner * self.shape_dxyz * self.shape
+        time_removal = openmc.kinetics.map_array(time_removal, self.shape_zyxg, self.amplitude_zyxg, False)
+
+        shape_deriv = self.inverse_velocity * self.shape_deriv * self.shape_dxyz
+        shape_deriv = openmc.kinetics.map_array(shape_deriv, self.shape_zyxg, self.amplitude_zyxg, False)
+
+        return sps.diags(time_removal.flatten()) + sps.diags(shape_deriv.flatten()) \
+            - self.prompt_production_matrix + self.destruction_matrix \
+            - self.k2_source_matrix
 
     @property
     def k1(self):
@@ -1075,28 +1499,25 @@ class InnerState(State):
         return openmc.kinetics.nan_inf_to_zero(k3 / (self.decay_rate * self.k_crit))
 
     @property
-    def k1_source(self):
-
-        state = self.states['PREVIOUS_INNER']
-        source = np.repeat(self.decay_rate * state.k1 * state.precursors, self.ng)
-        source.shape = (self.flux_nxyz, self.nd, self.ng)
-        return (source * self.chi_delayed).sum(axis=1)
-
-    @property
     def k2_source_matrix(self):
 
         k2 = np.repeat(self.decay_rate * self.k2, self.ng * self.ng)
-        k2.shape = (self.flux_nxyz, self.nd, self.ng, self.ng)
+        k2.shape = (self.shape_nxyz, self.nd, self.ng, self.ng)
 
         chi = np.repeat(self.chi_delayed, self.ng)
-        chi.shape = (self.flux_nxyz, self.nd, self.ng, self.ng)
+        chi.shape = (self.shape_nxyz, self.nd, self.ng, self.ng)
 
-        del_fis_rate = np.tile(self.delayed_nu_fission, self.ng)
-        del_fis_rate.shape = (self.flux_nxyz, self.nd, self.ng, self.ng)
+        shape = np.tile(self.shape, self.nd)
+        shape.shape = (self.shape_nxyz, self.nd, self.ng)
+        del_fis_rate = self.delayed_nu_fission * shape
+        del_fis_rate = np.tile(del_fis_rate, self.ng)
+        del_fis_rate.shape = (self.shape_nxyz, self.nd, self.ng, self.ng)
 
-        term_k2 = chi * k2 * del_fis_rate * self.flux_dxyz
+        term_k2 = (chi * k2 * del_fis_rate * self.shape_dxyz).sum(axis=1)
+        term_k2 = openmc.kinetics.map_array(term_k2, self.shape_zyxgg, self.amplitude_zyxgg, False)
+        term_k2.shape = (self.amplitude_nxyz, self.ng, self.ng)
 
-        return openmc.kinetics.block_diag(term_k2.sum(axis=1))
+        return openmc.kinetics.block_diag(term_k2)
 
     @property
     def k3_source_matrix(self):
@@ -1104,17 +1525,22 @@ class InnerState(State):
         state = self.states['PREVIOUS_INNER']
 
         k3 = np.repeat(self.decay_rate * state.k3, self.ng * self.ng)
-        k3.shape = (self.flux_nxyz, self.nd, self.ng, self.ng)
+        k3.shape = (self.shape_nxyz, self.nd, self.ng, self.ng)
 
         chi = np.repeat(self.chi_delayed, self.ng)
-        chi.shape = (self.flux_nxyz, self.nd, self.ng, self.ng)
+        chi.shape = (self.shape_nxyz, self.nd, self.ng, self.ng)
 
-        del_fis_rate = np.tile(self.delayed_nu_fission, self.ng)
-        del_fis_rate.shape = (self.flux_nxyz, self.nd, self.ng, self.ng)
+        shape = np.tile(state.shape, self.nd)
+        shape.shape = (self.shape_nxyz, self.nd, self.ng)
+        del_fis_rate = state.delayed_nu_fission * shape
+        del_fis_rate = np.tile(del_fis_rate, self.ng)
+        del_fis_rate.shape = (self.shape_nxyz, self.nd, self.ng, self.ng)
 
-        term_k3 = chi * k3 * del_fis_rate * self.flux_dxyz
+        term_k3 = (chi * k3 * del_fis_rate * self.shape_dxyz).sum(axis=1)
+        term_k3 = openmc.kinetics.map_array(term_k3, self.shape_zyxgg, self.amplitude_zyxgg, False)
+        term_k3.shape = (self.amplitude_nxyz, self.ng, self.ng)
 
-        return openmc.kinetics.block_diag(term_k3.sum(axis=1))
+        return openmc.kinetics.block_diag(term_k3)
 
     @property
     def propagate_precursors(self):
@@ -1126,13 +1552,13 @@ class InnerState(State):
 
         # Contribution from generation at current time point
         flux = np.tile(self.flux, self.nd)
-        flux.shape = (self.flux_nxyz, self.nd, self.ng)
-        term_k2 = self.k2 * (self.delayed_nu_fission * flux).sum(axis=2) * self.flux_dxyz
+        flux.shape = (self.shape_nxyz, self.nd, self.ng)
+        term_k2 = self.k2 * (self.delayed_nu_fission * flux).sum(axis=2) * self.shape_dxyz
 
         # Contribution from generation at previous time step
         flux = np.tile(state.flux, state.nd)
-        flux.shape = (state.flux_nxyz, state.nd, state.ng)
-        term_k3 = state.k3 * (state.delayed_nu_fission * flux).sum(axis=2) * self.flux_dxyz
+        flux.shape = (state.shape_nxyz, state.nd, state.ng)
+        term_k3 = state.k3 * (state.delayed_nu_fission * flux).sum(axis=2) * self.shape_dxyz
 
         self._precursors = term_k1 + term_k2 - term_k3
 
@@ -1144,10 +1570,13 @@ class InnerState(State):
         if time_point not in f['INNER_STEPS'].keys():
             f['INNER_STEPS'].require_group(time_point)
 
-        if 'flux' not in f['INNER_STEPS'][time_point].keys():
-            f['INNER_STEPS'][time_point].create_dataset('flux', data=self.flux)
+        if 'amplitude' not in f['INNER_STEPS'][time_point].keys():
+            f['INNER_STEPS'][time_point].create_dataset('amplitude', data=self.amplitude)
         else:
-            flux = f['INNER_STEPS'][time_point]['flux']
-            flux[...] = self.flux
+            amp = f['INNER_STEPS'][time_point]['amplitude']
+            amp[...] = self.amplitude
+
+        f['INNER_STEPS'][time_point].attrs['reactivity'] = self.reactivity
+        f['INNER_STEPS'][time_point].attrs['beta_eff'] = self.beta_eff
 
         f.close()
