@@ -136,6 +136,8 @@ def compute_eigenvalue(A, M, flux):
     flux  = flux / norm
     k_eff = 1.0
 
+    print('initial k {}'.format((M*flux).sum() / (A*flux).sum()))
+
     for i in range(10000):
 
         # Solve linear system

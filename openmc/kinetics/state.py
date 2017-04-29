@@ -429,7 +429,7 @@ class State(object):
     @property
     def pnl(self):
         inv_vel = self.inverse_velocity * self.flux * self.shape_dxyz
-        inv_vel = openmc.kinetics.map_array(inv_vel, self.shape_zyxg, self.amplitude_zyxg, True)
+        inv_vel = openmc.kinetics.map_array(inv_vel, self.shape_zyxg, self.amplitude_zyxg, False)
         inv_vel.shape = (self.amplitude_nxyz, self.ng)
         inv_vel *= self.adjoint_flux
         production = self.production_matrix * self.amplitude.flatten()
@@ -459,33 +459,13 @@ class State(object):
         delayed_production *= flux.flatten()
         old_shape = (self.shape_nxyz, self.nd, self.ng)
         new_shape = (self.amplitude_nxyz, self.nd, self.ng)
-        delayed_production = openmc.kinetics.map_array(delayed_production, old_shape, new_shape, True)
+        delayed_production = openmc.kinetics.map_array(delayed_production, old_shape, new_shape, False)
         delayed_production = delayed_production.flatten() * adjoint_flux.flatten()
         delayed_production.shape = (self.amplitude_nxyz, self.nd, self.ng)
         delayed_production = delayed_production.sum(axis=(0,2))
 
         production = self.production_matrix * self.amplitude.flatten()
         production = production.flatten() * self.adjoint_flux.flatten()
-        production.shape = (self.amplitude_nxyz, self.ng)
-        production = production.sum(axis=(0,1))
-        production = np.repeat(production, self.nd)
-
-        return (delayed_production / production).sum()
-
-    @property
-    def beta(self):
-        amp = np.tile(self.amplitude, self.nd)
-
-        delayed_production = self.delayed_production * self.shape_dxyz
-        delayed_production.shape = (self.amplitude_nxyz * self.nd, self.ng, self.ng)
-        delayed_production = openmc.kinetics.block_diag(delayed_production)
-        delayed_production /= self.k_crit
-
-        delayed_production *= amp.flatten()
-        delayed_production.shape = (self.amplitude_nxyz, self.nd, self.ng)
-        delayed_production = delayed_production.sum(axis=(0,2))
-
-        production = self.production_matrix * self.amplitude.flatten()
         production.shape = (self.amplitude_nxyz, self.ng)
         production = production.sum(axis=(0,1))
         production = np.repeat(production, self.nd)
@@ -664,10 +644,21 @@ class OuterState(State):
         return self._flux_tallied
 
     @property
+    def amplitude_flux_tallied(self):
+        if not self.mgxs_loaded:
+            self._amplitude_flux_tallied = self.mgxs_lib['amplitude-kappa-fission'].get_condensed_xs(self.energy_groups).tallies['flux'].get_values()
+            self._amplitude_flux_tallied.shape = (self.amplitude_nxyz, self.ng)
+            self._amplitude_flux_tallied = self._amplitude_flux_tallied[:, ::-1]
+
+        self._amplitude_flux_tallied.shape = (self.amplitude_nxyz, self.ng)
+        return self._amplitude_flux_tallied
+
+    @property
     def current_tallied(self):
         if not self.mgxs_loaded:
             self._current_tallied = self.mgxs_lib['current'].get_condensed_xs(self.energy_groups).get_xs()
 
+        #self._current_tallied.shape = (self.amplitude_nxyz, self.ng, 12)
         return self._current_tallied
 
     @property
@@ -677,7 +668,7 @@ class OuterState(State):
             self._diffusion_coefficient = self._diffusion_coefficient.\
                 get_condensed_xs(self.energy_groups, self.condense_dif_coef).get_xs()
 
-        self._diffusion_coefficient.shape = (self.shape_nxyz, self.ng)
+        self._diffusion_coefficient.shape = (self.amplitude_nxyz, self.ng)
         return self._diffusion_coefficient
 
     @property
@@ -760,6 +751,7 @@ class OuterState(State):
         self.inverse_velocity
         self.decay_rate
         self.flux_tallied
+        self.amplitude_flux_tallied
         self.current_tallied
         self.diffusion_coefficient
         self.mgxs_loaded = True
@@ -779,6 +771,12 @@ class OuterState(State):
                       'kappa-fission', 'chi-prompt', 'chi-delayed', 'inverse-velocity',
                       'prompt-nu-fission', 'current', 'delayed-nu-fission']
 
+
+        self._mgxs_lib['amplitude-kappa-fission'] = openmc.mgxs.MGXS.get_mgxs(
+            'kappa-fission', domain=self.amplitude_mesh, domain_type='mesh',
+            energy_groups=self.tally_groups, by_nuclide=False,
+            name= self.time_point + ' - amplitude-kappa-fission')
+
         if self.multi_group:
             mgxs_types.append('nu-scatter matrix')
         else:
@@ -789,8 +787,13 @@ class OuterState(State):
             mesh = self.shape_mesh
             if mgxs_type == 'diffusion-coefficient':
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
-                    mgxs_type, domain=mesh, domain_type='mesh',
+                    mgxs_type, domain=self.amplitude_mesh, domain_type='mesh',
                     energy_groups=self.fine_groups, by_nuclide=False,
+                    name= self.time_point + ' - ' + mgxs_type)
+            elif mgxs_type == 'current':
+                self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
+                    mgxs_type, domain=self.amplitude_mesh, domain_type='mesh',
+                    energy_groups=self.tally_groups, by_nuclide=False,
                     name= self.time_point + ' - ' + mgxs_type)
             elif 'nu-scatter matrix' in mgxs_type:
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
@@ -852,17 +855,16 @@ class OuterState(State):
     def coupling_terms(self):
 
         # Get the dimensions of the mesh
-        nz , ny , nx  = self.shape_dimension
-        nza, nya, nxa = self.amplitude_dimension
-        dx , dy , dz  = self.shape_mesh.width
+        nz , ny , nx  = self.amplitude_dimension
+        dx , dy , dz  = self.amplitude_mesh.width
         ng            = self.ng
 
         # Get the array of the surface-integrated surface net currents
         partial_current = copy.deepcopy(self.current_tallied)
         partial_current = partial_current.reshape(np.prod(partial_current.shape) / 12, 12)
-        net_current = partial_current[:, range(0,12,2)] - partial_current[:, range(1,13,2)]
+        net_current = partial_current[..., range(0,12,2)] - partial_current[..., range(1,13,2)]
         net_current[:, 0:6:2] = -net_current[:, 0:6:2]
-        net_current.shape = self.shape_zyxg + (6,)
+        net_current.shape = self.amplitude_zyxg + (6,)
 
         # Convert from surface-integrated to surface-averaged net current
         net_current[..., 0:2]  = net_current[..., 0:2] / (dy * dz)
@@ -870,8 +872,8 @@ class OuterState(State):
         net_current[..., 4:6]  = net_current[..., 4:6] / (dx * dy)
 
         # Get the flux
-        flux = copy.deepcopy(self.flux_tallied)
-        flux.shape = self.shape_zyxg
+        flux = copy.deepcopy(self.amplitude_flux_tallied)
+        flux.shape = self.amplitude_zyxg
 
         # Convert from volume-integrated to volume-averaged flux
         flux  = flux / (dx * dy * dz)
@@ -885,28 +887,10 @@ class OuterState(State):
         flux_nbr[1: , :  , :  , :, 4] = flux[:-1, :  , :  , :]
         flux_nbr[:-1, :  , :  , :, 5] = flux[1: , :  , :  , :]
 
-        # Get the shape
-        shape       = self.shape
-        shape.shape = (nz, ny, nx, ng)
-
-        # Create an array of the neighbor cell shapes
-        shape_nbr = np.zeros((nz, ny, nx, ng, 6))
-        shape_nbr[:  , :  , 1: , :, 0] = shape[:  , :  , :-1, :]
-        shape_nbr[:  , :  , :-1, :, 1] = shape[:  , :  , 1: , :]
-        shape_nbr[:  , 1: , :  , :, 2] = shape[:  , :-1, :  , :]
-        shape_nbr[:  , :-1, :  , :, 3] = shape[:  , 1: , :  , :]
-        shape_nbr[1: , :  , :  , :, 4] = shape[:-1, :  , :  , :]
-        shape_nbr[:-1, :  , :  , :, 5] = shape[1: , :  , :  , :]
-
         # Get the diffusion coefficients tally
-        dc       = self.diffusion_coefficient
-        dc.shape = (nz, ny, nx, ng)
-        dc_nbr   = np.zeros((nz, ny, nx, ng, 6))
-
-        # Get the diffusion coefficients tally
-        dc       = self.diffusion_coefficient
-        dc.shape = self.shape_zyxg
-        dc_nbr   = np.zeros(self.shape_zyxg + (6,))
+        dc       = copy.deepcopy(self.diffusion_coefficient)
+        dc.shape = self.amplitude_zyxg
+        dc_nbr   = np.zeros(self.amplitude_zyxg + (6,))
 
         # Create array of neighbor cell diffusion coefficients
         dc_nbr[:  , :  , 1: , :, 0] = dc[:  , :  , :-1, :]
@@ -918,16 +902,16 @@ class OuterState(State):
 
         # Compute the linear finite difference diffusion term for interior surfaces
         dc_linear = np.zeros((nz, ny, nx, ng, 6))
-        dc_linear[:  , :  , 1: , :, 0] = 2 * dc_nbr[:  , :  , 1: , :, 0] * dc[:  , :  , 1: , :] / (dc_nbr[:  , :  , 1: , :, 0] * dx + dc[:  , :  , 1: , :] * dx)
-        dc_linear[:  , :  , :-1, :, 1] = 2 * dc_nbr[:  , :  , :-1, :, 1] * dc[:  , :  , :-1, :] / (dc_nbr[:  , :  , :-1, :, 1] * dx + dc[:  , :  , :-1, :] * dx)
-        dc_linear[:  , 1: , :  , :, 2] = 2 * dc_nbr[:  , 1: , :  , :, 2] * dc[:  , 1: , :  , :] / (dc_nbr[:  , 1: , :  , :, 2] * dy + dc[:  , 1: , :  , :] * dy)
-        dc_linear[:  , :-1, :  , :, 3] = 2 * dc_nbr[:  , :-1, :  , :, 3] * dc[:  , :-1, :  , :] / (dc_nbr[:  , :-1, :  , :, 3] * dy + dc[:  , :-1, :  , :] * dy)
-        dc_linear[1: , :  , :  , :, 4] = 2 * dc_nbr[1: , :  , :  , :, 4] * dc[1: , :  , :  , :] / (dc_nbr[1: , :  , :  , :, 4] * dz + dc[1: , :  , :  , :] * dz)
-        dc_linear[:-1, :  , :  , :, 5] = 2 * dc_nbr[:-1, :  , :  , :, 5] * dc[:-1, :  , :  , :] / (dc_nbr[:-1, :  , :  , :, 5] * dz + dc[:-1, :  , :  , :] * dz)
+        dc_linear[:  , :  , 1: , :, 0] = 2 * dc_nbr[:  , :  , 1: , :, 0] * dc[:  , :  , 1: , :] / (dc_nbr[:  , :  , 1: , :, 0] * dx + dc[:  , :  , 1: , :] * dx) + 0.25 * dx
+        dc_linear[:  , :  , :-1, :, 1] = 2 * dc_nbr[:  , :  , :-1, :, 1] * dc[:  , :  , :-1, :] / (dc_nbr[:  , :  , :-1, :, 1] * dx + dc[:  , :  , :-1, :] * dx) + 0.25 * dx
+        dc_linear[:  , 1: , :  , :, 2] = 2 * dc_nbr[:  , 1: , :  , :, 2] * dc[:  , 1: , :  , :] / (dc_nbr[:  , 1: , :  , :, 2] * dy + dc[:  , 1: , :  , :] * dy) + 0.25 * dy
+        dc_linear[:  , :-1, :  , :, 3] = 2 * dc_nbr[:  , :-1, :  , :, 3] * dc[:  , :-1, :  , :] / (dc_nbr[:  , :-1, :  , :, 3] * dy + dc[:  , :-1, :  , :] * dy) + 0.25 * dy
+        dc_linear[1: , :  , :  , :, 4] = 2 * dc_nbr[1: , :  , :  , :, 4] * dc[1: , :  , :  , :] / (dc_nbr[1: , :  , :  , :, 4] * dz + dc[1: , :  , :  , :] * dz) + 0.25 * dz
+        dc_linear[:-1, :  , :  , :, 5] = 2 * dc_nbr[:-1, :  , :  , :, 5] * dc[:-1, :  , :  , :] / (dc_nbr[:-1, :  , :  , :, 5] * dz + dc[:-1, :  , :  , :] * dz) + 0.25 * dz
 
         # Make any cells that have no dif coef or flux tally highly diffusive
-        dc_linear[np.isnan(dc_linear)] = 1.e-10
-        dc_linear[dc_linear == 0.] = 1.e-10
+        dc_linear[np.isnan(dc_linear)] = 0.
+        dc_linear[dc_linear == 0.] = 0.
 
         # Compute the non-linear finite difference diffusion term for interior surfaces
         dc_nonlinear = np.zeros((nz, ny, nx, ng, 6))
@@ -991,17 +975,30 @@ class OuterState(State):
         dc_linear.shape    = (nx*ny*nz*ng, 6)
         dc_nonlinear.shape = (nx*ny*nz*ng, 6)
 
+        # reshape the flux shape
+        shape       = openmc.kinetics.map_array(self.shape, self.shape_zyxg, self.amplitude_zyxg, False)
+        shape.shape = (nz, ny, nx, ng)
+        shape_nbr = np.zeros((nz, ny, nx, ng, 6))
+        shape_nbr[:  , :  , 1: , :, 0] = shape[:  , :  , :-1, :]
+        shape_nbr[:  , :  , :-1, :, 1] = shape[:  , :  , 1: , :]
+        shape_nbr[:  , 1: , :  , :, 2] = shape[:  , :-1, :  , :]
+        shape_nbr[:  , :-1, :  , :, 3] = shape[:  , 1: , :  , :]
+        shape_nbr[1: , :  , :  , :, 4] = shape[:-1, :  , :  , :]
+        shape_nbr[:-1, :  , :  , :, 5] = shape[1: , :  , :  , :]
+        shape.shape     = (nx*ny*nz*ng,)
+        shape_nbr.shape = (nx*ny*nz*ng, 6)
+
         # Set the diagonal
         dc_linear_diag    =  dc_linear   [:, 1:6:2].sum(axis=1) + dc_linear   [:, 0:6:2].sum(axis=1)
         dc_nonlinear_diag = -dc_nonlinear[:, 1:6:2].sum(axis=1) + dc_nonlinear[:, 0:6:2].sum(axis=1)
-        dc_linear_data    = [dc_linear_diag]
-        dc_nonlinear_data = [dc_nonlinear_diag]
+        dc_linear_data    = [dc_linear_diag * shape]
+        dc_nonlinear_data = [dc_nonlinear_diag * shape]
         diags             = [0]
 
         dc_nonlinear_copy = np.copy(dc_nonlinear)
 
         # Zero boundary dc_nonlinear
-        dc_nonlinear_copy.shape = self.shape_zyxg + (6,)
+        dc_nonlinear_copy.shape = self.amplitude_zyxg + (6,)
         dc_nonlinear_copy[:  ,  :,  0, :, 0] = 0.
         dc_nonlinear_copy[:  ,  :, -1, :, 1] = 0.
         dc_nonlinear_copy[:  ,  0,  :, :, 2] = 0.
@@ -1012,272 +1009,209 @@ class OuterState(State):
 
         # Set the off-diagonals
         if nx > 1:
-            dc_linear_data.append(-dc_linear[ng: , 0])
-            dc_linear_data.append(-dc_linear[:-ng, 1])
-            dc_nonlinear_data.append( dc_nonlinear_copy[ng: , 0])
-            dc_nonlinear_data.append(-dc_nonlinear_copy[:-ng, 1])
+            dc_linear_data.append(-dc_linear[ng: , 0] * shape_nbr[ng:, 0])
+            dc_linear_data.append(-dc_linear[:-ng, 1] * shape_nbr[:-ng, 1])
+            dc_nonlinear_data.append( dc_nonlinear_copy[ng: , 0] * shape_nbr[ng:, 0])
+            dc_nonlinear_data.append(-dc_nonlinear_copy[:-ng, 1] * shape_nbr[:-ng, 1])
             diags.append(-ng)
             diags.append(ng)
         if ny > 1:
-            dc_linear_data.append(-dc_linear[nx*ng: , 2])
-            dc_linear_data.append(-dc_linear[:-nx*ng, 3])
-            dc_nonlinear_data.append( dc_nonlinear_copy[nx*ng: , 2])
-            dc_nonlinear_data.append(-dc_nonlinear_copy[:-nx*ng, 3])
+            dc_linear_data.append(-dc_linear[nx*ng: , 2] * shape_nbr[nx*ng:, 2])
+            dc_linear_data.append(-dc_linear[:-nx*ng, 3] * shape_nbr[:-nx*ng, 3])
+            dc_nonlinear_data.append( dc_nonlinear_copy[nx*ng: , 2] * shape_nbr[nx*ng:, 2])
+            dc_nonlinear_data.append(-dc_nonlinear_copy[:-nx*ng, 3] * shape_nbr[:-nx*ng, 3])
             diags.append(-nx*ng)
             diags.append(nx*ng)
         if nz > 1:
-            dc_linear_data.append(-dc_linear[nx*ny*ng: , 4])
-            dc_linear_data.append(-dc_linear[:-nx*ny*ng, 5])
-            dc_nonlinear_data.append( dc_nonlinear_copy[nx*ny*ng: , 4])
-            dc_nonlinear_data.append(-dc_nonlinear_copy[:-nx*ny*ng, 5])
+            dc_linear_data.append(-dc_linear[nx*ny*ng: , 4] * shape_nbr[ny*nx*ng:, 4])
+            dc_linear_data.append(-dc_linear[:-nx*ny*ng, 5] * shape_nbr[:-ny*nx*ng, 5])
+            dc_nonlinear_data.append( dc_nonlinear_copy[nx*ny*ng: , 4] * shape_nbr[ny*nx*ng:, 4])
+            dc_nonlinear_data.append(-dc_nonlinear_copy[:-nx*ny*ng, 5] * shape_nbr[:-ny*nx*ng, 5])
             diags.append(-nx*ny*ng)
             diags.append(nx*ny*ng)
 
-        # reshape the flux shape
-        shape.shape     = (nx*ny*nz*ng,)
-        shape_nbr.shape = (nx*ny*nz*ng, 6)
-        coarse_shape    = (nza, nya, nxa, ng)
-        fine_shape      = (nz, ny, nx, ng)
-
-        # copy arrays
-        dc_linear_data_copy = copy.deepcopy(dc_linear_data)
-        dc_nonlinear_data_copy = copy.deepcopy(dc_nonlinear_data)
-        diags_copy = copy.deepcopy(diags)
-
-        # reinitialize the arrays
-        dc_linear_data = []
-        dc_nonlinear_data = []
-        diags = []
-
         # shape weight and spatially collapse the dc_linear and dc_nonlinear
-        for i,diag in enumerate(diags_copy):
-            if diag == 0:
-                dc_linear_data   .append(dc_linear_data_copy[i]    * shape)
-                dc_nonlinear_data.append(dc_nonlinear_data_copy[i] * shape)
-                dc_linear_data[-1]    = openmc.kinetics.map_array(dc_linear_data[-i]   , fine_shape, coarse_shape, False).flatten()
-                dc_nonlinear_data[-1] = openmc.kinetics.map_array(dc_nonlinear_data[-i], fine_shape, coarse_shape, False).flatten()
-                diags = [0]
-            elif diag == -ng and nx > 1:
+        if False:
+            for i,diag in enumerate(diags_copy):
+                if diag == 0:
+                    dc_linear_data   .append(dc_linear_data_copy[i]    * shape)
+                    dc_nonlinear_data.append(dc_nonlinear_data_copy[i] * shape)
+                    dc_linear_data[-1]    = openmc.kinetics.map_array(dc_linear_data[-i]   , fine_shape, coarse_shape, False).flatten()
+                    dc_nonlinear_data[-1] = openmc.kinetics.map_array(dc_nonlinear_data[-i], fine_shape, coarse_shape, False).flatten()
+                    diags = [0]
+                elif diag == -ng and nx > 1:
 
-                # Shape weight
-                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[ng:, 0]
-                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[ng:, 0]
+                    # Shape weight
+                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[ng:, 0]
+                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[ng:, 0]
 
-                # Elongate
-                dc_linear    = np.append(np.zeros(ng), dc_linear)
-                dc_nonlinear = np.append(np.zeros(ng), dc_nonlinear)
+                    # Elongate
+                    dc_linear    = np.append(np.zeros(ng), dc_linear)
+                    dc_nonlinear = np.append(np.zeros(ng), dc_nonlinear)
 
-                # Reshape
-                dc_linear.shape    = fine_shape
-                dc_nonlinear.shape = fine_shape
+                    # Reshape
+                    dc_linear.shape    = fine_shape
+                    dc_nonlinear.shape = fine_shape
 
-                # Extract
-                #ind_diag     = sum([range(i*nx/nxa + 1, (i+1)*nx/nxa) for i in range(nxa)], [])
-                #ind_off_diag = sum([range(i*nx/nxa    , i*nx/nxa + 1) for i in range(nxa)], [])
-                #dc_linear_diag        = dc_linear   [:, :, ind_diag    , :]
-                #dc_linear_off_diag    = dc_linear   [:, :, ind_off_diag, :]
-                #dc_nonlinear_diag     = dc_nonlinear[:, :, ind_diag    , :]
-                #dc_nonlinear_off_diag = dc_nonlinear[:, :, ind_off_diag, :]
+                    # Condense and add values to diag
+                    if nx != nxa:
+                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                        dc_linear_data[0]    += dc_linear_diag.flatten()
+                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
 
-                # Condense and add values to diag
-                if nx != nxa:
-                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                    dc_linear_data[0]    += dc_linear_diag.flatten()
-                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
+                    # Condense and add values to off diag
+                    if nxa > 1:
+                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[ng:]
+                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[ng:]
+                        dc_linear_data   .append(dc_linear_off_diag)
+                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                        diags            .append(-ng)
 
-                # Condense and add values to off diag
-                if nxa > 1:
-                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[ng:]
-                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[ng:]
-                    dc_linear_data   .append(dc_linear_off_diag)
-                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                    diags            .append(-ng)
+                elif diag == ng and nx > 1:
 
-            elif diag == ng and nx > 1:
+                    # Shape weight
+                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-ng, 1]
+                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-ng, 1]
 
-                # Shape weight
-                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-ng, 1]
-                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-ng, 1]
+                    # Elongate
+                    dc_linear    = np.append(dc_linear   , np.zeros(ng))
+                    dc_nonlinear = np.append(dc_nonlinear, np.zeros(ng))
 
-                # Elongate
-                dc_linear    = np.append(dc_linear   , np.zeros(ng))
-                dc_nonlinear = np.append(dc_nonlinear, np.zeros(ng))
+                    # Reshape
+                    dc_linear.shape    = fine_shape
+                    dc_nonlinear.shape = fine_shape
 
-                # Reshape
-                dc_linear.shape    = fine_shape
-                dc_nonlinear.shape = fine_shape
+                    # Condense and add values to diag
+                    if nx != nxa:
+                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                        dc_linear_data[0]    += dc_linear_diag.flatten()
+                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
 
-                # Extract
-                #ind_diag     = sum([range(i*nx/nxa      , (i+1)*nx/nxa-1) for i in range(nxa)], [])
-                #ind_off_diag = sum([range((i+1)*nx/nxa-1, (i+1)*nx/nxa  ) for i in range(nxa)], [])
-                #dc_linear_diag        = dc_linear   [:, :, ind_diag    , :]
-                #dc_linear_off_diag    = dc_linear   [:, :, ind_off_diag, :]
-                #dc_nonlinear_diag     = dc_nonlinear[:, :, ind_diag    , :]
-                #dc_nonlinear_off_diag = dc_nonlinear[:, :, ind_off_diag, :]
+                    # Condense and add values to off diag
+                    if nxa > 1:
+                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-ng]
+                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-ng]
+                        dc_linear_data   .append(dc_linear_off_diag)
+                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                        diags            .append(ng)
 
-                # Condense and add values to diag
-                if nx != nxa:
-                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                    dc_linear_data[0]    += dc_linear_diag.flatten()
-                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
+                elif diag == -ng*nx and ny > 1:
 
-                # Condense and add values to off diag
-                if nxa > 1:
-                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-ng]
-                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-ng]
-                    dc_linear_data   .append(dc_linear_off_diag)
-                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                    diags            .append(ng)
+                    # Shape weight
+                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[nx*ng:, 2]
+                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[nx*ng:, 2]
 
-            elif diag == -ng*nx and ny > 1:
+                    # Elongate
+                    dc_linear    = np.append(np.zeros(nx*ng), dc_linear)
+                    dc_nonlinear = np.append(np.zeros(nx*ng), dc_nonlinear)
 
-                # Shape weight
-                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[nx*ng:, 2]
-                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[nx*ng:, 2]
+                    # Reshape
+                    dc_linear.shape    = fine_shape
+                    dc_nonlinear.shape = fine_shape
 
-                # Elongate
-                dc_linear    = np.append(np.zeros(nx*ng), dc_linear)
-                dc_nonlinear = np.append(np.zeros(nx*ng), dc_nonlinear)
+                    # Condense and add values to diag
+                    if ny != nya:
+                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                        dc_linear_data[0]    += dc_linear_diag.flatten()
+                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
 
-                # Reshape
-                dc_linear.shape    = fine_shape
-                dc_nonlinear.shape = fine_shape
+                    # Condense and add values to off diag
+                    if nya > 1:
+                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[nxa*ng:]
+                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[nxa*ng:]
+                        dc_linear_data   .append(dc_linear_off_diag)
+                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                        diags            .append(-nxa*ng)
 
-                # Extract
-                #ind_diag     = sum([range(i*ny/nya + 1, (i+1)*ny/nya) for i in range(nya)], [])
-                #ind_off_diag = sum([range(i*ny/nya    , i*ny/nya + 1) for i in range(nya)], [])
-                #dc_linear_diag        = dc_linear   [:, ind_diag    , :, :]
-                #dc_linear_off_diag    = dc_linear   [:, ind_off_diag, :, :]
-                #dc_nonlinear_diag     = dc_nonlinear[:, ind_diag    , :, :]
-                #dc_nonlinear_off_diag = dc_nonlinear[:, ind_off_diag, :, :]
+                elif diag == ng*nx and ny > 1:
 
-                # Condense and add values to diag
-                if ny != nya:
-                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                    dc_linear_data[0]    += dc_linear_diag.flatten()
-                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
+                    # Shape weight
+                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-nx*ng, 3]
+                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-nx*ng, 3]
 
-                # Condense and add values to off diag
-                if nya > 1:
-                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[nxa*ng:]
-                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[nxa*ng:]
-                    dc_linear_data   .append(dc_linear_off_diag)
-                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                    diags            .append(-nxa*ng)
+                    # Elongate
+                    dc_linear    = np.append(dc_linear   , np.zeros(nx*ng))
+                    dc_nonlinear = np.append(dc_nonlinear, np.zeros(nx*ng))
 
-            elif diag == ng*nx and ny > 1:
+                    # Reshape
+                    dc_linear.shape    = fine_shape
+                    dc_nonlinear.shape = fine_shape
 
-                # Shape weight
-                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-nx*ng, 3]
-                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-nx*ng, 3]
+                    # Condense and add values to diag
+                    if ny != nya:
+                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                        dc_linear_data[0]    += dc_linear_diag.flatten()
+                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
 
-                # Elongate
-                dc_linear    = np.append(dc_linear   , np.zeros(nx*ng))
-                dc_nonlinear = np.append(dc_nonlinear, np.zeros(nx*ng))
+                    # Condense and add values to off diag
+                    if nya > 1:
+                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-nxa*ng]
+                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-nxa*ng]
+                        dc_linear_data   .append(dc_linear_off_diag)
+                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                        diags            .append(nxa*ng)
 
-                # Reshape
-                dc_linear.shape    = fine_shape
-                dc_nonlinear.shape = fine_shape
+                elif diag == -ng*nx*ny:
 
-                # Extract
-                #ind_diag     = sum([range(i*ny/nya      , (i+1)*ny/nya-1) for i in range(nya)], [])
-                #ind_off_diag = sum([range((i+1)*ny/nya-1, (i+1)*ny/nya  ) for i in range(nya)], [])
-                #dc_linear_diag        = dc_linear   [:, ind_diag    , :, :]
-                #dc_linear_off_diag    = dc_linear   [:, ind_off_diag, :, :]
-                #dc_nonlinear_diag     = dc_nonlinear[:, ind_diag    , :, :]
-                #dc_nonlinear_off_diag = dc_nonlinear[:, ind_off_diag, :, :]
+                    # Shape weight
+                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[ny*nx*ng:, 4]
+                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[ny*nx*ng:, 4]
 
-                # Condense and add values to diag
-                if ny != nya:
-                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                    dc_linear_data[0]    += dc_linear_diag.flatten()
-                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
+                    # Elongate
+                    dc_linear    = np.append(np.zeros(ny*nx*ng), dc_linear)
+                    dc_nonlinear = np.append(np.zeros(ny*nx*ng), dc_nonlinear)
 
-                # Condense and add values to off diag
-                if nya > 1:
-                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-nxa*ng]
-                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-nxa*ng]
-                    dc_linear_data   .append(dc_linear_off_diag)
-                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                    diags            .append(nxa*ng)
+                    # Reshape
+                    dc_linear.shape    = fine_shape
+                    dc_nonlinear.shape = fine_shape
 
-            elif diag == -ng*nx*ny:
+                    # Condense and add values to diag
+                    if nz != nza:
+                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                        dc_linear_data[0]    += dc_linear_diag.flatten()
+                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
 
-                # Shape weight
-                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[ny*nx*ng:, 4]
-                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[ny*nx*ng:, 4]
+                    # Condense and add values to off diag
+                    if nza > 1:
+                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[nya*nxa*ng:]
+                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[nya*nxa*ng:]
+                        dc_linear_data   .append(dc_linear_off_diag)
+                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                        diags            .append(-nxa*nya*ng)
 
-                # Elongate
-                dc_linear    = np.append(np.zeros(ny*nx*ng), dc_linear)
-                dc_nonlinear = np.append(np.zeros(ny*nx*ng), dc_nonlinear)
+                elif diag == ng*nx*ny:
 
-                # Reshape
-                dc_linear.shape    = fine_shape
-                dc_nonlinear.shape = fine_shape
+                    # Shape weight
+                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-ny*nx*ng, 5]
+                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-ny*nx*ng, 5]
 
-                # Extract
-                #ind_diag     = sum([range(i*nz/nza + 1, (i+1)*nz/nza) for i in range(nza)], [])
-                #ind_off_diag = sum([range(i*nz/nza    , i*nz/nza + 1) for i in range(nza)], [])
-                #dc_linear_diag        = dc_linear   [ind_diag    , :, :, :]
-                #dc_linear_off_diag    = dc_linear   [ind_off_diag, :, :, :]
-                #dc_nonlinear_diag     = dc_nonlinear[ind_diag    , :, :, :]
-                #dc_nonlinear_off_diag = dc_nonlinear[ind_off_diag, :, :, :]
+                    # Elongate
+                    dc_linear    = np.append(dc_linear   , np.zeros(ny*nx*ng))
+                    dc_nonlinear = np.append(dc_nonlinear, np.zeros(ny*nx*ng))
 
-                # Condense and add values to diag
-                if nz != nza:
-                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                    dc_linear_data[0]    += dc_linear_diag.flatten()
-                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
+                    # Reshape
+                    dc_linear.shape    = fine_shape
+                    dc_nonlinear.shape = fine_shape
 
-                # Condense and add values to off diag
-                if nza > 1:
-                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[nya*nxa*ng:]
-                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[nya*nxa*ng:]
-                    dc_linear_data   .append(dc_linear_off_diag)
-                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                    diags            .append(-nxa*nya*ng)
+                    # Condense and add values to diag
+                    if nz != nza:
+                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
+                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
+                        dc_linear_data[0]    += dc_linear_diag.flatten()
+                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
 
-            elif diag == ng*nx*ny:
-
-                # Shape weight
-                dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-ny*nx*ng, 5]
-                dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-ny*nx*ng, 5]
-
-                # Elongate
-                dc_linear    = np.append(dc_linear   , np.zeros(ny*nx*ng))
-                dc_nonlinear = np.append(dc_nonlinear, np.zeros(ny*nx*ng))
-
-                # Reshape
-                dc_linear.shape    = fine_shape
-                dc_nonlinear.shape = fine_shape
-
-                # Extract
-                #ind_diag     = sum([range(i*nz/nza      , (i+1)*nz/nza-1) for i in range(nza)], [])
-                #ind_off_diag = sum([range((i+1)*nz/nza-1, (i+1)*nz/nza  ) for i in range(nza)], [])
-                #dc_linear_diag        = dc_linear   [ind_diag    , :, :, :]
-                #dc_linear_off_diag    = dc_linear   [ind_off_diag, :, :, :]
-                #dc_nonlinear_diag     = dc_nonlinear[ind_diag    , :, :, :]
-                #dc_nonlinear_off_diag = dc_nonlinear[ind_off_diag, :, :, :]
-
-                # Condense and add values to diag
-                if nz != nza:
-                    dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                    dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                    dc_linear_data[0]    += dc_linear_diag.flatten()
-                    dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
-
-                # Condense and add values to off diag
-                if nza > 1:
-                    dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-nya*nxa*ng]
-                    dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-nya*nxa*ng]
-                    dc_linear_data   .append(dc_linear_off_diag)
-                    dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                    diags            .append(nya*nxa*ng)
+                    # Condense and add values to off diag
+                    if nza > 1:
+                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-nya*nxa*ng]
+                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-nya*nxa*ng]
+                        dc_linear_data   .append(dc_linear_off_diag)
+                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
+                        diags            .append(nya*nxa*ng)
 
         return diags, dc_linear_data, dc_nonlinear_data
 

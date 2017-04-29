@@ -616,19 +616,14 @@ class Solver(object):
             (state.destruction_matrix.transpose(), state.production_matrix.transpose(),
              np.ones(state.amplitude_nxyz * self.ng))
 
-        # Normalize the initial flux
-        state.k_crit = self.k_crit
-
         # Compute the power and normalize the amplitude
         state.amplitude    /= np.average(state.amplitude.flatten())
         state.adjoint_flux /= np.average(state.adjoint_flux.flatten())
         norm_factor        = self.initial_power / state.core_power_density
         state.shape       *= norm_factor
-        #state.extract_shape()
 
-        print(state.shape)
-        print(state.flux)
-        print(state.amplitude)
+        # Normalize the initial flux
+        state.k_crit = self.k_crit
 
         # Compute the initial precursor concentration
         state.compute_initial_precursor_concentration()
@@ -684,7 +679,6 @@ class Solver(object):
 
         # Compute the amplitude at the FORWARD_IN time step
         state_fwd.amplitude = spsolve(matrix, source)
-        #state_fwd.amplitude = bicgstab(matrix, source, state_fwd.amplitude, 1.e-10)[0]
 
         # Propagate the precursors
         state_fwd.propagate_precursors
