@@ -1,4 +1,5 @@
 from collections import OrderedDict, Iterable
+from copy import deepcopy
 from math import cos, sin, pi
 from numbers import Real, Integral
 from xml.etree import ElementTree as ET
@@ -12,19 +13,10 @@ import openmc
 import openmc.checkvalue as cv
 from openmc.surface import Halfspace
 from openmc.region import Region, Intersection, Complement
+from .mixin import IDManagerMixin
 
 
-# A static variable for auto-generated Cell IDs
-AUTO_CELL_ID = 10000
-
-
-def reset_auto_cell_id():
-    """Reset counter for auto-generated cell IDs."""
-    global AUTO_CELL_ID
-    AUTO_CELL_ID = 10000
-
-
-class Cell(object):
+class Cell(IDManagerMixin):
     r"""A region of space defined as the intersection of half-space created by
     quadric surfaces.
 
@@ -92,6 +84,9 @@ class Cell(object):
 
     """
 
+    next_id = 1
+    used_ids = set()
+
     def __init__(self, cell_id=None, name='', fill=None, region=None):
         # Initialize Cell class attributes
         self.id = cell_id
@@ -102,7 +97,8 @@ class Cell(object):
         self._rotation_matrix = None
         self._temperature = None
         self._translation = None
-        self._paths = []
+        self._paths = None
+        self._num_instances = None
         self._volume = None
         self._atoms = None
 
@@ -163,10 +159,6 @@ class Cell(object):
         return string
 
     @property
-    def id(self):
-        return self._id
-
-    @property
     def name(self):
         return self._name
 
@@ -213,7 +205,7 @@ class Cell(object):
 
     @property
     def paths(self):
-        if not self._paths:
+        if self._paths is None:
             raise ValueError('Cell instance paths have not been determined. '
                              'Call the Geometry.determine_paths() method.')
         return self._paths
@@ -228,18 +220,11 @@ class Cell(object):
 
     @property
     def num_instances(self):
-        return len(self.paths)
-
-    @id.setter
-    def id(self, cell_id):
-        if cell_id is None:
-            global AUTO_CELL_ID
-            self._id = AUTO_CELL_ID
-            AUTO_CELL_ID += 1
-        else:
-            cv.check_type('cell ID', cell_id, Integral)
-            cv.check_greater_than('cell ID', cell_id, 0, equality=True)
-            self._id = cell_id
+        if self._num_instances is None:
+            raise ValueError(
+                'Number of cell instances have not been determined. Call the '
+                'Geometry.determine_paths() method.')
+        return self._num_instances
 
     @name.setter
     def name(self, name):
@@ -372,7 +357,7 @@ class Cell(object):
             self.region = region
         else:
             if isinstance(self.region, Intersection):
-                self.region.nodes.append(region)
+                self.region &= region
             else:
                 self.region = Intersection(self.region, region)
 
@@ -504,6 +489,53 @@ class Cell(object):
 
         return universes
 
+    def clone(self, memo=None):
+        """Create a copy of this cell with a new unique ID, and clones
+        the cell's region and fill.
+
+        Parameters
+        ----------
+        memo : dict or None
+            A nested dictionary of previously cloned objects. This parameter
+            is used internally and should not be specified by the user.
+
+        Returns
+        -------
+        clone : openmc.Cell
+            The clone of this cell
+
+        """
+
+        if memo is None:
+            memo = {}
+
+        # If no nemoize'd clone exists, instantiate one
+        if self not in memo:
+            # Temporarily remove paths
+            paths = self._paths
+            self._paths = None
+
+            clone = deepcopy(self)
+            clone.id = None
+            clone._num_instances = None
+
+            # Restore paths on original instance
+            self._paths = paths
+
+            if self.region is not None:
+                clone.region = self.region.clone(memo)
+            if self.fill is not None:
+                if self.fill_type == 'distribmat':
+                    clone.fill = [fill.clone(memo) if fill is not None else None
+                                  for fill in self.fill]
+                else:
+                    clone.fill = self.fill.clone(memo)
+
+            # Memoize the clone
+            memo[self] = clone
+
+        return memo[self]
+
     def create_xml_subelement(self, xml_element):
         element = ET.Element("cell")
         element.set("id", str(self.id))
@@ -547,7 +579,7 @@ class Cell(object):
                 elif isinstance(node, Complement):
                     create_surface_elements(node.node, element)
                 else:
-                    for subnode in node.nodes:
+                    for subnode in node:
                         create_surface_elements(subnode, element)
 
             # Call the recursive function from the top node

@@ -11,15 +11,15 @@ from xml.etree import ElementTree as ET
 
 from six import string_types
 import numpy as np
+import pandas as pd
+import scipy.sparse as sps
 import h5py
 
 import openmc
 import openmc.checkvalue as cv
 from openmc.clean_xml import clean_xml_indentation
+from .mixin import IDManagerMixin
 
-
-# "Static" variable for auto-generated Tally IDs
-AUTO_TALLY_ID = 10000
 
 # The tally arithmetic product types. The tensor product performs the full
 # cross product of the data in two tallies with respect to a specified axis
@@ -39,13 +39,7 @@ _FILTER_CLASSES = (openmc.Filter, openmc.CrossFilter, openmc.AggregateFilter)
 ESTIMATOR_TYPES = ['tracklength', 'collision', 'analog']
 
 
-def reset_auto_tally_id():
-    """Reset counter for auto-generated tally IDs."""
-    global AUTO_TALLY_ID
-    AUTO_TALLY_ID = 10000
-
-
-class Tally(object):
+class Tally(IDManagerMixin):
     """A tally defined by a set of scores that are accumulated for a list of
     nuclides given a set of filters.
 
@@ -106,6 +100,9 @@ class Tally(object):
         A material perturbation derivative to apply to all scores in the tally.
 
     """
+
+    next_id = 1
+    used_ids = set()
 
     def __init__(self, tally_id=None, name=''):
         # Initialize Tally class attributes
@@ -203,10 +200,6 @@ class Tally(object):
         return string
 
     @property
-    def id(self):
-        return self._id
-
-    @property
     def name(self):
         return self._name
 
@@ -295,8 +288,6 @@ class Tally(object):
 
             # Convert NumPy arrays to SciPy sparse LIL matrices
             if self.sparse:
-                import scipy.sparse as sps
-
                 self._sum = \
                     sps.lil_matrix(self._sum.flatten(), self._sum.shape)
                 self._sum_sq = \
@@ -337,8 +328,6 @@ class Tally(object):
 
             # Convert NumPy array to SciPy sparse LIL matrix
             if self.sparse:
-                import scipy.sparse as sps
-
                 self._mean = \
                     sps.lil_matrix(self._mean.flatten(), self._mean.shape)
 
@@ -361,8 +350,6 @@ class Tally(object):
 
             # Convert NumPy array to SciPy sparse LIL matrix
             if self.sparse:
-                import scipy.sparse as sps
-
                 self._std_dev = \
                     sps.lil_matrix(self._std_dev.flatten(), self._std_dev.shape)
 
@@ -419,17 +406,6 @@ class Tally(object):
                       'defined using the triggers property directly.',
                       DeprecationWarning)
         self.triggers.append(trigger)
-
-    @id.setter
-    def id(self, tally_id):
-        if tally_id is None:
-            global AUTO_TALLY_ID
-            self._id = AUTO_TALLY_ID
-            AUTO_TALLY_ID += 1
-        else:
-            cv.check_type('tally ID', tally_id, Integral)
-            cv.check_greater_than('tally ID', tally_id, 0, equality=True)
-            self._id = tally_id
 
     @name.setter
     def name(self, name):
@@ -608,8 +584,6 @@ class Tally(object):
 
         # Convert NumPy arrays to SciPy sparse LIL matrices
         if sparse and not self.sparse:
-            import scipy.sparse as sps
-
             if self._sum is not None:
                 self._sum = \
                     sps.lil_matrix(self._sum.flatten(), self._sum.shape)
@@ -1076,8 +1050,9 @@ class Tally(object):
             element.set("name", self.name)
 
         # Optional Tally filters
-        for self_filter in self.filters:
-            element.append(self_filter.to_xml_element())
+        if len(self.filters) > 0:
+            subelement = ET.SubElement(element, "filters")
+            subelement.text = ' '.join(str(f.id) for f in self.filters)
 
         # Optional Nuclides
         if len(self.nuclides) > 0:
@@ -1343,7 +1318,7 @@ class Tally(object):
 
                 # If a user-requested Filter, get the user-requested bins
                 for j, test_filter in enumerate(filters):
-                    if isinstance(self_filter, test_filter):
+                    if type(self_filter) is test_filter:
                         bins = filter_bins[j]
                         user_filter = True
                         break
@@ -1609,7 +1584,6 @@ class Tally(object):
             raise KeyError(msg)
 
         # Initialize a pandas dataframe for the tally data
-        import pandas as pd
         df = pd.DataFrame()
 
         # Find the total length of the tally data array
@@ -2121,7 +2095,6 @@ class Tally(object):
         ----------
         filter1 : Filter
             The filter to swap with filter2
-
         filter2 : Filter
             The filter to swap with filter1
 
@@ -2148,15 +2121,6 @@ class Tally(object):
                   'does not contain such a filter'.format(filter2.type, self.id)
             raise ValueError(msg)
 
-        # Swap the filters in the copied version of this Tally
-        filter1_index = self.filters.index(filter1)
-        filter2_index = self.filters.index(filter2)
-        self.filters[filter1_index] = filter2
-        self.filters[filter2_index] = filter1
-
-        # Update the tally's filter strides
-        self._update_filter_strides()
-
         # Construct lists of tuples for the bins in each of the two filters
         filters = [type(filter1), type(filter2)]
         if isinstance(filter1, openmc.DistribcellFilter):
@@ -2173,23 +2137,41 @@ class Tally(object):
         else:
             filter2_bins = [filter2.get_bin(i) for i in range(filter2.num_bins)]
 
-        # Adjust the mean data array to relect the new filter order
-        if self.mean is not None:
-            for bin1, bin2 in itertools.product(filter1_bins, filter2_bins):
-                filter_bins = [(bin1,), (bin2,)]
-                data = self.get_values(
-                    filters=filters, filter_bins=filter_bins, value='mean')
-                indices = self.get_filter_indices(filters, filter_bins)
-                self.mean[indices, :, :] = data
+        # Create variables to store views of data in the misaligned structure
+        mean = {}
+        std_dev = {}
 
-        # Adjust the std_dev data array to relect the new filter order
-        if self.std_dev is not None:
-            for bin1, bin2 in itertools.product(filter1_bins, filter2_bins):
-                filter_bins = [(bin1,), (bin2,)]
-                data = self.get_values(
+        # Store the data from the misaligned structure
+        for i, (bin1, bin2) in enumerate(itertools.product(filter1_bins, filter2_bins)):
+            filter_bins = [(bin1,), (bin2,)]
+
+            if self.mean is not None:
+                mean[i] = self.get_values(
+                    filters=filters, filter_bins=filter_bins, value='mean')
+
+            if self.std_dev is not None:
+                std_dev[i] = self.get_values(
                     filters=filters, filter_bins=filter_bins, value='std_dev')
-                indices = self.get_filter_indices(filters, filter_bins)
-                self.std_dev[indices, :, :] = data
+
+        # Swap the filters in the copied version of this Tally
+        filter1_index = self.filters.index(filter1)
+        filter2_index = self.filters.index(filter2)
+        self.filters[filter1_index] = filter2
+        self.filters[filter2_index] = filter1
+
+        # Update the tally's filter strides
+        self._update_filter_strides()
+
+        # Realign the data
+        for i, (bin1, bin2) in enumerate(itertools.product(filter1_bins, filter2_bins)):
+            filter_bins = [(bin1,), (bin2,)]
+            indices = self.get_filter_indices(filters, filter_bins)
+
+            if self.mean is not None:
+                self.mean[indices, :, :] = mean[i]
+
+            if self.std_dev is not None:
+                self.std_dev[indices, :, :] = std_dev[i]
 
     def _swap_nuclides(self, nuclide1, nuclide2):
         """Reverse the ordering of two nuclides in this tally
@@ -3514,6 +3496,18 @@ class Tallies(cv.CheckedList):
                         root_element.append(f.mesh.to_xml_element())
                         already_written.add(f.mesh)
 
+    def _create_filter_subelements(self, root_element):
+        already_written = dict()
+        for tally in self:
+            for f in tally.filters:
+                if f not in already_written:
+                    root_element.append(f.to_xml_element())
+                    already_written[f] = f.id
+                else:
+                    # Set the IDs of identical filters with different
+                    # user-defined IDs to the same value
+                    f.id = already_written[f]
+
     def _create_derivative_subelements(self, root_element):
         # Get a list of all derivatives referenced in a tally.
         derivs = []
@@ -3538,6 +3532,7 @@ class Tallies(cv.CheckedList):
 
         root_element = ET.Element("tallies")
         self._create_mesh_subelements(root_element)
+        self._create_filter_subelements(root_element)
         self._create_tally_subelements(root_element)
         self._create_derivative_subelements(root_element)
 

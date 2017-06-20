@@ -5,11 +5,14 @@ import os
 from six import string_types
 import numpy as np
 import h5py
+from scipy.interpolate import interp1d
+from scipy.integrate import simps
+from scipy.special import eval_legendre
 
 import openmc
 import openmc.mgxs
 from openmc.checkvalue import check_type, check_value, check_greater_than, \
-    check_iterable_type, check_less_than
+    check_iterable_type, check_less_than, check_filetype_version
 
 
 # Supported incoming particle MGXS angular treatment representations
@@ -1808,10 +1811,6 @@ class XSdata(object):
 
         """
 
-        from scipy.interpolate import interp1d
-        from scipy.integrate import simps
-        from scipy.special import eval_legendre
-
         check_value('target_format', target_format, _SCATTER_TYPES)
         check_type('target_order', target_order, Integral)
         if target_format == 'legendre':
@@ -2561,8 +2560,8 @@ class MGXSLibrary(object):
         file = h5py.File(filename, 'r')
 
         # Check filetype and version
-        cv.check_filetype_version(file, _FILETYPE_MGXS_LIBRARY,
-                                  _VERSION_MGXS_LIBRARY)
+        check_filetype_version(file, _FILETYPE_MGXS_LIBRARY,
+                               _VERSION_MGXS_LIBRARY)
 
         group_structure = file.attrs['group structure']
         num_delayed_groups = file.attrs['delayed_groups']
