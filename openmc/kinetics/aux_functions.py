@@ -72,6 +72,57 @@ def map_array(array, from_shape, to_shape, normalize=True, lcm_applied=False):
 
     return array
 
+def surface_integral(array, from_shape, to_shape):
+
+    array.shape = from_shape
+    num_dims = len(from_shape)
+    if len(to_shape) != num_dims:
+        msg = 'from_shape and to_shape have different dimension!'
+        raise ValueError(msg)
+
+    to_array = np.zeros(to_shape)
+    ratios = [a/b for a,b in zip(from_shape,to_shape)]
+
+    # Sum x-min currents
+    view = array[:,:,0:from_shape[2]:ratios[2],:,0:2]
+    vs = view.shape
+    view.shape = (to_shape[0], ratios[0], to_shape[1], ratios[1],vs[2],vs[3],vs[4])
+    to_array[...,0:2] = np.sum(view, axis=(1,3))
+
+    # Sum x-max currents
+    view = array[:,:,ratios[2]-1:from_shape[2]:ratios[2],:,2:4]
+    vs = view.shape
+    view.shape = (to_shape[0], ratios[0], to_shape[1], ratios[1], vs[2],vs[3],vs[4])
+    to_array[...,2:4] = np.sum(view, axis=(1,3))
+
+    # Sum y-min currents
+    view = array[:,0:from_shape[1]:ratios[1],:,:,4:6]
+    vs = view.shape
+    view.shape = (to_shape[0], ratios[0], vs[1], to_shape[2], ratios[2],vs[3],vs[4])
+    to_array[...,4:6] = np.sum(view, axis=(1,4))
+
+    # Sum y-max currents
+    view = array[:,ratios[1]-1:from_shape[1]:ratios[1],:,:,6:8]
+    vs = view.shape
+    view.shape = (to_shape[0], ratios[0], vs[1], to_shape[2], ratios[2],vs[3],vs[4])
+    to_array[...,6:8] = np.sum(view, axis=(1,4))
+
+    # Sum z-min currents
+    view = array[0:from_shape[0]:ratios[0],:,:,:,8:10]
+    vs = view.shape
+    view.shape = (vs[0], to_shape[1], ratios[1], to_shape[2], ratios[2],vs[3],vs[4])
+    to_array[...,8:10] = np.sum(view, axis=(2,4))
+
+    # Sum z-max currents
+    view = array[ratios[0]-1:from_shape[0]:ratios[0],:,:,:,10:12]
+    vs = view.shape
+    view.shape = (vs[0], to_shape[1], ratios[1], to_shape[2], ratios[2],vs[3],vs[4])
+    to_array[...,10:12] = np.sum(view, axis=(2,4))
+
+    to_array.shape = to_shape
+    return to_array
+
+
 def block_view(A, block):
     """Provide a block view to 3+D array. No error checking made.
     Therefore meaningful (as implemented) only for blocks strictly
@@ -124,7 +175,7 @@ def nan_inf_to_one(array):
     array[array ==  np.nan] = 1.0
     return array
 
-def compute_eigenvalue(A, M, flux):
+def compute_eigenvalue(A, M, flux, tolerance=1.e-6):
 
     # Ensure flux is a 1D array
     flux = flux.flatten()
@@ -167,7 +218,7 @@ def compute_eigenvalue(A, M, flux):
         print('eigen solve iter {:03d} resid {:1.5e} k-eff {:1.6f}'\
                   .format(i, residual, k_eff))
 
-        if residual < 1.e-8 and i > 2:
+        if residual < tolerance and i > 2:
             break
 
     return flux, k_eff

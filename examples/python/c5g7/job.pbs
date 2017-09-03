@@ -3,8 +3,8 @@
 # Specify nodes, processors per node and maximum running time
 ###############################################################################
 
-#PBS -l select=10:ncpus=24:mpiprocs=24
-#PBS -l walltime=01:00:00
+#PBS -l select=1:ncpus=36:mpiprocs=36:cputype=broadwell
+#PBS -l walltime=12:00:00
 
 ###############################################################################
 # Enter directory and set PATH
@@ -23,4 +23,4 @@ export MV2_ENABLE_AFFINITY
 #PBS -k eo
 OMP_NUM_THREADS=1
 export OMP_NUM_THREADS
-mpirun -ppn 24 -bind-to socket -map-by socket $HOME/openmc-samuelshaner/build/bin/openmc
+mpirun -ppn 36 -bind-to socket -map-by socket $HOME/openmc-samuelshaner/build/bin/openmc

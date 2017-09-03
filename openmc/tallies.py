@@ -132,6 +132,8 @@ class Tally(object):
         self._sp_filename = None
         self._results_read = False
 
+        self._filter_indices = {}
+
     def __eq__(self, other):
         if not isinstance(other, Tally):
             return False
@@ -1388,15 +1390,11 @@ class Tally(object):
                 for indices in filter_indices[:i]:
                     indices *= self_filter.num_bins
 
-            # Apply outer product sum between all filter bin indices. If all the filter bins
-            # are requested in order, we can speed up the process by forming an ordered array.
-            sorted = all(fi[k] <= fi[k+1] for fi in filter_indices for k in xrange(len(fi)-1))
-            num_bins = sum(1 for _ in itertools.product(*filter_indices))
-
-            if num_bins == self.num_filter_bins and sorted:
-                filter_indices = np.arange(self.num_filter_bins)
-            else:
-                filter_indices = list(map(sum, itertools.product(*filter_indices)))
+            # Apply outer product sum between all filter bin indices
+            #if str(filter_indices) not in self._filter_indices.keys():
+            #    self._filter_indices[str(filter_indices)] = list(map(sum, itertools.product(*filter_indices)))
+            #filter_indices = self._filter_indices[str(filter_indices)]
+            filter_indices = list(map(sum, itertools.product(*filter_indices)))
 
         # If user did not specify any specific Filters, use them all
         else:
@@ -1955,8 +1953,8 @@ class Tally(object):
             self_filter.stride = stride
             stride *= self_filter.num_bins
 
-    def _align_tally_data(self, other, filter_product,
-                          nuclide_product, score_product):
+    def _align_tally_data(self, other, filter_product, nuclide_product,
+                          score_product):
         """Aligns data from two tallies for tally arithmetic.
 
         This is a helper method to construct a dict of dicts of the "aligned"

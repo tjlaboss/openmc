@@ -12,7 +12,7 @@ TIME_POINTS = ['START',
 
 class Clock(object):
 
-    def __init__(self, start=0., end=3., dt_inner=1.e-2, t_outer=None):
+    def __init__(self, start=0., end=3., dt_inner=None, t_outer=None):
 
         # Initialize coordinates
         self.dt_inner = dt_inner
@@ -39,10 +39,6 @@ class Clock(object):
         return string
 
     @property
-    def dt_inner(self):
-        return self._dt_inner
-
-    @property
     def t_outer(self):
         return self._t_outer
 
@@ -57,6 +53,10 @@ class Clock(object):
     @property
     def num_outer_steps(self):
         return len(self.t_outer) - 1
+
+    @property
+    def dt_inner(self):
+        return self._dt_inner
 
     @dt_inner.setter
     def dt_inner(self, dt_inner):

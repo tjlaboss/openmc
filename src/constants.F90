@@ -22,6 +22,7 @@ module constants
   integer, parameter :: VERSION_SUMMARY(2)          = [5, 0]
   integer, parameter :: VERSION_VOLUME(2)           = [1, 0]
   integer, parameter :: VERSION_VOXEL(2)            = [1, 0]
+  integer, parameter :: VERSION_MGXS_LIBRARY(2)     = [1, 0]
   character(10), parameter :: VERSION_MULTIPOLE     = "v0.2"
 
   ! ============================================================================
@@ -268,6 +269,13 @@ module constants
        TEMPERATURE_NEAREST = 1, &
        TEMPERATURE_INTERPOLATION = 2
 
+  ! Resonance elastic scattering methods
+  integer, parameter :: &
+       RES_SCAT_ARES = 1, &
+       RES_SCAT_DBRC = 2, &
+       RES_SCAT_WCM = 3, &
+       RES_SCAT_CXS = 4
+
   ! ============================================================================
   ! TALLY-RELATED CONSTANTS
 
@@ -404,13 +412,12 @@ module constants
   ! ============================================================================
   ! RANDOM NUMBER STREAM CONSTANTS
 
-  integer, parameter :: N_STREAMS = 6
+  integer, parameter :: N_STREAMS = 5
   integer, parameter :: STREAM_TRACKING   = 1
   integer, parameter :: STREAM_TALLIES    = 2
   integer, parameter :: STREAM_SOURCE     = 3
   integer, parameter :: STREAM_URR_PTABLE = 4
   integer, parameter :: STREAM_VOLUME     = 5
-  integer, parameter :: STREAM_BOOTSTRAP  = 6
 
   ! ============================================================================
   ! MISCELLANEOUS CONSTANTS

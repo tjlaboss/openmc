@@ -143,11 +143,12 @@ module mgxs_header
       real(8)                       :: xs_val ! Resultant xs
     end function mgxs_get_xs_
 
-    subroutine mgxs_sample_fission_(this, gin, uvw, dg, gout)
+    subroutine mgxs_sample_fission_(this, gin, uvw, delayed_nu_fission, dg, gout)
       import Mgxs
       class(Mgxs), intent(in) :: this
       integer, intent(in)     :: gin    ! Incoming energy group
       real(8), intent(in)     :: uvw(3) ! Particle Direction
+      real(8), intent(in)     :: delayed_nu_fission(:) ! Particle Location
       integer, intent(out)    :: dg     ! Delayed group
       integer, intent(out)    :: gout   ! Sampled outgoing group
 
@@ -3353,22 +3354,28 @@ module mgxs_header
 ! MGXS*_SAMPLE_FISSION_ENERGY samples the outgoing energy from a fission event
 !===============================================================================
 
-    subroutine mgxsiso_sample_fission_energy(this, gin, uvw, dg, gout)
+    subroutine mgxsiso_sample_fission_energy(this, gin, uvw, delayed_nu_fission, dg, gout)
 
       class(MgxsIso), intent(in)    :: this   ! Data to work with
       integer, intent(in)           :: gin    ! Incoming energy group
       real(8), intent(in)           :: uvw(3) ! Particle Direction
+      real(8), intent(in)           :: delayed_nu_fission(:)
       integer, intent(out)          :: dg     ! Delayed group
       integer, intent(out)          :: gout   ! Sampled outgoing group
+      integer :: mesh_bin
       real(8) :: xi_pd            ! Our random number for prompt/delayed
       real(8) :: xi_gout          ! Our random number for gout
       real(8) :: prob_gout        ! Running probability for gout
 
       ! Get nu and nu_prompt
       real(8) :: prob_prompt
+      real(8) :: delayed_nu_fission_total
+      real(8) :: prompt_nu_fission
 
-      prob_prompt = this % get_xs('prompt-nu-fission', gin) / &
-           this % get_xs('nu-fission', gin)
+      delayed_nu_fission_total = sum(delayed_nu_fission)
+
+      prompt_nu_fission = this % get_xs('prompt-nu-fission', gin)
+      prob_prompt = prompt_nu_fission / (prompt_nu_fission + delayed_nu_fission_total)
 
       ! Sample random numbers
       xi_pd = prn()
@@ -3396,9 +3403,9 @@ module mgxs_header
 
         do while (xi_pd >= prob_prompt)
           dg = dg + 1
+
           prob_prompt = prob_prompt + &
-               this % get_xs('delayed-nu-fission', gin, dg=dg) &
-               / this % get_xs('nu-fission', gin)
+               delayed_nu_fission(dg) / (delayed_nu_fission_total + prompt_nu_fission)
         end do
 
         ! Adjust dg in case of round off error
@@ -3416,20 +3423,26 @@ module mgxs_header
 
     end subroutine mgxsiso_sample_fission_energy
 
-    subroutine mgxsang_sample_fission_energy(this, gin, uvw, dg, gout)
+    subroutine mgxsang_sample_fission_energy(this, gin, uvw, delayed_nu_fission, dg, gout)
       class(MgxsAngle), intent(in) :: this  ! Data to work with
       integer, intent(in)          :: gin    ! Incoming energy group
       real(8), intent(in)          :: uvw(3) ! Direction vector
+      real(8), intent(in)          :: delayed_nu_fission(:)
       integer, intent(out)         :: dg     ! Delayed group
       integer, intent(out)         :: gout   ! Sampled outgoing group
+      integer                      :: mesh_bin
       real(8) :: xi_pd            ! Our random number for prompt/delayed
       real(8) :: xi_gout          ! Our random number for gout
       real(8) :: prob_gout        ! Running probability for gout
       real(8) :: prob_prompt
+      real(8) :: delayed_nu_fission_total
+      real(8) :: prompt_nu_fission
+
+      delayed_nu_fission_total = sum(delayed_nu_fission)
 
       ! Get nu and nu_prompt
-      prob_prompt = this % get_xs('prompt-nu-fission', gin, uvw=uvw) / &
-           this % get_xs('nu-fission', gin, uvw=uvw)
+      prompt_nu_fission = this % get_xs('prompt-nu-fission', gin, uvw=uvw)
+      prob_prompt = prompt_nu_fission / (prompt_nu_fission + delayed_nu_fission_total)
 
       ! Sample random numbers
       xi_pd = prn()
@@ -3458,9 +3471,9 @@ module mgxs_header
 
         do while (xi_pd >= prob_prompt)
           dg = dg + 1
-          prob_prompt = prob_prompt + &
-               this % get_xs('delayed-nu-fission', gin, uvw=uvw, dg=dg) / &
-               this % get_xs('nu-fission', gin, uvw=uvw)
+
+          prob_prompt = prob_prompt + delayed_nu_fission(dg) / &
+               (delayed_nu_fission_total + prompt_nu_fission)
         end do
 
         ! Adjust dg in case of round off error

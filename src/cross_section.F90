@@ -48,7 +48,6 @@ contains
     material_xs % nu_fission     = ZERO
     material_xs % prompt_nu_fission = ZERO
     material_xs % delayed_nu_fission(:) = ZERO
-    material_xs % decay_rate(:) = ZERO
     material_xs % kappa_fission  = ZERO
 
     ! Exit subroutine if material is void
@@ -138,14 +137,10 @@ contains
         material_xs % kappa_fission = material_xs % kappa_fission + &
              atom_density * micro_xs(i_nuclide) % kappa_fission
 
-        do d = 1, MAX_DELAYED_GROUPS
+        do d = 1, nuclides(i_nuclide) % n_precursor
           ! Add contributions to material macroscopic nu-fission cross section
           material_xs % delayed_nu_fission(d) = material_xs % delayed_nu_fission(d) + &
                atom_density * micro_xs(i_nuclide) % delayed_nu_fission(d)
-
-          ! Add contributions to material macroscopic nu-fission cross section
-          material_xs % decay_rate(d) = material_xs % decay_rate(d) + &
-               atom_density * micro_xs(i_nuclide) % decay_rate(d)
         end do
       end do
     end associate
@@ -158,11 +153,11 @@ contains
 !===============================================================================
 
   subroutine calculate_nuclide_xs(i_nuclide, i_sab, p, i_log_union)
+    integer, intent(in)           :: i_nuclide   ! index into nuclides array
+    integer, intent(in)           :: i_sab       ! index into sab_tables array
     type(Particle), intent(inout) :: p
-    integer, intent(in) :: i_nuclide ! index into nuclides array
-    integer, intent(in) :: i_sab     ! index into sab_tables array
-    integer, intent(in) :: i_log_union ! index into logarithmic mapping array or
-                                       ! material union energy grid
+    integer, intent(in)           :: i_log_union ! index into logarithmic mapping array or
+                                                 ! material union energy grid
 
     logical :: use_mp ! true if XS can be calculated with windowed multipole
     integer :: i_temp ! index for temperature
@@ -201,15 +196,12 @@ contains
           micro_xs(i_nuclide) % delayed_nu_fission(:) = ZERO
           do d = 1, nuc % n_precursor
             micro_xs(i_nuclide) % delayed_nu_fission(d) = sigF * nuc % nu(p % E, EMISSION_DELAYED, d)
-            micro_xs(i_nuclide) % decay_rate(d) = sigF * nuc % nu(p % E, EMISSION_DELAYED, d) * &
-                nuc % reactions(nuc % index_fission(1)) % products(1 + d) % decay_rate
           end do
         else
           micro_xs(i_nuclide) % fission    = ZERO
           micro_xs(i_nuclide) % nu_fission = ZERO
           micro_xs(i_nuclide) % prompt_nu_fission = ZERO
           micro_xs(i_nuclide) % delayed_nu_fission(:) = ZERO
-          micro_xs(i_nuclide) % decay_rate(:) = ZERO
           micro_xs(i_nuclide) % kappa_fission = ZERO
         end if
 
@@ -283,7 +275,6 @@ contains
           micro_xs(i_nuclide) % nu_fission = ZERO
           micro_xs(i_nuclide) % prompt_nu_fission = ZERO
           micro_xs(i_nuclide) % delayed_nu_fission(:) = ZERO
-          micro_xs(i_nuclide) % decay_rate(:) = ZERO
           micro_xs(i_nuclide) % kappa_fission = ZERO
 
           ! Calculate microscopic nuclide total cross section
@@ -319,10 +310,6 @@ contains
               ! Calculate microscopic nuclide delayed-nu-fission cross section
               micro_xs(i_nuclide) % delayed_nu_fission(d) = (ONE - f) * xs % delayed_nu_fission( &
                    i_grid, d) + f * xs % delayed_nu_fission(i_grid + 1, d)
-
-              ! Calculate microscopic nuclide nu-fission cross section
-              micro_xs(i_nuclide) % decay_rate(d) = (ONE - f) * xs % decay_rate( &
-                   i_grid, d) + f * xs % decay_rate(i_grid + 1, d)
             end do
           end if
         end associate
@@ -619,9 +606,6 @@ contains
         do d = 1, nuc % n_precursor
           micro_xs(i_nuclide) % delayed_nu_fission(d) = nuc % nu(E, EMISSION_DELAYED, d) * &
                micro_xs(i_nuclide) % fission
-          micro_xs(i_nuclide) % decay_rate(d) = nuc % nu(E, EMISSION_DELAYED, d) * &
-               micro_xs(i_nuclide) % fission * nuc % reactions(nuc % index_fission(1)) % &
-               products(1 + d) % decay_rate
         end do
       end if
     end associate
@@ -907,15 +891,17 @@ contains
     real(8)                   :: xs_out ! 0K xs at trial energy
 
     integer :: i_grid ! index on nuclide energy grid
+    integer :: n_grid
     real(8) :: f      ! interp factor on nuclide energy grid
 
     ! Determine index on nuclide energy grid
+    n_grid = size(nuc % energy_0K)
     if (E < nuc % energy_0K(1)) then
       i_grid = 1
-    elseif (E > nuc % energy_0K(nuc % n_grid_0K)) then
-      i_grid = nuc % n_grid_0K - 1
+    elseif (E > nuc % energy_0K(n_grid)) then
+      i_grid = n_grid - 1
     else
-      i_grid = binary_search(nuc % energy_0K, nuc % n_grid_0K, E)
+      i_grid = binary_search(nuc % energy_0K, n_grid, E)
     end if
 
     ! check for rare case where two energy points are the same

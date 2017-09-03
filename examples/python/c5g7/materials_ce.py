@@ -56,6 +56,7 @@ materials['Moderator'].set_density('sum')
 materials['Moderator'].add_element('H', 2*3.3500E-2, 'ao')
 materials['Moderator'].add_element('O',   3.3500E-2, 'ao')
 materials['Moderator'].add_element('B',   2.7800E-5, 'ao')
+materials['Moderator'].add_s_alpha_beta('c_H_in_H2O')
 
 materials['Al Clad'] = openmc.Material(name='Al Clad')
 materials['Al Clad'].set_density('sum')
@@ -82,6 +83,7 @@ materials['Fission Chamber'].add_element('H'   , 2*3.3500E-2, 'ao')
 materials['Fission Chamber'].add_element('O'   ,   3.3500E-2, 'ao')
 materials['Fission Chamber'].add_element('B'   ,   2.7800E-5, 'ao')
 materials['Fission Chamber'].add_nuclide('U235',   1.0000E-8, 'ao')
+materials['Fission Chamber'].add_s_alpha_beta('c_H_in_H2O')
 
 for bank in range(0,5):
     materials['Moderator Bank {}'.format(bank)] = copy.deepcopy(materials['Moderator'])

@@ -31,10 +31,10 @@ contains
     do d = 1, n
 
       ! Check for cases where particle is outside of mesh
-      if (xyz(d) < m % lower_left(d)) then
+      if (xyz(d) < m % lower_left(d) - TINY_BIT) then
         bin = NO_BIN_FOUND
         return
-      elseif (xyz(d) > m % upper_right(d)) then
+      elseif (xyz(d) > m % upper_right(d) + TINY_BIT) then
         bin = NO_BIN_FOUND
         return
       end if
@@ -61,13 +61,28 @@ contains
     real(8), intent(in)           :: xyz(:)  ! coordinates to check
     integer, intent(out)          :: ijk(:)  ! indices in mesh
     logical, intent(out)          :: in_mesh ! were given coords in mesh?
+    integer                       :: n       ! size of mesh
+    integer                       :: d       ! mesh dimension index
+
+    ! Get number of dimensions
+    n = m % n_dimension
 
     ! Find particle in mesh
-    ijk(:m % n_dimension) = ceiling((xyz(:m % n_dimension) - m % lower_left)/m % width)
+    ijk(:n) = ceiling((xyz(:n) - m % lower_left)/m % width)
+
+    ! Loop over the dimensions of the mesh
+    do d = 1, n
+
+      ! Put points in the boundary in the mesh cells
+      if (ijk(d) == 0 .and. xyz(d) >= m % lower_left(d) - TINY_BIT) then
+        ijk(d) = 1
+      else if (ijk(d) == m % dimension(d) + 1 .and. xyz(d) <= m % upper_right(d) + TINY_BIT) then
+        ijk(d) = m % dimension(d)
+      end if
+    end do
 
     ! Determine if particle is in mesh
-    if (any(ijk(:m % n_dimension) < 1) .or. &
-         any(ijk(:m % n_dimension) > m % dimension)) then
+    if (any(ijk(:n) < 1) .or. any(ijk(:n) > m % dimension)) then
       in_mesh = .false.
     else
       in_mesh = .true.

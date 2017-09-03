@@ -101,7 +101,7 @@ module global
   ! Default temperature and method for choosing temperatures
   integer :: temperature_method = TEMPERATURE_NEAREST
   logical :: temperature_multipole = .false.
-  real(8) :: temperature_tolerance = 500.0_8
+  real(8) :: temperature_tolerance = 10.0_8
   real(8) :: temperature_default = 293.6_8
 
   ! ============================================================================
@@ -117,7 +117,7 @@ module global
   integer :: num_energy_groups
 
   ! Number of delayed groups
-  integer :: num_delayed_groups
+  integer :: num_delayed_groups = MAX_DELAYED_GROUPS
 
   ! Energy group structure
   real(8), allocatable :: energy_bins(:)
@@ -348,21 +348,14 @@ module global
   ! Whether create fission neutrons or not. Only applied for MODE_FIXEDSOURCE
   logical :: create_fission_neutrons = .true.
 
-  ! Whether create fission delayed neutrons or not. Only applied for MODE_FIXEDSOURCE
-  logical :: create_fission_delayed_neutrons = .true.
-
-  ! The critical eigenvalue used to normalize the neutrons per fission during a
-  ! fixed source solve
-  real(8) :: k_crit = ONE
-
   ! Frequency mesh
   logical                    :: flux_frequency_on = .false.
   logical                    :: precursor_frequency_on = .false.
   real(8), allocatable       :: flux_frequency(:) ! Omega by energy group
   real(8), allocatable       :: precursor_frequency(:,:) ! Omega by cell and delayed group
   type(RegularMesh), pointer :: frequency_mesh
-  integer                    :: num_frequency_energy_groups
-  integer                    :: num_frequency_delayed_groups
+  integer                    :: num_frequency_energy_groups = ZERO
+  integer                    :: num_frequency_delayed_groups = ZERO
   real(8), allocatable       :: frequency_energy_bins(:)
   real(8), allocatable       :: frequency_energy_bin_avg(:)
 
@@ -447,9 +440,11 @@ module global
   ! ============================================================================
   ! RESONANCE SCATTERING VARIABLES
 
-  logical :: treat_res_scat = .false. ! is resonance scattering treated?
-  integer :: n_res_scatterers_total = 0 ! total number of resonant scatterers
-  type(Nuclide0K), allocatable, target :: nuclides_0K(:) ! 0K nuclides info
+  logical :: res_scat_on = .false. ! is resonance scattering treated?
+  integer :: res_scat_method = RES_SCAT_ARES  ! resonance scattering method
+  real(8) :: res_scat_energy_min = 0.01_8
+  real(8) :: res_scat_energy_max = 1000.0_8
+  character(10), allocatable :: res_scat_nuclides(:)
 
 !$omp threadprivate(micro_xs, material_xs, fission_bank, n_bank, &
 !$omp&              trace, thread_id, current_work, matching_bins, &
@@ -486,17 +481,11 @@ contains
       deallocate(nuclides)
     end if
 
-    if (allocated(nuclides_0K)) then
-      deallocate(nuclides_0K)
-    end if
+    if (allocated(res_scat_nuclides)) deallocate(res_scat_nuclides)
 
-    if (allocated(nuclides_MG)) then
-      deallocate(nuclides_MG)
-    end if
+    if (allocated(nuclides_MG)) deallocate(nuclides_MG)
 
-    if (allocated(macro_xs)) then
-      deallocate(macro_xs)
-    end if
+    if (allocated(macro_xs)) deallocate(macro_xs)
 
     if (allocated(sab_tables)) deallocate(sab_tables)
     if (allocated(micro_xs)) deallocate(micro_xs)

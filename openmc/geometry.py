@@ -1,4 +1,5 @@
 from collections import OrderedDict, Iterable
+from copy import deepcopy
 from xml.etree import ElementTree as ET
 from numbers import Real
 
@@ -75,15 +76,15 @@ class Geometry(object):
 
         """
         if volume_calc.domain_type == 'cell':
-            for cell in self.get_all_cells():
+            for cell in self.get_all_cells().values():
                 if cell.id in volume_calc.volumes:
                     cell.add_volume_information(volume_calc)
         elif volume_calc.domain_type == 'material':
-            for material in self.get_all_materials():
+            for material in self.get_all_materials().values():
                 if material.id in volume_calc.volumes:
                     material.add_volume_information(volume_calc)
         elif volume_calc.domain_type == 'universe':
-            for universe in self.get_all_universes():
+            for universe in self.get_all_universes().values():
                 if universe.id in volume_calc.volumes:
                     universe.add_volume_information(volume_calc)
 
@@ -278,6 +279,22 @@ class Geometry(object):
 
         return lattices
 
+    def get_all_surfaces(self):
+        """
+        Return all surfaces used in the geometry
+
+        Returns
+        -------
+        collections.OrderedDict
+            Dictionary mapping surface IDs to :class:`openmc.Surface` instances
+
+        """
+        surfaces = OrderedDict()
+
+        for cell in self.get_all_cells().values():
+            surfaces = cell.region.get_surfaces(surfaces)
+        return surfaces
+
     def get_materials_by_name(self, name, case_sensitive=False, matching=False):
         """Return a list of materials with matching names.
 
@@ -381,18 +398,25 @@ class Geometry(object):
         if not case_sensitive:
             name = name.lower()
 
-        all_cells = self.get_all_cells().values()
         cells = set()
 
-        for cell in all_cells:
-            cell_fill_name = cell.fill.name
-            if not case_sensitive:
-                cell_fill_name = cell_fill_name.lower()
+        for cell in self.get_all_cells().values():
+            names = []
+            if cell.fill_type in ('material', 'universe', 'lattice'):
+                names.append(cell.fill.name)
+            elif cell.fill_type == 'distribmat':
+                for mat in cell.fill:
+                    if mat is not None:
+                        names.append(mat.name)
 
-            if cell_fill_name == name:
-                cells.add(cell)
-            elif not matching and name in cell_fill_name:
-                cells.add(cell)
+            for fill_name in names:
+                if not case_sensitive:
+                    fill_name = fill_name.lower()
+
+                if fill_name == name:
+                    cells.add(cell)
+                elif not matching and name in fill_name:
+                    cells.add(cell)
 
         cells = list(cells)
         cells.sort(key=lambda x: x.id)
@@ -494,3 +518,11 @@ class Geometry(object):
 
         # Recursively traverse the CSG tree to count all cell instances
         self.root_universe._determine_paths()
+
+    def clone(self):
+        """Create a copy of this geometry with new unique IDs for all of its
+        enclosed materials, surfaces, cells, universes and lattices."""
+
+        clone = deepcopy(self)
+        clone.root_universe = self.root_universe.clone()
+        return clone

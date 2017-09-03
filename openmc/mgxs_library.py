@@ -25,6 +25,12 @@ _XS_SHAPES = ["[G][G'][Order]", "[G]", "[G']", "[G][G']", "[DG]", "[DG][G]",
 # Number of mu points for conversion between scattering formats
 _NMU = 257
 
+# Filetype name of the MGXS Library
+_FILETYPE_MGXS_LIBRARY = 'mgxs'
+
+# Current version of the MGXS Library Format
+_VERSION_MGXS_LIBRARY = 1
+
 
 class XSdata(object):
     """A multi-group cross section data set providing all the
@@ -680,7 +686,7 @@ class XSdata(object):
         """
 
         # Get the accepted shapes for this xs
-        shapes = [self.xs_shapes["[G]"], self.xs_shapes["[DG][G']"]]
+        shapes = [self.xs_shapes["[G']"], self.xs_shapes["[DG][G']"]]
 
         # Convert to a numpy array so we can easily get the shape for checking
         chi_delayed = np.asarray(chi_delayed)
@@ -2513,6 +2519,8 @@ class MGXSLibrary(object):
 
         # Create and write to the HDF5 file
         file = h5py.File(filename, "w")
+        file.attrs['filetype'] = np.string_(_FILETYPE_MGXS_LIBRARY)
+        file.attrs['version'] = [_VERSION_MGXS_LIBRARY, 0]
         file.attrs['energy_groups'] = self.energy_groups.num_groups
         file.attrs['delayed_groups'] = self.num_delayed_groups
         file.attrs['group structure'] = self.energy_groups.group_edges
@@ -2551,6 +2559,10 @@ class MGXSLibrary(object):
 
         check_type('filename', filename, str)
         file = h5py.File(filename, 'r')
+
+        # Check filetype and version
+        cv.check_filetype_version(file, _FILETYPE_MGXS_LIBRARY,
+                                  _VERSION_MGXS_LIBRARY)
 
         group_structure = file.attrs['group structure']
         num_delayed_groups = file.attrs['delayed_groups']

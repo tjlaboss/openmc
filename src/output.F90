@@ -369,15 +369,15 @@ contains
     ! write out information about batch and generation
     write(UNIT=OUTPUT_UNIT, FMT='(2X,A9)', ADVANCE='NO') &
          trim(to_str(current_batch)) // "/" // trim(to_str(current_gen))
-    write(UNIT=OUTPUT_UNIT, FMT='(3X,F8.5)', ADVANCE='NO') &
+    write(UNIT=OUTPUT_UNIT, FMT='(3X,F8.6)', ADVANCE='NO') &
          k_generation(overall_gen)
 
     ! write out entropy info
-    if (entropy_on) write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
+    if (entropy_on) write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
          entropy(overall_gen)
 
     if (overall_gen - n_inactive*gen_per_batch > 1) then
-      write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5," +/-",F8.5)', ADVANCE='NO') &
+      write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6," +/-",F8.6)', ADVANCE='NO') &
            keff, keff_std
     end if
 
@@ -396,16 +396,16 @@ contains
     ! write out information batch and option independent output
     write(UNIT=OUTPUT_UNIT, FMT='(2X,A9)', ADVANCE='NO') &
          trim(to_str(current_batch)) // "/" // trim(to_str(gen_per_batch))
-    write(UNIT=OUTPUT_UNIT, FMT='(3X,F8.5)', ADVANCE='NO') &
+    write(UNIT=OUTPUT_UNIT, FMT='(3X,F8.6)', ADVANCE='NO') &
          k_generation(overall_gen)
 
     ! write out entropy info
-    if (entropy_on) write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
+    if (entropy_on) write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
          entropy(current_batch*gen_per_batch)
 
     ! write out accumulated k-effective if after first active batch
     if (overall_gen - n_inactive*gen_per_batch > 1) then
-      write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5," +/-",F8.5)', ADVANCE='NO') &
+      write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6," +/-",F8.6)', ADVANCE='NO') &
            keff, keff_std
     else
       write(UNIT=OUTPUT_UNIT, FMT='(23X)', ADVANCE='NO')
@@ -413,20 +413,20 @@ contains
 
     ! write out cmfd keff if it is active and other display info
     if (cmfd_on) then
-      write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
+      write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
            cmfd % k_cmfd(current_batch)
       select case(trim(cmfd_display))
         case('entropy')
-          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
+          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
                cmfd % entropy(current_batch)
         case('balance')
-          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
+          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
                cmfd % balance(current_batch)
         case('source')
-          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
+          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
                cmfd % src_cmp(current_batch)
         case('dominance')
-          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
+          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
                cmfd % dom(current_batch)
       end select
     end if
@@ -637,8 +637,8 @@ contains
     end if
     write(ou,*)
 
-102 format (1X,A,T30,"= ",F8.5," +/- ",F8.5)
-103 format (1X,A,T30,"= ",F8.5)
+102 format (1X,A,T30,"= ",F8.6," +/- ",F8.6)
+103 format (1X,A,T30,"= ",F8.6)
 
   end subroutine print_results
 

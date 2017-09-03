@@ -10,7 +10,6 @@ import numpy as np
 
 import openmc.checkvalue as cv
 from openmc.stats.univariate import Univariate, Uniform
-import openmc
 
 
 @add_metaclass(ABCMeta)
@@ -55,7 +54,8 @@ class PolarAzimuthal(UnitSphere):
     """Angular distribution represented by polar and azimuthal angles
 
     This distribution allows one to specify the distribution of the cosine of
-    the polar angle and the azimuthal angle independently of once another.
+    the polar angle and the azimuthal angle independently of one another. The
+    polar angle is measured relative to the reference angle.
 
     Parameters
     ----------
@@ -345,78 +345,13 @@ class Box(Spatial):
 
         """
         element = ET.Element('space')
-        element.set("type", "box")
-
         if self.only_fissionable:
-            element.set("fissionable", "True")
-
+            element.set("type", "fission")
+        else:
+            element.set("type", "box")
         params = ET.SubElement(element, "parameters")
         params.text = ' '.join(map(str, self.lower_left)) + ' ' + \
                       ' '.join(map(str, self.upper_right))
-
-
-        return element
-
-
-class Mesh(Spatial):
-    """Uniform distribution of coordinates in a mesh.
-
-    Parameters
-    ----------
-    mesh : openmc.Mesh
-        Mesh object
-    only_fissionable : bool, optional
-        Whether spatial sites should only be accepted if they occur in
-        fissionable materials
-
-    Attributes
-    ----------
-    mesh : openmc.Mesh
-        Mesh object
-
-    """
-
-
-    def __init__(self, mesh, only_fissionable=False):
-        super(Mesh, self).__init__()
-        self.mesh = mesh
-        self.only_fissionable = only_fissionable
-
-    @property
-    def mesh(self):
-        return self._mesh
-
-    @property
-    def only_fissionable(self):
-        return self._only_fissionable
-
-    @mesh.setter
-    def mesh(self, mesh):
-        cv.check_type('mesh', mesh, openmc.Mesh)
-        self._mesh = mesh
-
-    @only_fissionable.setter
-    def only_fissionable(self, only_fissionable):
-        cv.check_type('only fissionable', only_fissionable, bool)
-        self._only_fissionable = only_fissionable
-
-    def to_xml_element(self):
-        """Return XML representation of the box distribution
-
-        Returns
-        -------
-        element : xml.etree.ElementTree.Element
-            XML element containing box distribution data
-
-        """
-        element = ET.Element('space')
-        element.set("type", "mesh")
-
-        if self.only_fissionable:
-            element.set("fissionable", "True")
-
-        params = ET.SubElement(element, "parameters")
-        params.append(self.mesh.to_xml_element())
         return element
 
 

@@ -112,8 +112,7 @@ class Source(object):
 
         """
         element = ET.Element("source")
-        subelement = ET.SubElement(element, "strength")
-        subelement.text = str(self.strength)
+        element.set("strength", str(self.strength))
         if self.file is not None:
             element.set("file", self.file)
         if self.space is not None:

@@ -117,7 +117,7 @@ elif case == '5.4':
 # OpenMC simulation parameters
 batches = 110
 inactive = 60
-particles = 10000000
+particles = 1000000
 
 # Instantiate a Settings object
 settings_file = openmc.Settings()
@@ -133,8 +133,9 @@ uniform_dist = openmc.stats.Box(bounds[:3], bounds[3:], only_fissionable=True)
 settings_file.source = openmc.source.Source(space=uniform_dist)
 
 sourcepoint = dict()
-sourcepoint['batches'] = []
-sourcepoint['write'] = False
+sourcepoint['batches'] = [batches]
+sourcepoint['separate'] = True
+sourcepoint['write'] = True
 settings_file.sourcepoint = sourcepoint
 
 entropy_mesh = openmc.Mesh()
@@ -203,40 +204,46 @@ quarter_assembly_mesh.upper_right = [ 10.71,  32.13,  64.26]
 
 full_quarter_assembly_mesh = openmc.Mesh()
 full_quarter_assembly_mesh.type = 'regular'
-full_quarter_assembly_mesh.dimension = [6,6,32]
+full_quarter_assembly_mesh.dimension = [6,6,8]
 full_quarter_assembly_mesh.lower_left  = [-32.13, -32.13, -85.68]
 full_quarter_assembly_mesh.upper_right = [ 32.13,  32.13,  85.68]
 
+t_outer = np.arange(0., 2.5, 5.e-1)
 
 # Instantiate a clock object
-clock = openmc.kinetics.Clock(start=0., end=4., dt_outer=1.5e-1, dt_inner=1.e-2)
+clock = openmc.kinetics.Clock(start=0., end=2., dt_inner=1.e-2, t_outer=t_outer)
 
 # Instantiate a kinetics solver object
-solver = openmc.kinetics.Solver(name='MG_OMEGA', directory='C5G7_3D')
+solver = openmc.kinetics.Solver(directory='C5G7_3D_MG')
 solver.num_delayed_groups           = 8
-solver.flux_mesh                    = full_quarter_assembly_mesh
-solver.pin_mesh                     = full_pin_cell_mesh
+solver.amplitude_mesh               = full_point_mesh
+solver.shape_mesh                   = full_quarter_assembly_mesh
+solver.tally_mesh                   = full_pin_cell_mesh
 solver.one_group                    = one_group
 solver.energy_groups                = energy_groups
-solver.fine_groups                  = fine_groups
+solver.fine_groups                  = energy_groups
+solver.tally_groups                 = energy_groups
 solver.geometry                     = geometry
 solver.settings_file                = settings_file
 solver.materials_file               = materials_file
-solver.mgxs_lib_file                = mgxs_lib_file
-solver.inner_tolerance              = 1.e-3
+solver.inner_tolerance              = np.inf
 solver.outer_tolerance              = np.inf
+solver.mgxs_lib_file                = mgxs_lib_file
 solver.method                       = 'OMEGA'
 solver.multi_group                  = True
 solver.clock                        = clock
 solver.mpi_procs                    = 36*10
 solver.threads                      = 1
 solver.core_volume                  = 42.84 * 42.84 * 128.52
-solver.constant_seed                = False
+solver.constant_seed                = True
 solver.seed                         = 1
+solver.min_outer_iters              = 2
+solver.use_pcmfd                    = False
+solver.use_agd                      = False
+solver.condense_dif_coef            = True
 solver.chi_delayed_by_delayed_group = True
 solver.chi_delayed_by_mesh          = False
 solver.use_pregenerated_sps         = False
-solver.pregenerate_sps              = False
 solver.run_on_cluster               = False
 solver.job_file                     = 'job_broadwell.pbs'
 solver.log_file_name                = 'log_file.h5'

@@ -94,7 +94,7 @@ contains
         freq_group = num_frequency_energy_groups + 1 - freq_group
       end if
 
-      if (mesh_bin /= -1 .and. freq_group /= -1) then
+      if (freq_group /= -1) then
         freq = flux_frequency(freq_group) * material_xs % inverse_velocity
       else
         freq = ZERO
@@ -111,8 +111,6 @@ contains
         call p % create_secondary(p % coord(1) % uvw, NEUTRON, run_CE=.false.)
       else
         p % alive = .false.
-        p % wgt = ZERO
-        p % last_wgt = ZERO
         return
       end if
     else
@@ -175,7 +173,7 @@ contains
         delayed_nu_fission = material_xs % delayed_nu_fission(d)
 
         if (mesh_bin /= -1 .and. d <= num_frequency_delayed_groups) then
-          delayed_nu_fission = delayed_nu_fission * precursor_frequency(mesh_bin, d)
+          delayed_nu_fission = delayed_nu_fission * precursor_frequency(d, mesh_bin)
         end if
 
         nu_fission = nu_fission + delayed_nu_fission
@@ -185,8 +183,9 @@ contains
 !$omp atomic
       global_tallies(RESULT_VALUE, K_ABSORPTION) = &
            global_tallies(RESULT_VALUE, K_ABSORPTION) + p % absorb_wgt * &
-           nu_fission / material_xs % absorption / k_crit
+           nu_fission / material_xs % absorption
     else
+
       ! See if disappearance reaction happens
       if (material_xs % absorption > prn() * material_xs % total) then
 
@@ -202,7 +201,7 @@ contains
           delayed_nu_fission = material_xs % delayed_nu_fission(d)
 
           if (mesh_bin /= -1 .and. d <= num_frequency_delayed_groups) then
-            delayed_nu_fission = delayed_nu_fission * precursor_frequency(mesh_bin, d)
+            delayed_nu_fission = delayed_nu_fission * precursor_frequency(d, mesh_bin)
           end if
 
           nu_fission = nu_fission + delayed_nu_fission
@@ -212,7 +211,7 @@ contains
 !$omp atomic
         global_tallies(RESULT_VALUE, K_ABSORPTION) = &
              global_tallies(RESULT_VALUE, K_ABSORPTION) + p % wgt * &
-             nu_fission / material_xs % absorption / k_crit
+             nu_fission / material_xs % absorption
 
         p % alive = .false.
         p % event = EVENT_ABSORB
@@ -261,14 +260,19 @@ contains
     integer :: nu                       ! actual number of neutrons produced
     integer :: ijk(3)                   ! indices in ufs mesh
     integer :: group
+    integer :: freq_group
     integer :: mesh_bin
     real(8) :: nu_t                     ! total nu
     real(8) :: nu_delayed               ! nu delayed
     real(8) :: mu                       ! fission neutron angular cosine
     real(8) :: phi                      ! fission neutron azimuthal angle
     real(8) :: weight                   ! weight adjustment for ufs method
+    real(8) :: freq
+    real(8) :: delayed_nu_fission(MAX_DELAYED_GROUPS)
     logical :: in_mesh                  ! source site in ufs mesh?
     class(Mgxs), pointer :: xs
+
+    delayed_nu_fission = ZERO
 
     ! Get Pointers
     xs => macro_xs(p % material) % obj
@@ -297,9 +301,30 @@ contains
       weight = ONE
     end if
 
+    ! Adjust the weight to account for the flux frequency
+    if (flux_frequency_on) then
+
+      call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
+
+      if (p % E <= frequency_energy_bins(1) .or. p % E > frequency_energy_bins(num_frequency_energy_groups + 1)) then
+        freq_group = -1
+      else
+        freq_group = binary_search(frequency_energy_bins, num_frequency_energy_groups + 1, p % E)
+        freq_group = num_frequency_energy_groups + 1 - freq_group
+      end if
+
+      if (freq_group /= -1) then
+        freq = flux_frequency(freq_group) * material_xs % inverse_velocity
+      else
+        freq = ZERO
+      end if
+    else
+      freq = ZERO
+    end if
+
     ! Determine expected number of neutrons produced
     nu_t = p % wgt / keff * weight * &
-         material_xs % prompt_nu_fission / material_xs % total / k_crit
+         material_xs % prompt_nu_fission / (material_xs % total + abs(freq))
 
     if (precursor_frequency_on) then
       call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
@@ -307,18 +332,18 @@ contains
       mesh_bin = -1
     end if
 
-    if (create_fission_delayed_neutrons) then
-      do group = 1, num_delayed_groups
-        nu_delayed = p % wgt / keff * weight * material_xs % delayed_nu_fission(group) / &
-             material_xs % total / k_crit
+    do group = 1, num_delayed_groups
+      delayed_nu_fission(group) = material_xs % delayed_nu_fission(group)
+      nu_delayed = p % wgt / keff * weight * delayed_nu_fission(group) / &
+           (material_xs % total + abs(freq))
 
-        if (mesh_bin /= -1 .and. group <= num_frequency_delayed_groups) then
-          nu_delayed = nu_delayed * precursor_frequency(mesh_bin, group)
-        end if
+      if (mesh_bin /= -1 .and. group <= num_frequency_delayed_groups) then
+        nu_delayed = nu_delayed * precursor_frequency(group, mesh_bin)
+        delayed_nu_fission(group) = delayed_nu_fission(group) * precursor_frequency(group, mesh_bin)
+      end if
 
-        nu_t = nu_t + nu_delayed
-      end do
-    end if
+      nu_t = nu_t + nu_delayed
+    end do
 
     ! Sample number of neutrons produced
     if (prn() > nu_t - int(nu_t)) then
@@ -369,7 +394,7 @@ contains
 
       ! Sample secondary energy distribution for fission reaction and set energy
       ! in fission bank
-      call xs % sample_fission_energy(p % g, bank_array(i) % uvw, dg, gout)
+      call xs % sample_fission_energy(p % g, bank_array(i) % uvw, delayed_nu_fission, dg, gout)
 
       bank_array(i) % E = real(gout, 8)
       bank_array(i) % delayed_group = dg

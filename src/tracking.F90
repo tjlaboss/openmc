@@ -48,9 +48,13 @@ contains
     real(8) :: delayed_nu_fission
     real(8) :: freq
     real(8) :: velocity
+    real(8) :: atom_density
     integer :: mesh_bin
     integer :: freq_group
     integer :: d
+    integer :: l
+    integer :: i_nuc
+    type(Nuclide), pointer :: nuc
 
 
     ! Display message if high verbosity or trace is on
@@ -138,18 +142,20 @@ contains
           freq_group = num_frequency_energy_groups + 1 - freq_group
         end if
 
-        if (mesh_bin /= -1 .and. freq_group /= -1) then
-
-          freq = flux_frequency(freq_group)
-          velocity = sqrt(TWO * p % E / MASS_NEUTRON_EV) * C_LIGHT * 100.0_8
-          freq = freq / velocity
+        if (freq_group /= -1) then
+          if (run_CE) then
+            freq = flux_frequency(freq_group)
+            velocity = sqrt(TWO * p % E / MASS_NEUTRON_EV) * C_LIGHT * 100.0_8
+            freq = freq / velocity
+          else
+            freq = flux_frequency(freq_group) * material_xs % inverse_velocity
+          end if
         else
           freq = ZERO
         end if
       else
         freq = ZERO
       end if
-
 
       ! Sample a distance to collision
       if (material_xs % total == ZERO .and. freq == ZERO) then
@@ -182,18 +188,18 @@ contains
           mesh_bin = -1
         end if
 
-        do d = 1, MAX_DELAYED_GROUPS
+        do d = 1, num_delayed_groups
           delayed_nu_fission = material_xs % delayed_nu_fission(d)
 
           if (mesh_bin /= -1 .and. d <= num_frequency_delayed_groups) then
-            delayed_nu_fission = delayed_nu_fission * precursor_frequency(mesh_bin, d)
+            delayed_nu_fission = delayed_nu_fission * precursor_frequency(d, mesh_bin)
           end if
 
           nu_fission = nu_fission + delayed_nu_fission
         end do
 
         global_tally_tracklength = global_tally_tracklength + p % wgt * &
-             distance * nu_fission / k_crit
+             distance * nu_fission
       end if
 
       ! Score flux derivative accumulators for differential tallies.
@@ -232,18 +238,18 @@ contains
             mesh_bin = -1
           end if
 
-          do d = 1, MAX_DELAYED_GROUPS
+          do d = 1, num_delayed_groups
             delayed_nu_fission = material_xs % delayed_nu_fission(d)
 
             if (mesh_bin /= -1 .and. d <= num_frequency_delayed_groups) then
-              delayed_nu_fission = delayed_nu_fission * precursor_frequency(mesh_bin, d)
+              delayed_nu_fission = delayed_nu_fission * precursor_frequency(d, mesh_bin)
             end if
 
             nu_fission = nu_fission + delayed_nu_fission
           end do
 
           global_tally_collision = global_tally_collision + p % wgt * &
-               nu_fission / material_xs % total / k_crit
+               nu_fission / (material_xs % total + abs(freq))
         end if
 
         ! score surface current tallies -- this has to be done before the collision

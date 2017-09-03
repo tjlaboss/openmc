@@ -41,6 +41,9 @@ class State(object):
     unity_mesh : openmc.mesh.Mesh
         Mesh with one cell convering the entire geometry..
 
+    tally_mesh : openmc.mesh.Mesh
+        Mesh to tally currents
+
     one_group : openmc.mgxs.groups.EnergyGroups
         EnergyGroups which specifies the a one-energy-group structure.
 
@@ -77,6 +80,12 @@ class State(object):
     chi_delayed_by_mesh : bool
         Whether to use a mesh in representing chi-delayed.
 
+    use_agd : bool
+        Whether to use artificial grid diffusion
+
+    use_pcmfd : bool
+        Whether to use p-CMFD
+
     num_delayed_groups : int
         The number of delayed neutron precursor groups.
 
@@ -103,6 +112,7 @@ class State(object):
         self._amplitude_mesh = None
         self._shape_mesh = None
         self._unity_mesh = None
+        self._tally_mesh = None
 
         self._one_group = None
         self._energy_groups = None
@@ -122,6 +132,8 @@ class State(object):
         self._log_file = None
         self._multi_group = True
         self._condense_dif_coef = True
+        self._use_agd = False
+        self._use_pcmfd = False
         self.states = states
 
     @property
@@ -141,6 +153,10 @@ class State(object):
         return self._unity_mesh
 
     @property
+    def tally_mesh(self):
+        return self._tally_mesh
+
+    @property
     def one_group(self):
         return self._one_group
 
@@ -155,6 +171,10 @@ class State(object):
     @property
     def tally_groups(self):
         return self._tally_groups
+
+    @property
+    def method(self):
+        return self._method
 
     @property
     def amplitude(self):
@@ -219,6 +239,10 @@ class State(object):
     def unity_mesh(self, mesh):
         self._unity_mesh = mesh
 
+    @tally_mesh.setter
+    def tally_mesh(self, mesh):
+        self._tally_mesh = mesh
+
     @one_group.setter
     def one_group(self, one_group):
         self._one_group = one_group
@@ -234,6 +258,10 @@ class State(object):
     @tally_groups.setter
     def tally_groups(self, tally_groups):
         self._tally_groups = tally_groups
+
+    @method.setter
+    def method(self, method):
+        self._method = method
 
     @amplitude.setter
     def amplitude(self, amp):
@@ -287,12 +315,20 @@ class State(object):
         return tuple(self.shape_mesh.dimension[::-1])
 
     @property
+    def tally_dimension(self):
+        return tuple(self.tally_mesh.dimension[::-1])
+
+    @property
     def amplitude_dimension(self):
         return tuple(self.amplitude_mesh.dimension[::-1])
 
     @property
     def shape_zyxg(self):
         return self.shape_dimension + (self.ng,)
+
+    @property
+    def tally_zyxg(self):
+        return self.tally_dimension + (self.ng,)
 
     @property
     def amplitude_zyxg(self):
@@ -327,25 +363,34 @@ class State(object):
         return np.prod(self.shape_dimension)
 
     @property
+    def tally_nxyz(self):
+        return np.prod(self.tally_dimension)
+
+    @property
     def amplitude_nxyz(self):
         return np.prod(self.amplitude_dimension)
 
     @property
     def shape_dxyz(self):
-        return np.prod(self.shape_mesh.width)
+        width = list(self.shape_mesh.width)
+        dim = list(self.shape_dimension)[::-1]
+        width = [i/j for i,j in zip(width,dim)]
+        return np.prod(width)
 
     @property
     def amplitude_dxyz(self):
-        return np.prod(self.amplitude_mesh.width)
+        width = list(self.amplitude_mesh.width)
+        dim = list(self.amplitude_dimension)[::-1]
+        width = [i/j for i,j in zip(width,dim)]
+        return np.prod(width)
 
     @property
     def power(self):
-        return (self.shape_dxyz * self.kappa_fission * self.flux).sum(axis=1)
+        return (self.kappa_fission * self.flux).sum(axis=1)
 
     @property
     def core_power_density(self):
-        mesh_volume = self.shape_dxyz * self.shape_nxyz
-        return self.power.sum() * mesh_volume / self.core_volume
+        return self.power.sum() / self.core_volume
 
     @property
     def flux(self):
@@ -374,7 +419,7 @@ class State(object):
     def delayed_production_matrix(self):
         delayed_production = self.delayed_production.sum(axis=1)
         shape = np.tile(self.shape, self.ng).reshape((self.shape_nxyz, self.ng, self.ng))
-        delayed_production *= shape * self.shape_dxyz / self.k_crit
+        delayed_production *= shape / self.k_crit
 
         # Condense down to the coarse mesh
         delayed_production = openmc.kinetics.map_array(delayed_production, self.shape_zyxgg, self.amplitude_zyxgg, False)
@@ -388,7 +433,7 @@ class State(object):
 
     @property
     def prompt_production_matrix(self):
-        prompt_production = self.prompt_production * self.shape_dxyz / self.k_crit
+        prompt_production = self.prompt_production / self.k_crit
 
         shape = np.tile(self.shape, self.ng).reshape((self.shape_nxyz, self.ng, self.ng))
         prompt_production = prompt_production * shape
@@ -402,9 +447,9 @@ class State(object):
 
         linear, non_linear = self.coupling_matrix
         shape              = np.tile(self.shape, self.ng).reshape((self.shape_nxyz, self.ng, self.ng))
-        inscatter          = self.inscatter * self.shape_dxyz * shape
+        inscatter          = self.inscatter * shape
         absorb_outscat     = self.outscatter + self.absorption
-        absorb_outscat     = absorb_outscat * self.shape_dxyz * self.shape
+        absorb_outscat     = absorb_outscat * self.shape
 
         # Condense down to the coarse mesh
         inscatter       = openmc.kinetics.map_array(inscatter, self.shape_zyxgg, self.amplitude_zyxgg, False)
@@ -428,7 +473,7 @@ class State(object):
 
     @property
     def pnl(self):
-        inv_vel = self.inverse_velocity * self.flux * self.shape_dxyz
+        inv_vel = self.inverse_velocity * self.flux
         inv_vel = openmc.kinetics.map_array(inv_vel, self.shape_zyxg, self.amplitude_zyxg, False)
         inv_vel.shape = (self.amplitude_nxyz, self.ng)
         inv_vel *= self.adjoint_flux
@@ -451,7 +496,7 @@ class State(object):
         flux = np.tile(self.flux, self.nd).reshape((self.shape_nxyz, self.nd, self.ng))
         adjoint_flux = np.tile(self.adjoint_flux, self.nd).reshape((self.amplitude_nxyz, self.nd, self.ng))
 
-        delayed_production = self.delayed_production * self.shape_dxyz
+        delayed_production = self.delayed_production
         delayed_production.shape = (self.shape_nxyz * self.nd, self.ng, self.ng)
         delayed_production = openmc.kinetics.block_diag(delayed_production)
         delayed_production /= self.k_crit
@@ -470,8 +515,77 @@ class State(object):
         production = production.sum(axis=(0,1))
         production = np.repeat(production, self.nd)
 
-        return (delayed_production / production).sum()
+        return (delayed_production / production)
 
+    def beta(self, integrated=False):
+        flux = np.tile(self.flux, self.nd).reshape((self.shape_nxyz, self.nd, self.ng))
+
+        delayed_production = self.delayed_production
+        delayed_production.shape = (self.shape_nxyz * self.nd, self.ng, self.ng)
+        delayed_production = openmc.kinetics.block_diag(delayed_production)
+        delayed_production /= self.k_crit
+
+        delayed_production *= flux.flatten()
+        old_shape = (self.shape_nxyz, self.nd, self.ng)
+        new_shape = (self.amplitude_nxyz, self.nd, self.ng)
+        delayed_production = openmc.kinetics.map_array(delayed_production, old_shape, new_shape, False)
+        delayed_production.shape = (self.amplitude_nxyz, self.nd, self.ng)
+        if integrated:
+            delayed_production = delayed_production.sum(axis=(0,2))
+        else:
+            delayed_production = delayed_production.sum(axis=(2,))
+
+        production = self.production_matrix * self.amplitude.flatten()
+        production.shape = (self.amplitude_nxyz, self.ng)
+        if integrated:
+            production = production.sum(axis=(0,1))
+            production = np.repeat(production, self.nd)
+        else:
+            production = production.sum(axis=(1,))
+            production = np.repeat(production, self.nd)
+            production.shape = (self.amplitude_nxyz, self.nd)
+
+        return delayed_production / production
+
+    def flux_frequency(self, integrated=True):
+
+        state_pre = self.states['PREVIOUS_INNER']
+        state_fwd = self.states['FORWARD_INNER']
+        flux_fwd = state_fwd.flux
+        flux_pre = state_pre.flux
+
+        if integrated:
+            unity_shape = (1,self.ng)
+            flux_fwd = openmc.kinetics.map_array(flux_fwd, flux_fwd.shape, unity_shape, normalize=True)
+            flux_pre = openmc.kinetics.map_array(flux_pre, flux_pre.shape, unity_shape, normalize=True)
+
+        freq = np.log(flux_fwd / flux_pre) / self.dt_inner
+        freq = openmc.kinetics.nan_inf_to_zero(freq)
+
+        return freq
+
+    def precursor_frequency(self, integrated=False):
+
+        state_pre = self.states['PREVIOUS_INNER']
+        state_fwd = self.states['FORWARD_INNER']
+        prec_fwd = state_fwd.precursors
+        prec_pre = state_pre.precursors
+        decay_rate = state_fwd.decay_rate
+
+        if integrated:
+            unity_shape = (1,self.nd)
+            num_nonzero = np.count_nonzero(decay_rate) / self.nd
+            prec_fwd = openmc.kinetics.map_array(prec_fwd, prec_fwd.shape, unity_shape, normalize=True)
+            prec_pre = openmc.kinetics.map_array(prec_pre, prec_pre.shape, unity_shape, normalize=True)
+            decay_rate = openmc.kinetics.map_array(decay_rate, decay_rate.shape, unity_shape, normalize=False)
+            decay_rate = decay_rate / num_nonzero
+
+        freq = np.log(prec_fwd / prec_pre) / self.dt_inner
+        freq = decay_rate / (decay_rate + freq)
+        freq = openmc.kinetics.nan_inf_to_zero(freq)
+        freq[freq == 0.0] = 1.0
+
+        return freq
 
 class OuterState(State):
 
@@ -504,8 +618,12 @@ class OuterState(State):
         return self._chi_delayed_by_mesh
 
     @property
-    def method(self):
-        return self._method
+    def use_agd(self):
+        return self._use_agd
+
+    @property
+    def use_pcmfd(self):
+        return self._use_pcmfd
 
     @property
     def mgxs_loaded(self):
@@ -528,9 +646,13 @@ class OuterState(State):
     def chi_delayed_by_mesh(self, chi_delayed_by_mesh):
         self._chi_delayed_by_mesh = chi_delayed_by_mesh
 
-    @method.setter
-    def method(self, method):
-        self._method = method
+    @use_agd.setter
+    def use_agd(self, use_agd):
+        self._use_agd = use_agd
+
+    @use_pcmfd.setter
+    def use_pcmfd(self, use_pcmfd):
+        self._use_pcmfd = use_pcmfd
 
     @mgxs_loaded.setter
     def mgxs_loaded(self, mgxs_loaded):
@@ -539,10 +661,7 @@ class OuterState(State):
     @property
     def inscatter(self):
         if not self.mgxs_loaded:
-            if self.multi_group:
-                self._inscatter = self.mgxs_lib['nu-scatter matrix'].get_condensed_xs(self.energy_groups).get_xs(row_column='outin')
-            else:
-                self._inscatter = self.mgxs_lib['consistent nu-scatter matrix'].get_condensed_xs(self.energy_groups).get_xs(row_column='outin')
+            self._inscatter = self.mgxs_lib['nu-scatter matrix'].get_condensed_xs(self.energy_groups).get_xs(row_column='outin')
 
         self._inscatter.shape = (self.shape_nxyz, self.ng, self.ng)
         return self._inscatter
@@ -646,9 +765,10 @@ class OuterState(State):
     @property
     def amplitude_flux_tallied(self):
         if not self.mgxs_loaded:
-            self._amplitude_flux_tallied = self.mgxs_lib['amplitude-kappa-fission'].get_condensed_xs(self.energy_groups).tallies['flux'].get_values()
-            self._amplitude_flux_tallied.shape = (self.amplitude_nxyz, self.ng)
-            self._amplitude_flux_tallied = self._amplitude_flux_tallied[:, ::-1]
+            amp_flux = self.mgxs_lib['amplitude-kappa-fission'].get_condensed_xs(self.energy_groups).tallies['flux'].get_values()
+            amp_flux.shape = self.tally_zyxg
+            amp_flux = amp_flux[..., ::-1]
+            self._amplitude_flux_tallied = openmc.kinetics.map_array(amp_flux, self.tally_zyxg, self.amplitude_zyxg, False)
 
         self._amplitude_flux_tallied.shape = (self.amplitude_nxyz, self.ng)
         return self._amplitude_flux_tallied
@@ -656,46 +776,37 @@ class OuterState(State):
     @property
     def current_tallied(self):
         if not self.mgxs_loaded:
-            self._current_tallied = self.mgxs_lib['current'].get_condensed_xs(self.energy_groups).get_xs()
+            current = self.mgxs_lib['current'].get_condensed_xs(self.energy_groups).get_xs()
 
-        #self._current_tallied.shape = (self.amplitude_nxyz, self.ng, 12)
+            # Condense down the the coarse mesh
+            tally_shape = self.tally_zyxg + (12,)
+            amp_shape = self.amplitude_zyxg + (12,)
+            self._current_tallied = openmc.kinetics.surface_integral(current, tally_shape, amp_shape)
+
+        self._current_tallied.shape = (self.amplitude_nxyz, self.ng, 12)
         return self._current_tallied
 
     @property
     def diffusion_coefficient(self):
         if not self.mgxs_loaded:
-            self._diffusion_coefficient = self.mgxs_lib['diffusion-coefficient']
-            self._diffusion_coefficient = self._diffusion_coefficient.\
-                get_condensed_xs(self.energy_groups, self.condense_dif_coef).get_xs()
+            dif_coef = self.mgxs_lib['diffusion-coefficient']\
+                .get_condensed_xs(self.energy_groups, self.condense_dif_coef)
+            flux = dif_coef.tallies['flux (tracklength)'].get_values()
+            dif_coef = dif_coef.get_xs()
+            dif_coef.shape = self.tally_zyxg
+            flux.shape = self.tally_zyxg
+            flux = flux[..., ::-1]
+
+            # Spatially condense the transport cross section
+            sig_tr = 1. / (3. * dif_coef)
+            sig_tr = openmc.kinetics.nan_inf_to_zero(sig_tr)
+            sig_tr = openmc.kinetics.map_array(sig_tr * flux, self.tally_zyxg, self.amplitude_zyxg, False)
+            flux   = openmc.kinetics.map_array(         flux, self.tally_zyxg, self.amplitude_zyxg, False)
+            sig_tr /= flux
+            self._diffusion_coefficient = openmc.kinetics.nan_inf_to_zero(1.0 / (3.0 * sig_tr))
 
         self._diffusion_coefficient.shape = (self.amplitude_nxyz, self.ng)
         return self._diffusion_coefficient
-
-    @property
-    def flux_frequency(self):
-
-        state_pre = self.states['PREVIOUS_OUTER']
-
-        freq = (1. / self.dt_outer - state_pre.flux / self.flux / self.dt_outer)
-        freq = openmc.kinetics.nan_inf_to_zero(freq)
-
-        unity_shape = (1,1,1,self.ng)
-        freq = openmc.kinetics.map_array(freq, self.shape_zyxg, unity_shape, normalize=True)
-        freq.shape = (1, self.ng)
-        return freq
-
-    @property
-    def precursor_frequency(self):
-
-        flux = np.tile(self.flux, self.nd)
-        flux.shape = (self.shape_nxyz, self.nd, self.ng)
-        del_fis_rate = self.delayed_nu_fission * flux
-        freq = del_fis_rate.sum(axis=2) / self.precursors / self.k_crit * self.shape_dxyz - self.decay_rate
-
-        freq = self.decay_rate / (freq + self.decay_rate)
-        freq = openmc.kinetics.nan_inf_to_zero(freq)
-
-        return freq
 
     def extract_shape(self):
 
@@ -723,12 +834,23 @@ class OuterState(State):
 
         if 'shape' not in f['OUTER_STEPS'][time_point].keys():
             f['OUTER_STEPS'][time_point].create_dataset('shape', data=self.shape)
+            f['OUTER_STEPS'][time_point].create_dataset('power', data=self.power)
             f['OUTER_STEPS'][time_point].create_dataset('kappa_fission', data=self.kappa_fission)
+            if self.method == 'OMEGA':
+                f['OUTER_STEPS'][time_point].create_dataset('flux_frequency', data=self.flux_frequency(False))
+                f['OUTER_STEPS'][time_point].create_dataset('precursor_frequency', data=self.precursor_frequency())
         else:
             shape = f['OUTER_STEPS'][time_point]['shape']
             shape[...] = self.shape
+            power = f['OUTER_STEPS'][time_point]['power']
+            power[...] = self.power
             kappa_fission = f['OUTER_STEPS'][time_point]['kappa_fission']
             kappa_fission[...] = self.kappa_fission
+            if self.method == 'OMEGA':
+                flux_frequency = f['OUTER_STEPS'][time_point]['flux_frequency']
+                flux_frequency[...] = self.flux_frequency(False)
+                precursor_frequency = f['OUTER_STEPS'][time_point]['precursor_frequency']
+                precursor_frequency[...] = self.precursor_frequency()
 
         f.close()
 
@@ -736,7 +858,7 @@ class OuterState(State):
         flux = np.tile(self.flux, self.nd).flatten()
         del_fis_rate = self.delayed_nu_fission.flatten() * flux
         del_fis_rate.shape = (self.shape_nxyz, self.nd, self.ng)
-        precursors = del_fis_rate.sum(axis=2) / self.decay_rate / self.k_crit * self.shape_dxyz
+        precursors = del_fis_rate.sum(axis=2) / self.decay_rate / self.k_crit
         self.precursors = openmc.kinetics.nan_inf_to_zero(precursors)
 
     def load_mgxs(self):
@@ -773,26 +895,23 @@ class OuterState(State):
 
 
         self._mgxs_lib['amplitude-kappa-fission'] = openmc.mgxs.MGXS.get_mgxs(
-            'kappa-fission', domain=self.amplitude_mesh, domain_type='mesh',
+            'kappa-fission', domain=self.tally_mesh, domain_type='mesh',
             energy_groups=self.tally_groups, by_nuclide=False,
             name= self.time_point + ' - amplitude-kappa-fission')
 
-        if self.multi_group:
-            mgxs_types.append('nu-scatter matrix')
-        else:
-            mgxs_types.append('consistent nu-scatter matrix')
+        mgxs_types.append('nu-scatter matrix')
 
         # Populate the MGXS in the MGXS lib
         for mgxs_type in mgxs_types:
             mesh = self.shape_mesh
             if mgxs_type == 'diffusion-coefficient':
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
-                    mgxs_type, domain=self.amplitude_mesh, domain_type='mesh',
+                    mgxs_type, domain=self.tally_mesh, domain_type='mesh',
                     energy_groups=self.fine_groups, by_nuclide=False,
                     name= self.time_point + ' - ' + mgxs_type)
             elif mgxs_type == 'current':
                 self._mgxs_lib[mgxs_type] = openmc.mgxs.MGXS.get_mgxs(
-                    mgxs_type, domain=self.amplitude_mesh, domain_type='mesh',
+                    mgxs_type, domain=self.tally_mesh, domain_type='mesh',
                     energy_groups=self.tally_groups, by_nuclide=False,
                     name= self.time_point + ' - ' + mgxs_type)
             elif 'nu-scatter matrix' in mgxs_type:
@@ -859,24 +978,21 @@ class OuterState(State):
         dx , dy , dz  = self.amplitude_mesh.width
         ng            = self.ng
 
+        dx /= nx
+        dy /= ny
+        dz /= nz
+
         # Get the array of the surface-integrated surface net currents
         partial_current = copy.deepcopy(self.current_tallied)
         partial_current = partial_current.reshape(np.prod(partial_current.shape) / 12, 12)
-        net_current = partial_current[..., range(0,12,2)] - partial_current[..., range(1,13,2)]
+        net_current = partial_current[..., 0:12:2] - partial_current[..., 1:12:2]
         net_current[:, 0:6:2] = -net_current[:, 0:6:2]
         net_current.shape = self.amplitude_zyxg + (6,)
-
-        # Convert from surface-integrated to surface-averaged net current
-        net_current[..., 0:2]  = net_current[..., 0:2] / (dy * dz)
-        net_current[..., 2:4]  = net_current[..., 2:4] / (dx * dz)
-        net_current[..., 4:6]  = net_current[..., 4:6] / (dx * dy)
+        partial_current.shape = self.amplitude_zyxg + (12,)
 
         # Get the flux
         flux = copy.deepcopy(self.amplitude_flux_tallied)
         flux.shape = self.amplitude_zyxg
-
-        # Convert from volume-integrated to volume-averaged flux
-        flux  = flux / (dx * dy * dz)
 
         # Create an array of the neighbor cell fluxes
         flux_nbr = np.zeros((nz, ny, nx, ng, 6))
@@ -902,31 +1018,54 @@ class OuterState(State):
 
         # Compute the linear finite difference diffusion term for interior surfaces
         dc_linear = np.zeros((nz, ny, nx, ng, 6))
-        dc_linear[:  , :  , 1: , :, 0] = 2 * dc_nbr[:  , :  , 1: , :, 0] * dc[:  , :  , 1: , :] / (dc_nbr[:  , :  , 1: , :, 0] * dx + dc[:  , :  , 1: , :] * dx) + 0.25 * dx
-        dc_linear[:  , :  , :-1, :, 1] = 2 * dc_nbr[:  , :  , :-1, :, 1] * dc[:  , :  , :-1, :] / (dc_nbr[:  , :  , :-1, :, 1] * dx + dc[:  , :  , :-1, :] * dx) + 0.25 * dx
-        dc_linear[:  , 1: , :  , :, 2] = 2 * dc_nbr[:  , 1: , :  , :, 2] * dc[:  , 1: , :  , :] / (dc_nbr[:  , 1: , :  , :, 2] * dy + dc[:  , 1: , :  , :] * dy) + 0.25 * dy
-        dc_linear[:  , :-1, :  , :, 3] = 2 * dc_nbr[:  , :-1, :  , :, 3] * dc[:  , :-1, :  , :] / (dc_nbr[:  , :-1, :  , :, 3] * dy + dc[:  , :-1, :  , :] * dy) + 0.25 * dy
-        dc_linear[1: , :  , :  , :, 4] = 2 * dc_nbr[1: , :  , :  , :, 4] * dc[1: , :  , :  , :] / (dc_nbr[1: , :  , :  , :, 4] * dz + dc[1: , :  , :  , :] * dz) + 0.25 * dz
-        dc_linear[:-1, :  , :  , :, 5] = 2 * dc_nbr[:-1, :  , :  , :, 5] * dc[:-1, :  , :  , :] / (dc_nbr[:-1, :  , :  , :, 5] * dz + dc[:-1, :  , :  , :] * dz) + 0.25 * dz
+        dc_linear[:  , :  , 1: , :, 0] = 2 * dc_nbr[:  , :  , 1: , :, 0] * dc[:  , :  , 1: , :] / (dc_nbr[:  , :  , 1: , :, 0] * dx + dc[:  , :  , 1: , :] * dx)
+        dc_linear[:  , :  , :-1, :, 1] = 2 * dc_nbr[:  , :  , :-1, :, 1] * dc[:  , :  , :-1, :] / (dc_nbr[:  , :  , :-1, :, 1] * dx + dc[:  , :  , :-1, :] * dx)
+        dc_linear[:  , 1: , :  , :, 2] = 2 * dc_nbr[:  , 1: , :  , :, 2] * dc[:  , 1: , :  , :] / (dc_nbr[:  , 1: , :  , :, 2] * dy + dc[:  , 1: , :  , :] * dy)
+        dc_linear[:  , :-1, :  , :, 3] = 2 * dc_nbr[:  , :-1, :  , :, 3] * dc[:  , :-1, :  , :] / (dc_nbr[:  , :-1, :  , :, 3] * dy + dc[:  , :-1, :  , :] * dy)
+        dc_linear[1: , :  , :  , :, 4] = 2 * dc_nbr[1: , :  , :  , :, 4] * dc[1: , :  , :  , :] / (dc_nbr[1: , :  , :  , :, 4] * dz + dc[1: , :  , :  , :] * dz)
+        dc_linear[:-1, :  , :  , :, 5] = 2 * dc_nbr[:-1, :  , :  , :, 5] * dc[:-1, :  , :  , :] / (dc_nbr[:-1, :  , :  , :, 5] * dz + dc[:-1, :  , :  , :] * dz)
+
+        if self.use_agd:
+            dc_linear[:  , :  , 1: , :, 0] += 0.25 * dx
+            dc_linear[:  , :  , :-1, :, 1] += 0.25 * dx
+            dc_linear[:  , 1: , :  , :, 2] += 0.25 * dy
+            dc_linear[:  , :-1, :  , :, 3] += 0.25 * dy
+            dc_linear[1: , :  , :  , :, 4] += 0.25 * dz
+            dc_linear[:-1, :  , :  , :, 5] += 0.25 * dz
 
         # Make any cells that have no dif coef or flux tally highly diffusive
-        dc_linear[np.isnan(dc_linear)] = 0.
-        dc_linear[dc_linear == 0.] = 0.
+        dc_linear[np.isnan(dc_linear)] = 0.0
+        dc_linear[dc_linear == 0.] = 0.0
 
         # Compute the non-linear finite difference diffusion term for interior surfaces
-        dc_nonlinear = np.zeros((nz, ny, nx, ng, 6))
-        dc_nonlinear[..., 0] = (-dc_linear[..., 0] * (-flux_nbr[..., 0] + flux) - net_current[..., 0]) / (flux_nbr[..., 0] + flux)
-        dc_nonlinear[..., 1] = (-dc_linear[..., 1] * ( flux_nbr[..., 1] - flux) - net_current[..., 1]) / (flux_nbr[..., 1] + flux)
-        dc_nonlinear[..., 2] = (-dc_linear[..., 2] * (-flux_nbr[..., 2] + flux) - net_current[..., 2]) / (flux_nbr[..., 2] + flux)
-        dc_nonlinear[..., 3] = (-dc_linear[..., 3] * ( flux_nbr[..., 3] - flux) - net_current[..., 3]) / (flux_nbr[..., 3] + flux)
-        dc_nonlinear[..., 4] = (-dc_linear[..., 4] * (-flux_nbr[..., 4] + flux) - net_current[..., 4]) / (flux_nbr[..., 4] + flux)
-        dc_nonlinear[..., 5] = (-dc_linear[..., 5] * ( flux_nbr[..., 5] - flux) - net_current[..., 5]) / (flux_nbr[..., 5] + flux)
+        if self.use_pcmfd:
+            dc_nonlinear = np.zeros((nz, ny, nx, ng, 12))
+            dc_nonlinear[..., 0 ] = (-dc_linear[..., 0] * (-flux_nbr[..., 0] + flux) + 2 * partial_current[..., 0 ]) / (2 * flux)
+            dc_nonlinear[..., 1 ] = ( dc_linear[..., 0] * (-flux_nbr[..., 0] + flux) + 2 * partial_current[..., 1 ]) / (2 * flux_nbr[..., 0])
+            dc_nonlinear[..., 2 ] = ( dc_linear[..., 1] * ( flux_nbr[..., 1] - flux) + 2 * partial_current[..., 2 ]) / (2 * flux)
+            dc_nonlinear[..., 3 ] = (-dc_linear[..., 1] * ( flux_nbr[..., 1] - flux) + 2 * partial_current[..., 3 ]) / (2 * flux_nbr[..., 1])
+            dc_nonlinear[..., 4 ] = (-dc_linear[..., 2] * (-flux_nbr[..., 2] + flux) + 2 * partial_current[..., 4 ]) / (2 * flux)
+            dc_nonlinear[..., 5 ] = ( dc_linear[..., 2] * (-flux_nbr[..., 2] + flux) + 2 * partial_current[..., 5 ]) / (2 * flux_nbr[..., 2])
+            dc_nonlinear[..., 6 ] = ( dc_linear[..., 3] * ( flux_nbr[..., 3] - flux) + 2 * partial_current[..., 6 ]) / (2 * flux)
+            dc_nonlinear[..., 7 ] = (-dc_linear[..., 3] * ( flux_nbr[..., 3] - flux) + 2 * partial_current[..., 7 ]) / (2 * flux_nbr[..., 3])
+            dc_nonlinear[..., 8 ] = (-dc_linear[..., 4] * (-flux_nbr[..., 4] + flux) + 2 * partial_current[..., 8 ]) / (2 * flux)
+            dc_nonlinear[..., 9 ] = ( dc_linear[..., 4] * (-flux_nbr[..., 4] + flux) + 2 * partial_current[..., 9 ]) / (2 * flux_nbr[..., 4])
+            dc_nonlinear[..., 10] = ( dc_linear[..., 5] * ( flux_nbr[..., 5] - flux) + 2 * partial_current[..., 10]) / (2 * flux)
+            dc_nonlinear[..., 11] = (-dc_linear[..., 5] * ( flux_nbr[..., 5] - flux) + 2 * partial_current[..., 11]) / (2 * flux_nbr[..., 5])
+        else:
+            dc_nonlinear = np.zeros((nz, ny, nx, ng, 6))
+            dc_nonlinear[..., 0] = (-dc_linear[..., 0] * (-flux_nbr[..., 0] + flux) - net_current[..., 0]) / (flux_nbr[..., 0] + flux)
+            dc_nonlinear[..., 1] = (-dc_linear[..., 1] * ( flux_nbr[..., 1] - flux) - net_current[..., 1]) / (flux_nbr[..., 1] + flux)
+            dc_nonlinear[..., 2] = (-dc_linear[..., 2] * (-flux_nbr[..., 2] + flux) - net_current[..., 2]) / (flux_nbr[..., 2] + flux)
+            dc_nonlinear[..., 3] = (-dc_linear[..., 3] * ( flux_nbr[..., 3] - flux) - net_current[..., 3]) / (flux_nbr[..., 3] + flux)
+            dc_nonlinear[..., 4] = (-dc_linear[..., 4] * (-flux_nbr[..., 4] + flux) - net_current[..., 4]) / (flux_nbr[..., 4] + flux)
+            dc_nonlinear[..., 5] = (-dc_linear[..., 5] * ( flux_nbr[..., 5] - flux) - net_current[..., 5]) / (flux_nbr[..., 5] + flux)
 
         # Ensure there are no nans
         dc_nonlinear[np.isnan(dc_nonlinear)] = 0.
 
         # Check for diagonal dominance
-        if True:
+        if False:
 
             # Make a mask of the location of all terms that need to be corrected (dd_mask) and
             # terms that don't need to be corrected (nd_mask)
@@ -936,44 +1075,58 @@ class OuterState(State):
             # Save arrays as to whether the correction term is positive or negative.
             sign = np.abs(dc_nonlinear) / dc_nonlinear
             sign_pos  = (dc_nonlinear > 0.)
-            sense_pos = np.zeros((nz, ny, nx, ng, 6))
-            sense_pos[..., 0:6:2] = False
-            sense_pos[..., 1:6:2] = True
+            if self.use_pcmfd:
+                sense_pos = np.zeros((nz, ny, nx, ng, 12))
+                sense_pos[..., 0:12:4] = False
+                sense_pos[..., 1:12:4] = False
+                sense_pos[..., 2:12:4] = True
+                sense_pos[..., 3:12:4] = True
+            else:
+                sense_pos = np.zeros((nz, ny, nx, ng, 6))
+                sense_pos[..., 0:6:2] = False
+                sense_pos[..., 1:6:2] = True
+
             sign_sense = (sign_pos == sense_pos)
             not_sign_sense = (sign_sense == False)
 
             # Correct dc_linear
-            dc_linear[:  , :  , 1: , :, 0] = nd_mask[:  , :  , 1: , :, 0] * dc_linear[:  , :  , 1: , :, 0] + dd_mask[:  , :  , 1: , :, 0] * (sign_sense[:  , :  , 1: , :, 0] * np.abs(net_current[:  , :  , 1: , :, 0] / (2 * flux_nbr[:  , :  , 1: , :, 0])) + not_sign_sense[:  , :  , 1: , :, 0] * np.abs(net_current[:  , :  , 1: , :, 0] / (2 * flux[:  , :  , 1: , :])))
-            dc_linear[:  , :  , :-1, :, 1] = nd_mask[:  , :  , :-1, :, 1] * dc_linear[:  , :  , :-1, :, 1] + dd_mask[:  , :  , :-1, :, 1] * (sign_sense[:  , :  , :-1, :, 1] * np.abs(net_current[:  , :  , :-1, :, 1] / (2 * flux_nbr[:  , :  , :-1, :, 1])) + not_sign_sense[:  , :  , :-1, :, 1] * np.abs(net_current[:  , :  , :-1, :, 1] / (2 * flux[:  , :  , :-1, :])))
-            dc_linear[:  , 1: , :  , :, 2] = nd_mask[:  , 1: , :  , :, 2] * dc_linear[:  , 1: , :  , :, 2] + dd_mask[:  , 1: , :  , :, 2] * (sign_sense[:  , 1: , :  , :, 2] * np.abs(net_current[:  , 1: , :  , :, 2] / (2 * flux_nbr[:  , 1: , :  , :, 2])) + not_sign_sense[:  , 1: , :  , :, 2] * np.abs(net_current[:  , 1: , :  , :, 2] / (2 * flux[:  , 1: , :  , :])))
-            dc_linear[:  , :-1, :  , :, 3] = nd_mask[:  , :-1, :  , :, 3] * dc_linear[:  , :-1, :  , :, 3] + dd_mask[:  , :-1, :  , :, 3] * (sign_sense[:  , :-1, :  , :, 3] * np.abs(net_current[:  , :-1, :  , :, 3] / (2 * flux_nbr[:  , :-1, :  , :, 3])) + not_sign_sense[:  , :-1, :  , :, 3] * np.abs(net_current[:  , :-1, :  , :, 3] / (2 * flux[:  , :-1, :  , :])))
-            dc_linear[1: , :  , :  , :, 4] = nd_mask[1: , :  , :  , :, 4] * dc_linear[1: , :  , :  , :, 4] + dd_mask[1: , :  , :  , :, 4] * (sign_sense[1: , :  , :  , :, 4] * np.abs(net_current[1: , :  , :  , :, 4] / (2 * flux_nbr[1: , :  , :  , :, 4])) + not_sign_sense[1: , :  , :  , :, 4] * np.abs(net_current[1: , :  , :  , :, 4] / (2 * flux[1: , :  , :  , :])))
-            dc_linear[:-1, :  , :  , :, 5] = nd_mask[:-1, :  , :  , :, 5] * dc_linear[:-1, :  , :  , :, 5] + dd_mask[:-1, :  , :  , :, 5] * (sign_sense[:-1, :  , :  , :, 5] * np.abs(net_current[:-1, :  , :  , :, 5] / (2 * flux_nbr[:-1, :  , :  , :, 5])) + not_sign_sense[:-1, :  , :  , :, 5] * np.abs(net_current[:-1, :  , :  , :, 5] / (2 * flux[:-1, :  , :  , :])))
+            if self.use_pcmfd:
+                dc_linear[:  , :  , 1: , :, 0] = nd_mask[:  , :  , 1: , :, 0] * dc_linear[:  , :  , 1: , :, 0] + dd_mask[:  , :  , 1: , :, 0] * (sign_sense[:  , :  , 1: , :, 0] * np.abs(net_current[:  , :  , 1: , :, 0] / (2 * flux_nbr[:  , :  , 1: , :, 0])) + not_sign_sense[:  , :  , 1: , :, 0] * np.abs(net_current[:  , :  , 1: , :, 0] / (2 * flux[:  , :  , 1: , :])))
+                dc_linear[:  , :  , :-1, :, 1] = nd_mask[:  , :  , :-1, :, 1] * dc_linear[:  , :  , :-1, :, 1] + dd_mask[:  , :  , :-1, :, 1] * (sign_sense[:  , :  , :-1, :, 1] * np.abs(net_current[:  , :  , :-1, :, 1] / (2 * flux_nbr[:  , :  , :-1, :, 1])) + not_sign_sense[:  , :  , :-1, :, 1] * np.abs(net_current[:  , :  , :-1, :, 1] / (2 * flux[:  , :  , :-1, :])))
+                dc_linear[:  , 1: , :  , :, 2] = nd_mask[:  , 1: , :  , :, 2] * dc_linear[:  , 1: , :  , :, 2] + dd_mask[:  , 1: , :  , :, 2] * (sign_sense[:  , 1: , :  , :, 2] * np.abs(net_current[:  , 1: , :  , :, 2] / (2 * flux_nbr[:  , 1: , :  , :, 2])) + not_sign_sense[:  , 1: , :  , :, 2] * np.abs(net_current[:  , 1: , :  , :, 2] / (2 * flux[:  , 1: , :  , :])))
+                dc_linear[:  , :-1, :  , :, 3] = nd_mask[:  , :-1, :  , :, 3] * dc_linear[:  , :-1, :  , :, 3] + dd_mask[:  , :-1, :  , :, 3] * (sign_sense[:  , :-1, :  , :, 3] * np.abs(net_current[:  , :-1, :  , :, 3] / (2 * flux_nbr[:  , :-1, :  , :, 3])) + not_sign_sense[:  , :-1, :  , :, 3] * np.abs(net_current[:  , :-1, :  , :, 3] / (2 * flux[:  , :-1, :  , :])))
+                dc_linear[1: , :  , :  , :, 4] = nd_mask[1: , :  , :  , :, 4] * dc_linear[1: , :  , :  , :, 4] + dd_mask[1: , :  , :  , :, 4] * (sign_sense[1: , :  , :  , :, 4] * np.abs(net_current[1: , :  , :  , :, 4] / (2 * flux_nbr[1: , :  , :  , :, 4])) + not_sign_sense[1: , :  , :  , :, 4] * np.abs(net_current[1: , :  , :  , :, 4] / (2 * flux[1: , :  , :  , :])))
+                dc_linear[:-1, :  , :  , :, 5] = nd_mask[:-1, :  , :  , :, 5] * dc_linear[:-1, :  , :  , :, 5] + dd_mask[:-1, :  , :  , :, 5] * (sign_sense[:-1, :  , :  , :, 5] * np.abs(net_current[:-1, :  , :  , :, 5] / (2 * flux_nbr[:-1, :  , :  , :, 5])) + not_sign_sense[:-1, :  , :  , :, 5] * np.abs(net_current[:-1, :  , :  , :, 5] / (2 * flux[:-1, :  , :  , :])))
 
-            dc_nonlinear[:  , :  , 1: , :, 0] = nd_mask[:  , :  , 1: , :, 0] * dc_nonlinear[:  , :  , 1: , :, 0] + dd_mask[:  , :  , 1: , :, 0] * sign[:  , :  , 1: , :, 0] * dc_linear[:  , :  , 1: , :, 0]
-            dc_nonlinear[:  , :  , :-1, :, 1] = nd_mask[:  , :  , :-1, :, 1] * dc_nonlinear[:  , :  , :-1, :, 1] + dd_mask[:  , :  , :-1, :, 1] * sign[:  , :  , :-1, :, 1] * dc_linear[:  , :  , :-1, :, 1]
-            dc_nonlinear[:  , 1: , :  , :, 2] = nd_mask[:  , 1: , :  , :, 2] * dc_nonlinear[:  , 1: , :  , :, 2] + dd_mask[:  , 1: , :  , :, 2] * sign[:  , 1: , :  , :, 2] * dc_linear[:  , 1: , :  , :, 2]
-            dc_nonlinear[:  , :-1, :  , :, 3] = nd_mask[:  , :-1, :  , :, 3] * dc_nonlinear[:  , :-1, :  , :, 3] + dd_mask[:  , :-1, :  , :, 3] * sign[:  , :-1, :  , :, 3] * dc_linear[:  , :-1, :  , :, 3]
-            dc_nonlinear[1: , :  , :  , :, 4] = nd_mask[1: , :  , :  , :, 4] * dc_nonlinear[1: , :  , :  , :, 4] + dd_mask[1: , :  , :  , :, 4] * sign[1: , :  , :  , :, 4] * dc_linear[1: , :  , :  , :, 4]
-            dc_nonlinear[:-1, :  , :  , :, 5] = nd_mask[:-1, :  , :  , :, 5] * dc_nonlinear[:-1, :  , :  , :, 5] + dd_mask[:-1, :  , :  , :, 5] * sign[:-1, :  , :  , :, 5] * dc_linear[:-1, :  , :  , :, 5]
+                dc_nonlinear[:  , :  , 1: , :, 0] = nd_mask[:  , :  , 1: , :, 0] * dc_nonlinear[:  , :  , 1: , :, 0] + dd_mask[:  , :  , 1: , :, 0] * sign[:  , :  , 1: , :, 0] * dc_linear[:  , :  , 1: , :, 0]
+                dc_nonlinear[:  , :  , :-1, :, 1] = nd_mask[:  , :  , :-1, :, 1] * dc_nonlinear[:  , :  , :-1, :, 1] + dd_mask[:  , :  , :-1, :, 1] * sign[:  , :  , :-1, :, 1] * dc_linear[:  , :  , :-1, :, 1]
+                dc_nonlinear[:  , 1: , :  , :, 2] = nd_mask[:  , 1: , :  , :, 2] * dc_nonlinear[:  , 1: , :  , :, 2] + dd_mask[:  , 1: , :  , :, 2] * sign[:  , 1: , :  , :, 2] * dc_linear[:  , 1: , :  , :, 2]
+                dc_nonlinear[:  , :-1, :  , :, 3] = nd_mask[:  , :-1, :  , :, 3] * dc_nonlinear[:  , :-1, :  , :, 3] + dd_mask[:  , :-1, :  , :, 3] * sign[:  , :-1, :  , :, 3] * dc_linear[:  , :-1, :  , :, 3]
+                dc_nonlinear[1: , :  , :  , :, 4] = nd_mask[1: , :  , :  , :, 4] * dc_nonlinear[1: , :  , :  , :, 4] + dd_mask[1: , :  , :  , :, 4] * sign[1: , :  , :  , :, 4] * dc_linear[1: , :  , :  , :, 4]
+                dc_nonlinear[:-1, :  , :  , :, 5] = nd_mask[:-1, :  , :  , :, 5] * dc_nonlinear[:-1, :  , :  , :, 5] + dd_mask[:-1, :  , :  , :, 5] * sign[:-1, :  , :  , :, 5] * dc_linear[:-1, :  , :  , :, 5]
 
-        flux_array = np.repeat(flux, 6)
-        flux_array.shape = (nx*ny*nz*ng, 6)
-        flux_nbr.shape = (nx*ny*nz*ng, 6)
-        net_current.shape = (nx*ny*nz*ng, 6)
-        dc = dc.flatten()
+            else:
+                dc_linear[:  , :  , 1: , :, 0] = nd_mask[:  , :  , 1: , :, 0] * dc_linear[:  , :  , 1: , :, 0] + dd_mask[:  , :  , 1: , :, 0] * (sign_sense[:  , :  , 1: , :, 0] * np.abs(net_current[:  , :  , 1: , :, 0] / (2 * flux_nbr[:  , :  , 1: , :, 0])) + not_sign_sense[:  , :  , 1: , :, 0] * np.abs(net_current[:  , :  , 1: , :, 0] / (2 * flux[:  , :  , 1: , :])))
+                dc_linear[:  , :  , :-1, :, 1] = nd_mask[:  , :  , :-1, :, 1] * dc_linear[:  , :  , :-1, :, 1] + dd_mask[:  , :  , :-1, :, 1] * (sign_sense[:  , :  , :-1, :, 1] * np.abs(net_current[:  , :  , :-1, :, 1] / (2 * flux_nbr[:  , :  , :-1, :, 1])) + not_sign_sense[:  , :  , :-1, :, 1] * np.abs(net_current[:  , :  , :-1, :, 1] / (2 * flux[:  , :  , :-1, :])))
+                dc_linear[:  , 1: , :  , :, 2] = nd_mask[:  , 1: , :  , :, 2] * dc_linear[:  , 1: , :  , :, 2] + dd_mask[:  , 1: , :  , :, 2] * (sign_sense[:  , 1: , :  , :, 2] * np.abs(net_current[:  , 1: , :  , :, 2] / (2 * flux_nbr[:  , 1: , :  , :, 2])) + not_sign_sense[:  , 1: , :  , :, 2] * np.abs(net_current[:  , 1: , :  , :, 2] / (2 * flux[:  , 1: , :  , :])))
+                dc_linear[:  , :-1, :  , :, 3] = nd_mask[:  , :-1, :  , :, 3] * dc_linear[:  , :-1, :  , :, 3] + dd_mask[:  , :-1, :  , :, 3] * (sign_sense[:  , :-1, :  , :, 3] * np.abs(net_current[:  , :-1, :  , :, 3] / (2 * flux_nbr[:  , :-1, :  , :, 3])) + not_sign_sense[:  , :-1, :  , :, 3] * np.abs(net_current[:  , :-1, :  , :, 3] / (2 * flux[:  , :-1, :  , :])))
+                dc_linear[1: , :  , :  , :, 4] = nd_mask[1: , :  , :  , :, 4] * dc_linear[1: , :  , :  , :, 4] + dd_mask[1: , :  , :  , :, 4] * (sign_sense[1: , :  , :  , :, 4] * np.abs(net_current[1: , :  , :  , :, 4] / (2 * flux_nbr[1: , :  , :  , :, 4])) + not_sign_sense[1: , :  , :  , :, 4] * np.abs(net_current[1: , :  , :  , :, 4] / (2 * flux[1: , :  , :  , :])))
+                dc_linear[:-1, :  , :  , :, 5] = nd_mask[:-1, :  , :  , :, 5] * dc_linear[:-1, :  , :  , :, 5] + dd_mask[:-1, :  , :  , :, 5] * (sign_sense[:-1, :  , :  , :, 5] * np.abs(net_current[:-1, :  , :  , :, 5] / (2 * flux_nbr[:-1, :  , :  , :, 5])) + not_sign_sense[:-1, :  , :  , :, 5] * np.abs(net_current[:-1, :  , :  , :, 5] / (2 * flux[:-1, :  , :  , :])))
 
-        # Multiply by the surface are to make the terms surface integrated
-        dc_linear[..., 0:2]  = dc_linear[..., 0:2] * dy*dz
-        dc_linear[..., 2:4]  = dc_linear[..., 2:4] * dx*dz
-        dc_linear[..., 4:6]  = dc_linear[..., 4:6] * dx*dy
-        dc_nonlinear[..., 0:2] = dc_nonlinear[..., 0:2] * dy*dz
-        dc_nonlinear[..., 2:4] = dc_nonlinear[..., 2:4] * dx*dz
-        dc_nonlinear[..., 4:6] = dc_nonlinear[..., 4:6] * dx*dy
+                dc_nonlinear[:  , :  , 1: , :, 0] = nd_mask[:  , :  , 1: , :, 0] * dc_nonlinear[:  , :  , 1: , :, 0] + dd_mask[:  , :  , 1: , :, 0] * sign[:  , :  , 1: , :, 0] * dc_linear[:  , :  , 1: , :, 0]
+                dc_nonlinear[:  , :  , :-1, :, 1] = nd_mask[:  , :  , :-1, :, 1] * dc_nonlinear[:  , :  , :-1, :, 1] + dd_mask[:  , :  , :-1, :, 1] * sign[:  , :  , :-1, :, 1] * dc_linear[:  , :  , :-1, :, 1]
+                dc_nonlinear[:  , 1: , :  , :, 2] = nd_mask[:  , 1: , :  , :, 2] * dc_nonlinear[:  , 1: , :  , :, 2] + dd_mask[:  , 1: , :  , :, 2] * sign[:  , 1: , :  , :, 2] * dc_linear[:  , 1: , :  , :, 2]
+                dc_nonlinear[:  , :-1, :  , :, 3] = nd_mask[:  , :-1, :  , :, 3] * dc_nonlinear[:  , :-1, :  , :, 3] + dd_mask[:  , :-1, :  , :, 3] * sign[:  , :-1, :  , :, 3] * dc_linear[:  , :-1, :  , :, 3]
+                dc_nonlinear[1: , :  , :  , :, 4] = nd_mask[1: , :  , :  , :, 4] * dc_nonlinear[1: , :  , :  , :, 4] + dd_mask[1: , :  , :  , :, 4] * sign[1: , :  , :  , :, 4] * dc_linear[1: , :  , :  , :, 4]
+                dc_nonlinear[:-1, :  , :  , :, 5] = nd_mask[:-1, :  , :  , :, 5] * dc_nonlinear[:-1, :  , :  , :, 5] + dd_mask[:-1, :  , :  , :, 5] * sign[:-1, :  , :  , :, 5] * dc_linear[:-1, :  , :  , :, 5]
+
 
         # Reshape the diffusion coefficient array
         dc_linear.shape    = (nx*ny*nz*ng, 6)
-        dc_nonlinear.shape = (nx*ny*nz*ng, 6)
+        if self.use_pcmfd:
+            dc_nonlinear.shape = (nx*ny*nz*ng, 12)
+        else:
+            dc_nonlinear.shape = (nx*ny*nz*ng, 6)
 
         # reshape the flux shape
         shape       = openmc.kinetics.map_array(self.shape, self.shape_zyxg, self.amplitude_zyxg, False)
@@ -990,228 +1143,82 @@ class OuterState(State):
 
         # Set the diagonal
         dc_linear_diag    =  dc_linear   [:, 1:6:2].sum(axis=1) + dc_linear   [:, 0:6:2].sum(axis=1)
-        dc_nonlinear_diag = -dc_nonlinear[:, 1:6:2].sum(axis=1) + dc_nonlinear[:, 0:6:2].sum(axis=1)
+
+        if self.use_pcmfd:
+            dc_nonlinear_diag =  dc_nonlinear[:, 2:12:4].sum(axis=1) + dc_nonlinear[:, 0:12:4].sum(axis=1)
+        else:
+            dc_nonlinear_diag = -dc_nonlinear[:, 1:6:2].sum(axis=1) + dc_nonlinear[:, 0:6:2].sum(axis=1)
+
         dc_linear_data    = [dc_linear_diag * shape]
         dc_nonlinear_data = [dc_nonlinear_diag * shape]
         diags             = [0]
 
-        dc_nonlinear_copy = np.copy(dc_nonlinear)
-
         # Zero boundary dc_nonlinear
-        dc_nonlinear_copy.shape = self.amplitude_zyxg + (6,)
-        dc_nonlinear_copy[:  ,  :,  0, :, 0] = 0.
-        dc_nonlinear_copy[:  ,  :, -1, :, 1] = 0.
-        dc_nonlinear_copy[:  ,  0,  :, :, 2] = 0.
-        dc_nonlinear_copy[:  , -1,  :, :, 3] = 0.
-        dc_nonlinear_copy[0  ,  :,  :, :, 4] = 0.
-        dc_nonlinear_copy[-1 ,  :,  :, :, 5] = 0.
-        dc_nonlinear_copy.shape = (nz*ny*nx*ng, 6)
+        if self.use_pcmfd:
+            dc_nonlinear.shape = (nz, ny, nx, ng, 12)
+            dc_nonlinear[:  ,  :,  0, :, 0 ] = 0.
+            dc_nonlinear[:  ,  :,  0, :, 1 ] = 0.
+            dc_nonlinear[:  ,  :, -1, :, 2 ] = 0.
+            dc_nonlinear[:  ,  :, -1, :, 3 ] = 0.
+            dc_nonlinear[:  ,  0,  :, :, 4 ] = 0.
+            dc_nonlinear[:  ,  0,  :, :, 5 ] = 0.
+            dc_nonlinear[:  , -1,  :, :, 6 ] = 0.
+            dc_nonlinear[:  , -1,  :, :, 7 ] = 0.
+            dc_nonlinear[0  ,  :,  :, :, 8 ] = 0.
+            dc_nonlinear[0  ,  :,  :, :, 9 ] = 0.
+            dc_nonlinear[-1 ,  :,  :, :, 10] = 0.
+            dc_nonlinear[-1 ,  :,  :, :, 11] = 0.
+            dc_nonlinear.shape = (nz*ny*nx*ng, 12)
+        else:
+            dc_nonlinear.shape = (nz, ny, nx, ng, 6)
+            dc_nonlinear[:  ,  :,  0, :, 0] = 0.
+            dc_nonlinear[:  ,  :, -1, :, 1] = 0.
+            dc_nonlinear[:  ,  0,  :, :, 2] = 0.
+            dc_nonlinear[:  , -1,  :, :, 3] = 0.
+            dc_nonlinear[0  ,  :,  :, :, 4] = 0.
+            dc_nonlinear[-1 ,  :,  :, :, 5] = 0.
+            dc_nonlinear.shape = (nz*ny*nx*ng, 6)
 
         # Set the off-diagonals
         if nx > 1:
             dc_linear_data.append(-dc_linear[ng: , 0] * shape_nbr[ng:, 0])
             dc_linear_data.append(-dc_linear[:-ng, 1] * shape_nbr[:-ng, 1])
-            dc_nonlinear_data.append( dc_nonlinear_copy[ng: , 0] * shape_nbr[ng:, 0])
-            dc_nonlinear_data.append(-dc_nonlinear_copy[:-ng, 1] * shape_nbr[:-ng, 1])
+
+            if self.use_pcmfd:
+                dc_nonlinear_data.append(-dc_nonlinear[ng: , 1] * shape_nbr[ng:, 0])
+                dc_nonlinear_data.append(-dc_nonlinear[:-ng, 3] * shape_nbr[:-ng, 1])
+            else:
+                dc_nonlinear_data.append( dc_nonlinear[ng: , 0] * shape_nbr[ng:, 0])
+                dc_nonlinear_data.append(-dc_nonlinear[:-ng, 1] * shape_nbr[:-ng, 1])
+
             diags.append(-ng)
             diags.append(ng)
         if ny > 1:
             dc_linear_data.append(-dc_linear[nx*ng: , 2] * shape_nbr[nx*ng:, 2])
             dc_linear_data.append(-dc_linear[:-nx*ng, 3] * shape_nbr[:-nx*ng, 3])
-            dc_nonlinear_data.append( dc_nonlinear_copy[nx*ng: , 2] * shape_nbr[nx*ng:, 2])
-            dc_nonlinear_data.append(-dc_nonlinear_copy[:-nx*ng, 3] * shape_nbr[:-nx*ng, 3])
+
+            if self.use_pcmfd:
+                dc_nonlinear_data.append(-dc_nonlinear[nx*ng: , 5] * shape_nbr[nx*ng:, 2])
+                dc_nonlinear_data.append(-dc_nonlinear[:-nx*ng, 7] * shape_nbr[:-nx*ng, 3])
+            else:
+                dc_nonlinear_data.append( dc_nonlinear[nx*ng: , 2] * shape_nbr[nx*ng:, 2])
+                dc_nonlinear_data.append(-dc_nonlinear[:-nx*ng, 3] * shape_nbr[:-nx*ng, 3])
+
             diags.append(-nx*ng)
             diags.append(nx*ng)
         if nz > 1:
             dc_linear_data.append(-dc_linear[nx*ny*ng: , 4] * shape_nbr[ny*nx*ng:, 4])
             dc_linear_data.append(-dc_linear[:-nx*ny*ng, 5] * shape_nbr[:-ny*nx*ng, 5])
-            dc_nonlinear_data.append( dc_nonlinear_copy[nx*ny*ng: , 4] * shape_nbr[ny*nx*ng:, 4])
-            dc_nonlinear_data.append(-dc_nonlinear_copy[:-nx*ny*ng, 5] * shape_nbr[:-ny*nx*ng, 5])
+
+            if self.use_pcmfd:
+                dc_nonlinear_data.append(-dc_nonlinear[nx*ny*ng: , 9] * shape_nbr[ny*nx*ng:, 4])
+                dc_nonlinear_data.append(-dc_nonlinear[:-nx*ny*ng,11] * shape_nbr[:-ny*nx*ng, 5])
+            else:
+                dc_nonlinear_data.append( dc_nonlinear[nx*ny*ng: , 4] * shape_nbr[ny*nx*ng:, 4])
+                dc_nonlinear_data.append(-dc_nonlinear[:-nx*ny*ng, 5] * shape_nbr[:-ny*nx*ng, 5])
+
             diags.append(-nx*ny*ng)
             diags.append(nx*ny*ng)
-
-        # shape weight and spatially collapse the dc_linear and dc_nonlinear
-        if False:
-            for i,diag in enumerate(diags_copy):
-                if diag == 0:
-                    dc_linear_data   .append(dc_linear_data_copy[i]    * shape)
-                    dc_nonlinear_data.append(dc_nonlinear_data_copy[i] * shape)
-                    dc_linear_data[-1]    = openmc.kinetics.map_array(dc_linear_data[-i]   , fine_shape, coarse_shape, False).flatten()
-                    dc_nonlinear_data[-1] = openmc.kinetics.map_array(dc_nonlinear_data[-i], fine_shape, coarse_shape, False).flatten()
-                    diags = [0]
-                elif diag == -ng and nx > 1:
-
-                    # Shape weight
-                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[ng:, 0]
-                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[ng:, 0]
-
-                    # Elongate
-                    dc_linear    = np.append(np.zeros(ng), dc_linear)
-                    dc_nonlinear = np.append(np.zeros(ng), dc_nonlinear)
-
-                    # Reshape
-                    dc_linear.shape    = fine_shape
-                    dc_nonlinear.shape = fine_shape
-
-                    # Condense and add values to diag
-                    if nx != nxa:
-                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                        dc_linear_data[0]    += dc_linear_diag.flatten()
-                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
-
-                    # Condense and add values to off diag
-                    if nxa > 1:
-                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[ng:]
-                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[ng:]
-                        dc_linear_data   .append(dc_linear_off_diag)
-                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                        diags            .append(-ng)
-
-                elif diag == ng and nx > 1:
-
-                    # Shape weight
-                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-ng, 1]
-                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-ng, 1]
-
-                    # Elongate
-                    dc_linear    = np.append(dc_linear   , np.zeros(ng))
-                    dc_nonlinear = np.append(dc_nonlinear, np.zeros(ng))
-
-                    # Reshape
-                    dc_linear.shape    = fine_shape
-                    dc_nonlinear.shape = fine_shape
-
-                    # Condense and add values to diag
-                    if nx != nxa:
-                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                        dc_linear_data[0]    += dc_linear_diag.flatten()
-                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
-
-                    # Condense and add values to off diag
-                    if nxa > 1:
-                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-ng]
-                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-ng]
-                        dc_linear_data   .append(dc_linear_off_diag)
-                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                        diags            .append(ng)
-
-                elif diag == -ng*nx and ny > 1:
-
-                    # Shape weight
-                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[nx*ng:, 2]
-                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[nx*ng:, 2]
-
-                    # Elongate
-                    dc_linear    = np.append(np.zeros(nx*ng), dc_linear)
-                    dc_nonlinear = np.append(np.zeros(nx*ng), dc_nonlinear)
-
-                    # Reshape
-                    dc_linear.shape    = fine_shape
-                    dc_nonlinear.shape = fine_shape
-
-                    # Condense and add values to diag
-                    if ny != nya:
-                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                        dc_linear_data[0]    += dc_linear_diag.flatten()
-                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
-
-                    # Condense and add values to off diag
-                    if nya > 1:
-                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[nxa*ng:]
-                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[nxa*ng:]
-                        dc_linear_data   .append(dc_linear_off_diag)
-                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                        diags            .append(-nxa*ng)
-
-                elif diag == ng*nx and ny > 1:
-
-                    # Shape weight
-                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-nx*ng, 3]
-                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-nx*ng, 3]
-
-                    # Elongate
-                    dc_linear    = np.append(dc_linear   , np.zeros(nx*ng))
-                    dc_nonlinear = np.append(dc_nonlinear, np.zeros(nx*ng))
-
-                    # Reshape
-                    dc_linear.shape    = fine_shape
-                    dc_nonlinear.shape = fine_shape
-
-                    # Condense and add values to diag
-                    if ny != nya:
-                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                        dc_linear_data[0]    += dc_linear_diag.flatten()
-                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
-
-                    # Condense and add values to off diag
-                    if nya > 1:
-                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-nxa*ng]
-                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-nxa*ng]
-                        dc_linear_data   .append(dc_linear_off_diag)
-                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                        diags            .append(nxa*ng)
-
-                elif diag == -ng*nx*ny:
-
-                    # Shape weight
-                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[ny*nx*ng:, 4]
-                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[ny*nx*ng:, 4]
-
-                    # Elongate
-                    dc_linear    = np.append(np.zeros(ny*nx*ng), dc_linear)
-                    dc_nonlinear = np.append(np.zeros(ny*nx*ng), dc_nonlinear)
-
-                    # Reshape
-                    dc_linear.shape    = fine_shape
-                    dc_nonlinear.shape = fine_shape
-
-                    # Condense and add values to diag
-                    if nz != nza:
-                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                        dc_linear_data[0]    += dc_linear_diag.flatten()
-                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
-
-                    # Condense and add values to off diag
-                    if nza > 1:
-                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[nya*nxa*ng:]
-                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[nya*nxa*ng:]
-                        dc_linear_data   .append(dc_linear_off_diag)
-                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                        diags            .append(-nxa*nya*ng)
-
-                elif diag == ng*nx*ny:
-
-                    # Shape weight
-                    dc_linear    = dc_linear_data_copy[i]    * shape_nbr[:-ny*nx*ng, 5]
-                    dc_nonlinear = dc_nonlinear_data_copy[i] * shape_nbr[:-ny*nx*ng, 5]
-
-                    # Elongate
-                    dc_linear    = np.append(dc_linear   , np.zeros(ny*nx*ng))
-                    dc_nonlinear = np.append(dc_nonlinear, np.zeros(ny*nx*ng))
-
-                    # Reshape
-                    dc_linear.shape    = fine_shape
-                    dc_nonlinear.shape = fine_shape
-
-                    # Condense and add values to diag
-                    if nz != nza:
-                        dc_linear_diag        = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()
-                        dc_nonlinear_diag     = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()
-                        dc_linear_data[0]    += dc_linear_diag.flatten()
-                        dc_nonlinear_data[0] += dc_nonlinear_diag.flatten()
-
-                    # Condense and add values to off diag
-                    if nza > 1:
-                        dc_linear_off_diag    = openmc.kinetics.map_array(dc_linear   , fine_shape, coarse_shape, False).flatten()[:-nya*nxa*ng]
-                        dc_nonlinear_off_diag = openmc.kinetics.map_array(dc_nonlinear, fine_shape, coarse_shape, False).flatten()[:-nya*nxa*ng]
-                        dc_linear_data   .append(dc_linear_off_diag)
-                        dc_nonlinear_data.append(dc_nonlinear_off_diag)
-                        diags            .append(nya*nxa*ng)
 
         return diags, dc_linear_data, dc_nonlinear_data
 
@@ -1365,7 +1372,7 @@ class InnerState(State):
     @property
     def time_removal_source(self):
         state = self.states['PREVIOUS_INNER']
-        time_removal = self.inverse_velocity / self.dt_inner * self.shape_dxyz * self.shape
+        time_removal = self.inverse_velocity / self.dt_inner * self.shape
         time_removal = openmc.kinetics.map_array(time_removal, self.shape_zyxg, self.amplitude_zyxg, False)
         time_removal.shape = (self.amplitude_nxyz, self.ng)
         time_removal *= state.amplitude
@@ -1402,10 +1409,10 @@ class InnerState(State):
 
     @property
     def transient_matrix(self):
-        time_removal = self.inverse_velocity / self.dt_inner * self.shape_dxyz * self.shape
+        time_removal = self.inverse_velocity / self.dt_inner * self.shape
         time_removal = openmc.kinetics.map_array(time_removal, self.shape_zyxg, self.amplitude_zyxg, False)
 
-        shape_deriv = self.inverse_velocity * self.shape_deriv * self.shape_dxyz
+        shape_deriv = self.inverse_velocity * self.shape_deriv
         shape_deriv = openmc.kinetics.map_array(shape_deriv, self.shape_zyxg, self.amplitude_zyxg, False)
 
         return sps.diags(time_removal.flatten()) + sps.diags(shape_deriv.flatten()) \
@@ -1443,7 +1450,7 @@ class InnerState(State):
         del_fis_rate = np.tile(del_fis_rate, self.ng)
         del_fis_rate.shape = (self.shape_nxyz, self.nd, self.ng, self.ng)
 
-        term_k2 = (chi * k2 * del_fis_rate * self.shape_dxyz).sum(axis=1)
+        term_k2 = (chi * k2 * del_fis_rate).sum(axis=1)
         term_k2 = openmc.kinetics.map_array(term_k2, self.shape_zyxgg, self.amplitude_zyxgg, False)
         term_k2.shape = (self.amplitude_nxyz, self.ng, self.ng)
 
@@ -1466,7 +1473,7 @@ class InnerState(State):
         del_fis_rate = np.tile(del_fis_rate, self.ng)
         del_fis_rate.shape = (self.shape_nxyz, self.nd, self.ng, self.ng)
 
-        term_k3 = (chi * k3 * del_fis_rate * self.shape_dxyz).sum(axis=1)
+        term_k3 = (chi * k3 * del_fis_rate).sum(axis=1)
         term_k3 = openmc.kinetics.map_array(term_k3, self.shape_zyxgg, self.amplitude_zyxgg, False)
         term_k3.shape = (self.amplitude_nxyz, self.ng, self.ng)
 
@@ -1483,12 +1490,12 @@ class InnerState(State):
         # Contribution from generation at current time point
         flux = np.tile(self.flux, self.nd)
         flux.shape = (self.shape_nxyz, self.nd, self.ng)
-        term_k2 = self.k2 * (self.delayed_nu_fission * flux).sum(axis=2) * self.shape_dxyz
+        term_k2 = self.k2 * (self.delayed_nu_fission * flux).sum(axis=2)
 
         # Contribution from generation at previous time step
         flux = np.tile(state.flux, state.nd)
         flux.shape = (state.shape_nxyz, state.nd, state.ng)
-        term_k3 = state.k3 * (state.delayed_nu_fission * flux).sum(axis=2) * self.shape_dxyz
+        term_k3 = state.k3 * (state.delayed_nu_fission * flux).sum(axis=2)
 
         self._precursors = term_k1 + term_k2 - term_k3
 
@@ -1502,11 +1509,25 @@ class InnerState(State):
 
         if 'amplitude' not in f['INNER_STEPS'][time_point].keys():
             f['INNER_STEPS'][time_point].create_dataset('amplitude', data=self.amplitude)
+            f['INNER_STEPS'][time_point].create_dataset('flux', data=self.flux)
+            if self.method == 'OMEGA':
+                f['INNER_STEPS'][time_point].create_dataset('flux_frequency', data=self.flux_frequency(True))
+                f['INNER_STEPS'][time_point].create_dataset('precursor_frequency', data=self.precursor_frequency(True))
         else:
             amp = f['INNER_STEPS'][time_point]['amplitude']
             amp[...] = self.amplitude
+            flux = f['INNER_STEPS'][time_point]['flux']
+            flux[...] = self.flux
+            if self.method == 'OMEGA':
+                flux_frequency = f['INNER_STEPS'][time_point]['flux_frequency']
+                flux_frequency[...] = self.flux_frequency(True)
+                precursor_frequency = f['INNER_STEPS'][time_point]['precursor_frequency']
+                precursor_frequency[...] = self.precursor_frequency(True)
 
         f['INNER_STEPS'][time_point].attrs['reactivity'] = self.reactivity
-        f['INNER_STEPS'][time_point].attrs['beta_eff'] = self.beta_eff
+        f['INNER_STEPS'][time_point].attrs['beta_eff'] = self.beta_eff.sum()
+        f['INNER_STEPS'][time_point].attrs['core_power_density'] = self.core_power_density
+
+
 
         f.close()

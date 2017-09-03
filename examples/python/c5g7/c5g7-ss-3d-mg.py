@@ -1,9 +1,14 @@
 #coding=utf-8
 
+import matplotlib
+matplotlib.use("Agg")
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+
 import math
 import pickle
-import matplotlib
 from copy import deepcopy
+from collections import OrderedDict
 
 import numpy as np
 import os
@@ -17,8 +22,16 @@ from geometry_mg import materials, surfaces, universes, cells, lattices, geometr
 from plots import plots
 from mgxs_lib import mgxs_data
 
-# Create the materials file
-materials_file = openmc.Materials(geometry.get_all_materials().values())
+run_directory = 'C5G7_SS_3D_MG'
+
+# Create run directory
+if not os.path.exists(run_directory):
+    os.makedirs(run_directory)
+
+
+###############################################################
+#                      geometry.xml
+##############################################################
 
 # Set the base control rod bank positions
 cells['Control Rod Base Bank 1'].translation = [0., 0., 64.26]
@@ -26,187 +39,157 @@ cells['Control Rod Base Bank 2'].translation = [0., 0., 64.26]
 cells['Control Rod Base Bank 3'].translation = [0., 0., 64.26]
 cells['Control Rod Base Bank 4'].translation = [0., 0., 64.26]
 
-case = '4.1'
+geometry.time = 0.0
+geometry.export_to_xml(run_directory + '/geometry.xml')
 
-# Adjust the cells to have the desired translations or moderator densities
-if case == '4.1':
-    cells['Control Rod Base Bank 1'].translation = [[0., 0., 64.26],
-                                                    [0., 0., 21.42],
-                                                    [0., 0., 64.26]]
-    cells['Control Rod Base Bank 1'].translation_times = [0., 2., 4.]
-elif case == '4.2':
-    cells['Control Rod Base Bank 3'].translation = [[0., 0., 64.26],
-                                                    [0., 0.,-21.42],
-                                                    [0., 0., 64.26]]
-    cells['Control Rod Base Bank 3'].translation_times = [0., 4., 8.]
-elif case == '4.3':
-    cells['Control Rod Base Bank 1'].translation = [[0., 0., 64.26],
-                                                    [0., 0., 21.42],
-                                                    [0., 0., 64.26]]
-    cells['Control Rod Base Bank 1'].translation_times = [2., 4., 6.]
-    cells['Control Rod Base Bank 3'].translation = [[0., 0., 64.26],
-                                                    [0., 0.,-21.42],
-                                                    [0., 0., 64.26]]
-    cells['Control Rod Base Bank 3'].translation_times = [0., 4., 8.]
-elif case == '4.4':
-    cells['Control Rod Base Bank 3'].translation = [[0., 0., 64.26],
-                                                    [0., 0., 21.42],
-                                                    [0., 0., 64.26]]
-    cells['Control Rod Base Bank 3'].translation_times = [4., 6., 8.]
-    cells['Control Rod Base Bank 4'].translation = [[0., 0., 64.26],
-                                                    [0., 0., 21.42],
-                                                    [0., 0., 21.42],
-                                                    [0., 0., 64.26]]
-    cells['Control Rod Base Bank 4'].translation_times = [0., 2., 4., 6.]
-elif case == '4.5':
-    cells['Control Rod Base Bank 1'].translation = [[0., 0., 64.26],
-                                                    [0., 0., 21.42],
-                                                    [0., 0., 64.26]]
-    cells['Control Rod Base Bank 1'].translation_times = [0., 2., 4.]
-    cells['Control Rod Base Bank 3'].translation = [[0., 0., 64.26],
-                                                    [0., 0., 21.42],
-                                                    [0., 0., 21.42],
-                                                    [0., 0., 64.26]]
-    cells['Control Rod Base Bank 3'].translation_times = [2., 4., 6., 8.]
-elif case == '5.1':
-    d = materials['Moderator Bank 1'].density
-    density = np.array([[0., 2.    , 4.],
-                        [d , 0.90*d, d ]])
-    materials['Moderator Bank 1'].set_density('macro', density)
-    d = materials['Moderator Bank 3'].density
-    density = np.array([[1., 2.    , 3.],
-                        [d , 0.95*d, d ]])
-    materials['Moderator Bank 3'].set_density('macro', density)
-elif case == '5.2':
-    d = materials['Moderator Bank 1'].density
-    density = np.array([[0., 2.    , 4.],
-                        [d , 0.80*d, d ]])
-    materials['Moderator Bank 1'].set_density('macro', density)
-    d = materials['Moderator Bank 3'].density
-    density = np.array([[1., 2.    , 3.],
-                        [d , 0.95*d, d ]])
-    materials['Moderator Bank 3'].set_density('macro', density)
-elif case == '5.3':
-    d = materials['Moderator Bank 1'].density
-    density = np.array([[0., 2.    , 4.],
-                        [d , 0.80*d, d ]])
-    materials['Moderator Bank 1'].set_density('macro', density)
-    d = materials['Moderator Bank 3'].density
-    density = np.array([[0., 2.    , 4.],
-                        [d , 0.90*d, d ]])
-    materials['Moderator Bank 3'].set_density('macro', density)
-    d = materials['Moderator Bank 4'].density
-    density = np.array([[1., 2.    , 3.],
-                        [d , 0.95*d, d ]])
-    materials['Moderator Bank 4'].set_density('macro', density)
-elif case == '5.4':
-    d = materials['Moderator Bank 2'].density
-    density = np.array([[0., 2.    , 4.],
-                        [d , 0.80*d, d ]])
-    materials['Moderator Bank 2'].set_density('macro', density)
-    d = materials['Moderator Bank 3'].density
-    density = np.array([[0., 2.    , 4.],
-                        [d , 0.90*d, d ]])
-    materials['Moderator Bank 3'].set_density('macro', density)
-    d = materials['Moderator Bank 4'].density
-    density = np.array([[1., 2.    , 3.],
-                        [d , 0.95*d, d ]])
-    materials['Moderator Bank 4'].set_density('macro', density)
+###############################################################
+#                        mgxs.h5
+##############################################################
+
+# Create mgxs file
+mgxs_lib_file.export_to_hdf5(run_directory + '/mgxs.h5')
 
 
-# OpenMC simulation parameters
-batches = 251
-inactive = 250
-particles = 10000000
+###############################################################
+#                      materials.xml
+##############################################################
 
-# Instantiate a Settings object
+# Create materials file
+materials_file = openmc.Materials(geometry.get_all_materials().values())
+materials_file.cross_sections = './mgxs.h5'
+materials_file.export_to_xml(run_directory + '/materials.xml')
+
+
+###############################################################
+#                      settings.xml
+##############################################################
+
+inactive    = 60
+active      = 200
+particles   = 10000000
+sp_interval = 5
+
+# Create settings file
 settings_file = openmc.Settings()
-settings_file.batches = batches
+settings_file.energy_mode = 'multi-group'
+settings_file.batches = active + inactive
 settings_file.inactive = inactive
 settings_file.particles = particles
+settings_file.seed = 1
 settings_file.output = {'tallies': False}
 
+statepoint = dict()
+sp_batches = range(inactive + sp_interval, inactive + sp_interval + active, sp_interval)
+sp_particles = [(i-inactive)*particles for i in sp_batches]
+#sp_batches = [40, 130]
+statepoint['batches'] = sp_batches
+settings_file.statepoint = statepoint
+
 # Create an initial uniform spatial source distribution over fissionable zones
-bounds = [-32.13, -10.71, -64.26, 10.71,  32.13,  64.26]
-uniform_dist = openmc.stats.Box(bounds[:3], bounds[3:], only_fissionable=True)
+source_bounds  = [-32.13, -10.71, -64.26, 10.71,  32.13,  64.26]
+entropy_bounds = [-32.13, -10.71, -85.68, 10.71,  32.13,  85.68]
+uniform_dist = openmc.stats.Box(source_bounds[:3], source_bounds[3:], only_fissionable=True)
 settings_file.source = openmc.source.Source(space=uniform_dist)
 
 entropy_mesh = openmc.Mesh()
 entropy_mesh.type = 'regular'
-entropy_mesh.dimension = [34,34,1]
-entropy_mesh.lower_left  = bounds[:3]
-entropy_mesh.upper_right = bounds[3:]
+entropy_mesh.dimension = [4,4,32]
+entropy_mesh.lower_left  = entropy_bounds[:3]
+entropy_mesh.upper_right = entropy_bounds[3:]
 settings_file.entropy_mesh = entropy_mesh
 
-# Instantiate a 50-group EnergyGroups object
-fine_groups = openmc.mgxs.EnergyGroups()
-fine_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 1.0e7]
-#fine_groups.group_edges = [0., 0.63, 1.0e7]
+settings_file.export_to_xml(run_directory + '/settings.xml')
 
-# Instantiate a 2-group EnergyGroups object
-energy_groups = openmc.mgxs.EnergyGroups()
-energy_groups.group_edges = [0., 0.13, 0.63, 4.1, 55.6, 9.2e3, 1.36e6, 1.0e7]
-#energy_groups.group_edges = [0., 0.63, 1.0e7]
+###############################################################
+#                      tallies.xml
+##############################################################
 
-# Instantiate a 1-group EnergyGroups object
-one_group = openmc.mgxs.EnergyGroups()
-one_group.group_edges = [fine_groups.group_edges[0], fine_groups.group_edges[-1]]
+pin_mesh = openmc.Mesh()
+pin_mesh.type = 'regular'
+pin_mesh.dimension = [34,34,1]
+pin_mesh.lower_left  = [-32.13, -10.71, -85.68]
+pin_mesh.upper_right = [ 10.71,  32.13,  85.68]
 
-# Create pin cell mesh
-point_mesh = openmc.Mesh()
-point_mesh.type = 'regular'
-point_mesh.dimension = [34,34,1]
-point_mesh.lower_left  = [-32.13, -10.71, -85.68]
-point_mesh.width = [42.84/point_mesh.dimension[0],
-                    42.84/point_mesh.dimension[1],
-                    171.36/point_mesh.dimension[2]]
+mesh_filter = openmc.MeshFilter(pin_mesh)
+tally = openmc.Tally(tally_id=1)
+tally.filters = [mesh_filter]
+tally.scores = ['kappa-fission']
 
-pin_cell_mesh = openmc.Mesh()
-pin_cell_mesh.type = 'regular'
-pin_cell_mesh.dimension = [34,34,1]
-pin_cell_mesh.lower_left  = [-32.13, -10.71, -85.68]
-pin_cell_mesh.width = [42.84/pin_cell_mesh.dimension[0],
-                       42.84/pin_cell_mesh.dimension[1],
-                       171.36/pin_cell_mesh.dimension[2]]
+# Generate a new tallies file
+tallies_file = openmc.Tallies([tally])
+tallies_file.export_to_xml(run_directory + '/tallies.xml')
 
-assembly_mesh = openmc.Mesh()
-assembly_mesh.type = 'regular'
-assembly_mesh.dimension = [2,2,1]
-assembly_mesh.lower_left  = [-32.13, -10.71, -85.68]
-assembly_mesh.width = [42.84/assembly_mesh.dimension[0],
-                       42.84/assembly_mesh.dimension[1],
-                       171.36/assembly_mesh.dimension[2]]
+openmc.run(threads=1, mpi_procs=36*2, mpi_exec='mpirun', cwd=run_directory)
 
-# Instantiate a clock object
-clock = openmc.kinetics.Clock(start=0., end=4., dt_outer=5.e-1, dt_inner=1.e-2)
+###############################################################
+#                   data processing
+##############################################################
 
-# Instantiate a kinetics solver object
-solver = openmc.kinetics.Solver(name='MG_SS', directory='C5G7_3D')
-solver.num_delayed_groups           = 8
-solver.mesh                         = point_mesh
-solver.pin_cell_mesh                = point_mesh
-solver.assembly_mesh                = point_mesh
-solver.one_group                    = one_group
-solver.energy_groups                = energy_groups
-solver.fine_groups                  = fine_groups
-solver.geometry                     = geometry
-solver.settings_file                = settings_file
-solver.materials_file               = materials_file
-solver.mgxs_lib_file                = mgxs_lib_file
-solver.clock                        = clock
-solver.mpi_procs                    = 24*5
-solver.threads                      = 1
-solver.ppn                          = 24
-solver.core_volume                  = 42.84 * 42.84 * 128.52
-solver.constant_seed                = False
-solver.seed                         = 1
-solver.chi_delayed_by_delayed_group = True
-solver.chi_delayed_by_mesh          = True
-solver.use_pregenerated_sps         = False
-solver.pregenerate_sps              = False
-solver.run_on_cluster               = True
-solver.job_file                     = 'job.pbs'
-solver.log_file_name                = 'log_file.h5'
+pin_powers = []
+k_eff_unc = []
+for i,batch in enumerate(sp_batches):
+    su = openmc.Summary(run_directory + '/summary.h5')
+    if inactive + active >= 10000:
+        sp = openmc.StatePoint(run_directory + '/statepoint.{:05d}.h5'.format(batch), False)
+    elif inactive + active >= 1000:
+        sp = openmc.StatePoint(run_directory + '/statepoint.{:04d}.h5'.format(batch), False)
+    elif inactive + active >= 100:
+        sp = openmc.StatePoint(run_directory + '/statepoint.{:03d}.h5'.format(batch), False)
+    else:
+        sp = openmc.StatePoint(run_directory + '/statepoint.{:d}.h5'.format(batch), False)
+    sp.link_with_summary(su)
 
-# Run OpenMC
-solver.solve()
+    print('Loading tallies {} of {}'.format(i+1, len(sp_batches)))
+
+    tally = sp.get_tally(scores=['kappa-fission'])
+    powers = tally.get_values(scores=['kappa-fission'])
+    powers.shape = (34,34)
+    powers[8,8] = 0.
+    powers[8,25] = 0.
+    powers[25,8] = 0.
+    powers[25,25] = 0.
+
+    pin_powers.append(powers)
+    k_eff_unc.append(sp.k_combined[1])
+
+rms_errors = []
+max_errors = []
+for i,batch in enumerate(sp_batches):
+    power_errors = np.abs((pin_powers[i] - pin_powers[-1]) / pin_powers[-1] * 100.)
+    power_errors = np.nan_to_num(power_errors)
+    rms_errors.append(np.sqrt(np.mean((power_errors**2).flatten())))
+    max_errors.append(np.max(power_errors.flatten()))
+
+
+import seaborn as sns
+colors = sns.color_palette()
+
+sp_particles = np.array(sp_particles)
+rms_errors = np.array(rms_errors)
+max_errors = np.array(max_errors)
+k_eff_unc = np.array(k_eff_unc)
+
+arrays = [sp_particles.tolist(), rms_errors.tolist(), max_errors.tolist(), k_eff_unc.tolist()]
+pickle.dump(arrays, open( "c5g7_ss_3d_mg_data.pkl", "wb" ) )
+
+fig = plt.figure(figsize=(9,7))
+plt.scatter(sp_particles[:-20], rms_errors[:-20]    , marker='o', s=200, c='b', label='RMS error', zorder=5)
+plt.scatter(sp_particles[:-20], max_errors[:-20]    , marker='v', s=200, c='b', label='Max error', zorder=4)
+plt.scatter(sp_particles[:-20], k_eff_unc[:-20]*1.e5, marker='o', s=200, c='r', label='k-eff', zorder=3)
+plt.loglog([1.e5, 1.e10], [1.0, 1.0], 'k--', linewidth=3, zorder=2)
+plt.loglog([1.e5, 1.e10], [0.5, 0.5], 'k--', linewidth=3, zorder=1)
+plt.legend(loc=1, fontsize=16)
+plt.xlabel('# of particles', fontsize=16)
+#plt.ylabel(r'\textcolor{blue}{Relative error (\%)} \textcolor{black}{or} \textcolor{red}{k-eff unc. (pcm)}', fontsize=16)
+plt.ylabel('Relative error (%) or k-eff uncertainty (pcm)', fontsize=16)
+plt.gca().tick_params(labelsize=14)
+plt.gca().grid(True, which='both')
+
+plt.xlim([3.e7, 1.3e9])
+plt.ylim([5.e-2, 3.e1])
+plt.tight_layout()
+plt.savefig('c5g7_ss_3d_mg_pp_conv.png')
+
+
+
+
