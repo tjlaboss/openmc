@@ -2,10 +2,25 @@ module tally_filter_header
 
   use constants,       only: MAX_LINE_LEN
   use particle_header, only: Particle
+  use stl_vector,      only: VectorInt, VectorReal
 
   use hdf5
 
   implicit none
+
+!===============================================================================
+! TALLYFILTERMATCH stores every valid bin and weight for a filter
+!===============================================================================
+
+  type TallyFilterMatch
+    ! Index of the bin and weight being used in the current filter combination
+    integer          :: i_bin
+    type(VectorInt)  :: bins
+    type(VectorReal) :: weights
+
+    ! Indicates whether all valid bins for this filter have been found
+    logical          :: bins_present = .false.
+  end type TallyFilterMatch
 
 !===============================================================================
 ! TALLYFILTER describes a filter that limits what events score to a tally. For
@@ -14,9 +29,10 @@ module tally_filter_header
 !===============================================================================
 
   type, abstract :: TallyFilter
+    integer :: id
     integer :: n_bins = 0
   contains
-    procedure(get_next_bin_),  deferred :: get_next_bin
+    procedure(get_all_bins_),  deferred :: get_all_bins
     procedure(to_statepoint_), deferred :: to_statepoint
     procedure(text_label_),    deferred :: text_label
     procedure                           :: initialize => filter_initialize
@@ -33,16 +49,15 @@ module tally_filter_header
 ! first valid bin should then give the second valid bin, and so on.  When there
 ! are no valid bins left, the next_bin should be NO_VALID_BIN.
 
-    subroutine get_next_bin_(this, p, estimator, current_bin, next_bin, weight)
+    subroutine get_all_bins_(this, p, estimator, match)
       import TallyFilter
       import Particle
+      import TallyFilterMatch
       class(TallyFilter), intent(in)  :: this
       type(Particle),     intent(in)  :: p
       integer,            intent(in)  :: estimator
-      integer, value,     intent(in)  :: current_bin
-      integer,            intent(out) :: next_bin
-      real(8),            intent(out) :: weight
-    end subroutine get_next_bin_
+      type(TallyFilterMatch), intent(inout) :: match
+    end subroutine get_all_bins_
 
 !===============================================================================
 ! TO_STATEPOINT writes all the information needed to reconstruct the filter to

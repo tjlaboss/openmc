@@ -513,7 +513,7 @@ def create_triso_lattice(trisos, lower_left, pitch, shape, background):
     universes = np.empty(shape[::-1], dtype=openmc.Universe)
     for idx, triso_list in sorted(triso_locations.items()):
         if len(triso_list) > 0:
-            outside_trisos = openmc.Intersection(*[~t.region for t in triso_list])
+            outside_trisos = openmc.Intersection(~t.region for t in triso_list)
             background_cell = openmc.Cell(fill=background, region=outside_trisos)
         else:
             background_cell = openmc.Cell(fill=background)
@@ -970,13 +970,13 @@ def pack_trisos(radius, fill, domain_shape='cylinder', domain_length=None,
         raise ValueError('"domain_radius" must be specified for {} domain '
                          'geometry '.format(domain_shape))
 
-    if domain_shape is 'cube':
+    if domain_shape == 'cube':
         domain = _CubicDomain(length=domain_length, particle_radius=radius,
                               center=domain_center)
-    elif domain_shape is 'cylinder':
+    elif domain_shape == 'cylinder':
         domain = _CylindricalDomain(length=domain_length, radius=domain_radius,
                                     particle_radius=radius, center=domain_center)
-    elif domain_shape is 'sphere':
+    elif domain_shape == 'sphere':
         domain = _SphericalDomain(radius=domain_radius, particle_radius=radius,
                                   center=domain_center)
 

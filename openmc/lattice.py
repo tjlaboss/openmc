@@ -2,6 +2,7 @@ from __future__ import division
 
 from abc import ABCMeta
 from collections import OrderedDict, Iterable
+from copy import deepcopy
 from math import sqrt, floor
 from numbers import Real, Integral
 from xml.etree import ElementTree as ET
@@ -11,10 +12,11 @@ import numpy as np
 
 import openmc.checkvalue as cv
 import openmc
+from openmc.mixin import IDManagerMixin
 
 
 @add_metaclass(ABCMeta)
-class Lattice(object):
+class Lattice(IDManagerMixin):
     """A repeating structure wherein each element is a universe.
 
     Parameters
@@ -40,6 +42,10 @@ class Lattice(object):
         of the lattice
 
     """
+
+    next_id = 1
+    used_ids = openmc.Universe.used_ids
+
     def __init__(self, lattice_id=None, name=''):
         # Initialize Lattice class attributes
         self.id = lattice_id
@@ -55,21 +61,17 @@ class Lattice(object):
             return False
         elif self.name != other.name:
             return False
-        elif self.pitch != other.pitch:
+        elif np.any(self.pitch != other.pitch):
             return False
         elif self.outer != other.outer:
             return False
-        elif self.universes != other.universes:
+        elif np.any(self.universes != other.universes):
             return False
         else:
             return True
 
     def __ne__(self, other):
         return not self == other
-
-    @property
-    def id(self):
-        return self._id
 
     @property
     def name(self):
@@ -86,16 +88,6 @@ class Lattice(object):
     @property
     def universes(self):
         return self._universes
-
-    @id.setter
-    def id(self, lattice_id):
-        if lattice_id is None:
-            self._id = openmc.universe.AUTO_UNIVERSE_ID
-            openmc.universe.AUTO_UNIVERSE_ID += 1
-        else:
-            cv.check_type('lattice ID', lattice_id, Integral)
-            cv.check_greater_than('lattice ID', lattice_id, 0, equality=True)
-            self._id = lattice_id
 
     @name.setter
     def name(self, name):
@@ -367,7 +359,7 @@ class Lattice(object):
         return all_universes
 
     def get_universe(self, idx):
-        """Return universe corresponding to a lattice element index
+        r"""Return universe corresponding to a lattice element index
 
         Parameters
         ----------
@@ -413,6 +405,51 @@ class Lattice(object):
             else:
                 return []
         return [(self, idx)] + u.find(p)
+
+    def clone(self, memo=None):
+        """Create a copy of this lattice with a new unique ID, and clones
+        all universes within this lattice.
+
+        Parameters
+        ----------
+        memo : dict or None
+            A nested dictionary of previously cloned objects. This parameter
+            is used internally and should not be specified by the user.
+
+        Returns
+        -------
+        clone : openmc.Lattice
+            The clone of this lattice
+
+        """
+
+        if memo is None:
+            memo = {}
+
+        # If no nemoize'd clone exists, instantiate one
+        if self not in memo:
+            clone = deepcopy(self)
+            clone.id = None
+
+            if self.outer is not None:
+                clone.outer = self.outer.clone(memo)
+
+            # Assign universe clones to the lattice clone
+            for i in self.indices:
+                if isinstance(self, RectLattice):
+                    clone.universes[i] = self.universes[i].clone(memo)
+                else:
+                    if self.ndim == 2:
+                        clone.universes[i[0]][i[1]] = \
+                            self.universes[i[0]][i[1]].clone(memo)
+                    else:
+                        clone.universes[i[0]][i[1]][i[2]] = \
+                            self.universes[i[0]][i[1]][i[2]].clone(memo)
+
+            # Memoize the clone
+            memo[self] = clone
+
+        return memo[self]
 
 
 class RectLattice(Lattice):
@@ -487,7 +524,7 @@ class RectLattice(Lattice):
             return False
         elif self.shape != other.shape:
             return False
-        elif self.lower_left != other.lower_left:
+        elif np.any(self.lower_left != other.lower_left):
             return False
         else:
             return True

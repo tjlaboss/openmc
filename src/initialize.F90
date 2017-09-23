@@ -11,7 +11,6 @@ module initialize
   use constants
   use dict_header,     only: DictIntInt, ElemKeyValueII
   use set_header,      only: SetInt
-  use energy_grid,     only: logarithmic_grid, grid_method
   use error,           only: fatal_error, warning
   use geometry,        only: neighbor_lists, count_instance, calc_offsets, &
                              maximum_levels
@@ -46,11 +45,28 @@ contains
 ! setting up timers, etc.
 !===============================================================================
 
-  subroutine openmc_init(intracomm)
-#ifdef MPIF08
-    type(MPI_Comm), intent(in) :: intracomm     ! MPI intracommunicator
-#else
+  subroutine openmc_init(intracomm) bind(C)
     integer, intent(in), optional :: intracomm  ! MPI intracommunicator
+
+    ! Copy the communicator to a new variable. This is done to avoid changing
+    ! the signature of this subroutine. If MPI is being used but no communicator
+    ! was passed, assume MPI_COMM_WORLD.
+#ifdef MPI
+#ifdef MPIF08
+    type(MPI_Comm), intent(in) :: comm     ! MPI intracommunicator
+    if (present(intracomm)) then
+      comm % MPI_VAL = intracomm
+    else
+      comm = MPI_COMM_WORLD
+    end if
+#else
+    integer :: comm
+    if (present(intracomm)) then
+      comm = intracomm
+    else
+      comm = MPI_COMM_WORLD
+    end if
+#endif
 #endif
 
     ! Start total and initialization timer
@@ -59,7 +75,7 @@ contains
 
 #ifdef MPI
     ! Setup MPI
-    call initialize_mpi(intracomm)
+    call initialize_mpi(comm)
 #endif
 
     ! Initialize HDF5 interface
@@ -101,13 +117,7 @@ contains
     end if
 
     if (run_mode /= MODE_PLOTTING) then
-      ! Construct information needed for nuclear data
-      if (run_CE) then
-        ! Construct log energy grid for cross-sections
-        call logarithmic_grid()
-      end if
-
-      ! Allocate and setup tally stride, matching_bins, and tally maps
+      ! Allocate and setup tally stride, filter_matches, and tally maps
       call configure_tallies()
 
       ! Set up tally procedure pointers
@@ -162,6 +172,7 @@ contains
     integer, intent(in) :: intracomm         ! MPI intracommunicator
 #endif
 
+    integer                   :: mpi_err          ! MPI error code
     integer                   :: bank_blocks(5)   ! Count for each datatype
 #ifdef MPIF08
     type(MPI_Datatype)        :: bank_types(5)
@@ -432,7 +443,6 @@ contains
     integer :: id                     ! user-specified id
     type(Cell),        pointer :: c => null()
     class(Lattice),    pointer :: lat => null()
-    type(TallyObject), pointer :: t => null()
 
     do i = 1, n_cells
       ! =======================================================================
@@ -567,26 +577,20 @@ contains
 
     end do
 
-    TALLY_LOOP: do i = 1, n_tallies
-      t => tallies(i)
+    ! =======================================================================
+    ! ADJUST INDICES FOR EACH TALLY FILTER
 
-      ! =======================================================================
-      ! ADJUST INDICES FOR EACH TALLY FILTER
+    FILTER_LOOP: do i = 1, n_filters
 
-      FILTER_LOOP: do j = 1, size(t % filters)
+      select type(filt => filters(i) % obj)
+      type is (SurfaceFilter)
+        ! Check if this is a surface filter only for surface currents
+        if (.not. filt % current) call filt % initialize()
+      class default
+        call filt % initialize()
+      end select
 
-        select type(filt => t % filters(j) % obj)
-        type is (SurfaceFilter)
-          ! Check if this is a surface filter only for surface currents
-          if (.not. any(t % score_bins == SCORE_CURRENT)) &
-               call filt % initialize()
-        class default
-          call filt % initialize()
-        end select
-
-      end do FILTER_LOOP
-
-    end do TALLY_LOOP
+    end do FILTER_LOOP
 
   end subroutine adjust_indices
 
@@ -695,8 +699,8 @@ contains
 
     ! We need distribcell if any tallies have distribcell filters.
     do i = 1, n_tallies
-      do j = 1, size(tallies(i) % filters)
-        select type(filt => tallies(i) % filters(j) % obj)
+      do j = 1, size(tallies(i) % filter)
+        select type(filt => filters(tallies(i) % filter(j)) % obj)
         type is (DistribcellFilter)
           distribcell_active = .true.
         end select
@@ -722,8 +726,8 @@ contains
 
     ! Set the number of bins in all distribcell filters.
     do i = 1, n_tallies
-      do j = 1, size(tallies(i) % filters)
-        select type(filt => tallies(i) % filters(j) % obj)
+      do j = 1, size(tallies(i) % filter)
+        select type(filt => filters(tallies(i) % filter(j)) % obj)
         type is (DistribcellFilter)
           ! Set the number of bins to the number of instances of the cell.
           filt % n_bins = cells(filt % cell) % instances
@@ -787,8 +791,8 @@ contains
 
     ! List all cells referenced in distribcell filters.
     do i = 1, n_tallies
-      do j = 1, size(tallies(i) % filters)
-        select type(filt => tallies(i) % filters(j) % obj)
+      do j = 1, size(tallies(i) % filter)
+        select type(filt => filters(tallies(i) % filter(j)) % obj)
         type is (DistribcellFilter)
           call cell_list % add(filt % cell)
         end select

@@ -43,6 +43,7 @@ parser.add_option("-s", "--script", action="store_true", dest="script",
 # Default compiler paths
 FC='gfortran'
 CC='gcc'
+CXX='g++'
 MPI_DIR='/opt/mpich/3.2-gnu'
 HDF5_DIR='/opt/hdf5/1.8.16-gnu'
 PHDF5_DIR='/opt/phdf5/1.8.16-gnu'
@@ -55,6 +56,8 @@ if 'FC' in os.environ:
     FC = os.environ['FC']
 if 'CC' in os.environ:
     CC = os.environ['CC']
+if 'CXX' in os.environ:
+    CXX = os.environ['CXX']
 if 'MPI_DIR' in os.environ:
     MPI_DIR = os.environ['MPI_DIR']
 if 'HDF5_DIR' in os.environ:
@@ -162,9 +165,11 @@ class Test(object):
             else:
                 self.fc = os.path.join(MPI_DIR, 'bin', 'mpif90')
             self.cc = os.path.join(MPI_DIR, 'bin', 'mpicc')
+            self.cxx = os.path.join(MPI_DIR, 'bin', 'mpicxx')
         else:
             self.fc = FC
             self.cc = CC
+            self.cxx = CXX
 
     # Sets the build name that will show up on the CDash
     def get_build_name(self):
@@ -179,10 +184,14 @@ class Test(object):
             build_str += "-Ddebug=ON "
         if self.optimize:
             build_str += "-Doptimize=ON "
-        if self.openmp:
-            build_str += "-Dopenmp=ON "
+        if not self.openmp:
+            build_str += "-Dopenmp=OFF "
         if self.coverage:
             build_str += "-Dcoverage=ON "
+        if self.phdf5:
+            build_str += "-DHDF5_PREFER_PARALLEL=ON "
+        else:
+            build_str += "-DHDF5_PREFER_PARALLEL=OFF "
         self.build_opts = build_str
         return self.build_opts
 
@@ -195,6 +204,7 @@ class Test(object):
     def run_ctest_script(self):
         os.environ['FC'] = self.fc
         os.environ['CC'] = self.cc
+        os.environ['CXX'] = self.cxx
         if self.mpi:
             os.environ['MPI_DIR'] = MPI_DIR
         if self.phdf5:
@@ -208,16 +218,20 @@ class Test(object):
 
     # Runs cmake when in non-script mode
     def run_cmake(self):
+        build_opts = self.build_opts.split()
+        self.cmake += build_opts
+
         os.environ['FC'] = self.fc
         os.environ['CC'] = self.cc
+        os.environ['CXX'] = self.cxx
         if self.mpi:
             os.environ['MPI_DIR'] = MPI_DIR
         if self.phdf5:
             os.environ['HDF5_ROOT'] = PHDF5_DIR
+            self.cmake.append('-DHDF5_PREFER_PARALLEL=ON')
         else:
             os.environ['HDF5_ROOT'] = HDF5_DIR
-        build_opts = self.build_opts.split()
-        self.cmake += build_opts
+            self.cmake.append('-DHDF5_PREFER_PARALLEL=OFF')
         rc = call(self.cmake)
         if rc != 0:
             self.success = False
@@ -402,16 +416,16 @@ for key in iter(tests):
 
     # Verify fortran compiler exists
     if which(test.fc) is None:
-        self.msg = 'Compiler not found: {0}'.format(test.fc)
-        self.success = False
+        test.msg = 'Compiler not found: {0}'.format(test.fc)
+        test.success = False
         continue
 
     # Verify valgrind command exists
     if test.valgrind:
         valgrind_cmd = which('valgrind')
         if valgrind_cmd is None:
-            self.msg = 'No valgrind executable found.'
-            self.success = False
+            test.msg = 'No valgrind executable found.'
+            test.success = False
             continue
     else:
         valgrind_cmd = ''
@@ -419,8 +433,8 @@ for key in iter(tests):
     # Verify gcov/lcov exist
     if test.coverage:
         if which('gcov') is None:
-            self.msg = 'No {} executable found.'.format(exe)
-            self.success = False
+            test.msg = 'No {} executable found.'.format(exe)
+            test.success = False
             continue
 
     # Set test specific CTest script vars. Not used in non-script mode

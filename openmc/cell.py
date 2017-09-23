@@ -1,4 +1,5 @@
 from collections import OrderedDict, Iterable
+from copy import deepcopy
 from math import cos, sin, pi
 from numbers import Real, Integral
 from xml.etree import ElementTree as ET
@@ -12,19 +13,10 @@ import openmc
 import openmc.checkvalue as cv
 from openmc.surface import Halfspace
 from openmc.region import Region, Intersection, Complement
+from .mixin import IDManagerMixin
 
 
-# A static variable for auto-generated Cell IDs
-AUTO_CELL_ID = 10000
-
-
-def reset_auto_cell_id():
-    """Reset counter for auto-generated cell IDs."""
-    global AUTO_CELL_ID
-    AUTO_CELL_ID = 10000
-
-
-class Cell(object):
+class Cell(IDManagerMixin):
     r"""A region of space defined as the intersection of half-space created by
     quadric surfaces.
 
@@ -96,6 +88,9 @@ class Cell(object):
 
     """
 
+    next_id = 1
+    used_ids = set()
+
     def __init__(self, cell_id=None, name='', fill=None, region=None):
         # Initialize Cell class attributes
         self.id = cell_id
@@ -109,7 +104,8 @@ class Cell(object):
         self._offsets = None
         self._time = 0.0
         self._translation_times = None
-        self._paths = []
+        self._paths = None
+        self._num_instances = None
         self._volume = None
         self._atoms = None
 
@@ -176,10 +172,6 @@ class Cell(object):
         return string
 
     @property
-    def id(self):
-        return self._id
-
-    @property
     def name(self):
         return self._name
 
@@ -241,7 +233,7 @@ class Cell(object):
 
     @property
     def paths(self):
-        if not self._paths:
+        if self._paths is None:
             raise ValueError('Cell instance paths have not been determined. '
                              'Call the Geometry.determine_paths() method.')
         return self._paths
@@ -256,6 +248,7 @@ class Cell(object):
 
     @property
     def num_instances(self):
+<<<<<<< HEAD
         return len(self.paths)
 
     @property
@@ -276,6 +269,13 @@ class Cell(object):
             cv.check_type('cell ID', cell_id, Integral)
             cv.check_greater_than('cell ID', cell_id, 0, equality=True)
             self._id = cell_id
+=======
+        if self._num_instances is None:
+            raise ValueError(
+                'Number of cell instances have not been determined. Call the '
+                'Geometry.determine_paths() method.')
+        return self._num_instances
+>>>>>>> upstream/develop
 
     @name.setter
     def name(self, name):
@@ -325,9 +325,10 @@ class Cell(object):
         c3, s3 = cos(phi), sin(phi)
         c2, s2 = cos(theta), sin(theta)
         c1, s1 = cos(psi), sin(psi)
-        return np.array([[c1*c2, c1*s2*s3 - c3*s1, s1*s3 + c1*c3*s2],
-                         [c2*s1, c1*c3 + s1*s2*s3, c3*s1*s2 - c1*s3],
-                         [-s2, c2*s3, c2*c3]])
+        self._rotation_matrix = np.array([
+            [c1*c2, c1*s2*s3 - c3*s1, s1*s3 + c1*c3*s2],
+            [c2*s1, c1*c3 + s1*s2*s3, c3*s1*s2 - c1*s3],
+            [-s2, c2*s3, c2*c3]])
 
     @translation.setter
     def translation(self, translation):
@@ -439,7 +440,7 @@ class Cell(object):
             self.region = region
         else:
             if isinstance(self.region, Intersection):
-                self.region.nodes.append(region)
+                self.region &= region
             else:
                 self.region = Intersection(self.region, region)
 
@@ -593,8 +594,22 @@ class Cell(object):
 
         # If no nemoize'd clone exists, instantiate one
         if self not in memo:
+<<<<<<< HEAD
             clone = deepcopy(self)
             clone.id = None
+=======
+            # Temporarily remove paths
+            paths = self._paths
+            self._paths = None
+
+            clone = deepcopy(self)
+            clone.id = None
+            clone._num_instances = None
+
+            # Restore paths on original instance
+            self._paths = paths
+
+>>>>>>> upstream/develop
             if self.region is not None:
                 clone.region = self.region.clone(memo)
             if self.fill is not None:
@@ -652,7 +667,7 @@ class Cell(object):
                 elif isinstance(node, Complement):
                     create_surface_elements(node.node, element)
                 else:
-                    for subnode in node.nodes:
+                    for subnode in node:
                         create_surface_elements(subnode, element)
 
             # Call the recursive function from the top node
