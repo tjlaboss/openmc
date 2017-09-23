@@ -541,6 +541,7 @@ class Solver(object):
         f.require_group('OUTER_STEPS')
         f.require_group('INNER_STEPS')
         f.create_dataset('beta', data=self.states['START'].beta())
+        f.create_dataset('beta_shape', data=self.states['START'].beta_shape())
         f.create_dataset('beta_eff', data=self.states['START'].beta_eff)
         f.create_dataset('power', data=self.states['START'].power)
         f.create_dataset('decay_rate', data=self.states['START'].decay_rate)
@@ -695,7 +696,7 @@ class Solver(object):
 
         # Create hdf5 log file
         self.create_log_file()
-        self.states['PREVIOUS_INNER'].dump_to_log_file
+        #self.states['PREVIOUS_INNER'].dump_to_log_file
         self.states['START'].dump_to_log_file
 
         # Reset the source to be the last source bank written to file

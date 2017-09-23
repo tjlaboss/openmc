@@ -547,6 +547,49 @@ class State(object):
 
         return delayed_production / production
 
+    def beta_shape(self, integrated=False):
+        flux = np.tile(self.flux, self.nd).reshape((self.shape_nxyz, self.nd, self.ng))
+
+        delayed_production = self.delayed_production
+        delayed_production.shape = (self.shape_nxyz * self.nd, self.ng, self.ng)
+        delayed_production = openmc.kinetics.block_diag(delayed_production)
+        delayed_production /= self.k_crit
+
+        delayed_production *= flux.flatten()
+        delayed_production.shape = (self.shape_nxyz, self.nd, self.ng)
+        if integrated:
+            delayed_production = delayed_production.sum(axis=(0,2))
+        else:
+            delayed_production = delayed_production.sum(axis=(2,))
+
+        prompt_production = self.prompt_production / self.k_crit
+        shape = np.tile(self.shape, self.ng).reshape((self.shape_nxyz, self.ng, self.ng))
+        prompt_production = prompt_production * shape
+        pp_matrix = openmc.kinetics.block_diag(prompt_production)
+
+        del_prod = self.delayed_production.sum(axis=1)
+        shape = np.tile(self.shape, self.ng).reshape((self.shape_nxyz, self.ng, self.ng))
+        del_prod *= shape / self.k_crit
+        del_prod.shape = (self.shape_nxyz, self.ng, self.ng)
+        dp_matrix = openmc.kinetics.block_diag(del_prod)
+
+        prod_matrix = pp_matrix + dp_matrix
+        amp = self.amplitude
+        amp = openmc.kinetics.map_array(amp, self.amplitude_zyxg, self.shape_zyxg, True)
+        amp.shape = (self.shape_nxyz, self.ng)
+
+        production = prod_matrix * amp.flatten()
+        production.shape = (self.shape_nxyz, self.ng)
+        if integrated:
+            production = production.sum(axis=(0,1))
+            production = np.repeat(production, self.nd)
+        else:
+            production = production.sum(axis=(1,))
+            production = np.repeat(production, self.nd)
+            production.shape = (self.shape_nxyz, self.nd)
+
+        return delayed_production / production
+
     def flux_frequency(self, integrated=True):
 
         state_pre = self.states['PREVIOUS_INNER']
@@ -1510,19 +1553,22 @@ class InnerState(State):
         if 'amplitude' not in f['INNER_STEPS'][time_point].keys():
             f['INNER_STEPS'][time_point].create_dataset('amplitude', data=self.amplitude)
             f['INNER_STEPS'][time_point].create_dataset('flux', data=self.flux)
+            f['INNER_STEPS'][time_point].create_dataset('power', data=self.power)
             if self.method == 'OMEGA':
-                f['INNER_STEPS'][time_point].create_dataset('flux_frequency', data=self.flux_frequency(True))
-                f['INNER_STEPS'][time_point].create_dataset('precursor_frequency', data=self.precursor_frequency(True))
+                f['INNER_STEPS'][time_point].create_dataset('flux_frequency', data=self.flux_frequency(False))
+                f['INNER_STEPS'][time_point].create_dataset('precursor_frequency', data=self.precursor_frequency(False))
         else:
             amp = f['INNER_STEPS'][time_point]['amplitude']
             amp[...] = self.amplitude
             flux = f['INNER_STEPS'][time_point]['flux']
             flux[...] = self.flux
+            power = f['INNER_STEPS'][time_point]['power']
+            power[...] = self.power
             if self.method == 'OMEGA':
                 flux_frequency = f['INNER_STEPS'][time_point]['flux_frequency']
-                flux_frequency[...] = self.flux_frequency(True)
+                flux_frequency[...] = self.flux_frequency(False)
                 precursor_frequency = f['INNER_STEPS'][time_point]['precursor_frequency']
-                precursor_frequency[...] = self.precursor_frequency(True)
+                precursor_frequency[...] = self.precursor_frequency(False)
 
         f['INNER_STEPS'][time_point].attrs['reactivity'] = self.reactivity
         f['INNER_STEPS'][time_point].attrs['beta_eff'] = self.beta_eff.sum()

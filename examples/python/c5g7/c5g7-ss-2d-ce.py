@@ -19,7 +19,6 @@ import openmc.plotter
 import openmc.kinetics as kinetics
 
 from geometry_2d_ce import materials, surfaces, universes, cells, lattices, geometry
-from plots import plots
 
 run_directory = 'C5G7_SS_2D_CE'
 
@@ -180,6 +179,45 @@ plt.ylim([5.e-2, 3.e1])
 plt.tight_layout()
 plt.savefig('c5g7_ss_2d_ce_pp_conv.png')
 
+colors = {}
+colors[materials['UO2']] = openmc.plots._SVG_COLORS['navy']
+colors[materials['MOX 4.3%']] = openmc.plots._SVG_COLORS['crimson']
+colors[materials['MOX 7.0%']] = openmc.plots._SVG_COLORS['chartreuse']
+colors[materials['MOX 8.7%']] = openmc.plots._SVG_COLORS['chocolate']
+colors[materials['Moderator']] = openmc.plots._SVG_COLORS['lightskyblue']
+colors[materials['Al Clad']] = openmc.plots._SVG_COLORS['darkslategrey']
+colors[materials['Zr Clad']] = openmc.plots._SVG_COLORS['darkslategrey']
+colors[materials['Control Rod']] = openmc.plots._SVG_COLORS['black']
+colors[materials['Fission Chamber']] = openmc.plots._SVG_COLORS['darkorange']
+colors[materials['Void']] = openmc.plots._SVG_COLORS['lightgrey']
+colors[materials['Moderator Bank 0']] = openmc.plots._SVG_COLORS['lightskyblue']
+colors[materials['Moderator Bank 1']] = openmc.plots._SVG_COLORS['lightskyblue']
+colors[materials['Moderator Bank 2']] = openmc.plots._SVG_COLORS['lightskyblue']
+colors[materials['Moderator Bank 3']] = openmc.plots._SVG_COLORS['lightskyblue']
+colors[materials['Moderator Bank 4']] = openmc.plots._SVG_COLORS['lightskyblue']
 
 
+plots = {}
 
+
+# Instantiate a Plot
+plots['materialx-xy'] = openmc.Plot()
+plots['materialx-xy'].filename = 'materials-xy'
+plots['materialx-xy'].origin = [0., 0., 0.]
+plots['materialx-xy'].width  = [64.26, 64.26]
+plots['materialx-xy'].pixels = [500,500]
+plots['materialx-xy'].color = 'mat'
+plots['materialx-xy'].basis = 'xy'
+plots['materialx-xy'].colors = colors
+
+plots['materialx-xz'] = openmc.Plot()
+plots['materialx-xz'].filename = 'materials-xz'
+plots['materialx-xz'].origin = [0., 21.42, 0.]
+plots['materialx-xz'].width = [64.26, 171.36]
+plots['materialx-xz'].pixels = [500,500]
+plots['materialx-xz'].color = 'mat'
+plots['materialx-xz'].basis = 'xz'
+plots['materialx-xz'].colors = colors
+
+plot_file = openmc.Plots(plots.values())
+plot_file.export_to_xml(run_directory + '/plots.xml')
