@@ -467,30 +467,6 @@ class Union(Region, MutableSequence):
         clone[:] = [n.clone(memo) for n in self]
         return clone
 
-    def clone(self, memo=None):
-        """Create a copy of this region - each of the surfaces in the
-        union's nodes will be cloned and will have new unique IDs.
-
-        Parameters
-        ----------
-        memo : dict or None
-            A nested dictionary of previously cloned objects. This parameter
-            is used internally and should not be specified by the user.
-
-        Returns
-        -------
-        clone : openmc.Union
-            The clone of this union
-
-        """
-
-        if memo is None:
-            memo = {}
-
-        clone = copy.deepcopy(self)
-        clone.nodes = [n.clone(memo) for n in self.nodes]
-        return clone
-
 
 class Complement(Region):
     """Complement of a region.

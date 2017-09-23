@@ -428,20 +428,20 @@ contains
 
     ! write out cmfd keff if it is active and other display info
     if (cmfd_on) then
-      write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
+      write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
            cmfd % k_cmfd(current_batch)
       select case(trim(cmfd_display))
         case('entropy')
-          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
+          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
                cmfd % entropy(current_batch)
         case('balance')
-          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
+          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
                cmfd % balance(current_batch)
         case('source')
-          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
+          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
                cmfd % src_cmp(current_batch)
         case('dominance')
-          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
+          write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5)', ADVANCE='NO') &
                cmfd % dom(current_batch)
       end select
     end if
@@ -660,8 +660,8 @@ contains
     end if
     write(ou,*)
 
-102 format (1X,A,T30,"= ",F8.6," +/- ",F8.6)
-103 format (1X,A,T30,"= ",F8.6)
+102 format (1X,A,T30,"= ",F8.5," +/- ",F8.5)
+103 format (1X,A,T30,"= ",F8.5)
 
   end subroutine print_results
 

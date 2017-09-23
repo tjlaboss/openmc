@@ -1945,51 +1945,6 @@ class Halfspace(Region):
         clone.surface = self.surface.clone(memo)
         return clone
 
-    def get_surfaces(self, surfaces=None):
-        """
-        Returns the surface that this is a halfspace of.
-
-        Parameters
-        ----------
-        surfaces: collections.OrderedDict, optional
-            Dictionary mapping surface IDs to :class:`openmc.Surface` instances
-
-        Returns
-        -------
-        surfaces: collections.OrderedDict
-            Dictionary mapping surface IDs to :class:`openmc.Surface` instances
-
-        """
-        if surfaces is None:
-            surfaces = OrderedDict()
-
-        surfaces[self.surface.id] = self.surface
-        return surfaces
-
-    def clone(self, memo=None):
-        """Create a copy of this halfspace, with a cloned surface with a
-        unique ID.
-
-        Parameters
-        ----------
-        memo : dict or None
-            A nested dictionary of previously cloned objects. This parameter
-            is used internally and should not be specified by the user.
-
-        Returns
-        -------
-        clone : openmc.Halfspace
-            The clone of this halfspace
-
-        """
-
-        if memo is None:
-            memo = dict
-
-        clone = deepcopy(self)
-        clone.surface = self.surface.clone(memo)
-        return clone
-
 
 def get_rectangular_prism(width, height, axis='z', origin=(0., 0.),
                           boundary_type='transmission', corner_radius=0.):

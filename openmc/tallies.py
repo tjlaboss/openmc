@@ -129,8 +129,6 @@ class Tally(IDManagerMixin):
         self._sp_filename = None
         self._results_read = False
 
-        self._filter_indices = {}
-
     def __eq__(self, other):
         if not isinstance(other, Tally):
             return False
@@ -1366,9 +1364,6 @@ class Tally(IDManagerMixin):
                     indices *= self_filter.num_bins
 
             # Apply outer product sum between all filter bin indices
-            #if str(filter_indices) not in self._filter_indices.keys():
-            #    self._filter_indices[str(filter_indices)] = list(map(sum, itertools.product(*filter_indices)))
-            #filter_indices = self._filter_indices[str(filter_indices)]
             filter_indices = list(map(sum, itertools.product(*filter_indices)))
 
         # If user did not specify any specific Filters, use them all
