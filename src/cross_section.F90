@@ -101,10 +101,11 @@ contains
 
         ! Calculate microscopic cross section for this nuclide
         if (p % E /= micro_xs(i_nuclide) % last_E &
-             .or. p % sqrtkT /= micro_xs(i_nuclide) % last_sqrtkT) then
-          call calculate_nuclide_xs(i_nuclide, i_sab, p, i_grid)
-        else if (i_sab /= micro_xs(i_nuclide) % last_index_sab) then
-          call calculate_nuclide_xs(i_nuclide, i_sab, p, i_grid)
+             .or. p % sqrtkT /= micro_xs(i_nuclide) % last_sqrtkT &
+             .or. i_sab /= micro_xs(i_nuclide) % index_sab &
+             .or. sab_frac /= micro_xs(i_nuclide) % sab_frac) then
+          call calculate_nuclide_xs(i_nuclide, i_sab, p % E, i_grid, &
+                                    p % sqrtkT, sab_frac)
         end if
 
         ! ======================================================================
@@ -180,8 +181,8 @@ contains
       ! Check to see if there is multipole data present at this energy
       use_mp = .false.
       if (nuc % mp_present) then
-        if (p % E >= nuc % multipole % start_E .and. &
-             p % E <= nuc % multipole % end_E) then
+        if (E >= nuc % multipole % start_E .and. &
+             E <= nuc % multipole % end_E) then
           use_mp = .true.
         end if
       end if
@@ -189,7 +190,7 @@ contains
       ! Evaluate multipole or interpolate
       if (use_mp) then
         ! Call multipole kernel
-        call multipole_eval(nuc % multipole, p % E, p % sqrtkT, sigT, sigA, sigF)
+        call multipole_eval(nuc % multipole, E, sqrtkT, sigT, sigA, sigF)
 
         micro_xs(i_nuclide) % total = sigT
         micro_xs(i_nuclide) % absorption = sigA
@@ -197,12 +198,12 @@ contains
 
         if (nuc % fissionable) then
           micro_xs(i_nuclide) % fission = sigF
-          micro_xs(i_nuclide) % prompt_nu_fission = sigF * nuc % nu(p % E, EMISSION_PROMPT)
-          micro_xs(i_nuclide) % nu_fission = sigF * nuc % nu(p % E, EMISSION_TOTAL)
+          micro_xs(i_nuclide) % prompt_nu_fission = sigF * nuc % nu(E, EMISSION_PROMPT)
+          micro_xs(i_nuclide) % nu_fission = sigF * nuc % nu(E, EMISSION_TOTAL)
           micro_xs(i_nuclide) % kappa_fission = sigF * nuc % reactions(nuc % index_fission(1)) % Q_value
           micro_xs(i_nuclide) % delayed_nu_fission(:) = ZERO
           do d = 1, nuc % n_precursor
-            micro_xs(i_nuclide) % delayed_nu_fission(d) = sigF * nuc % nu(p % E, EMISSION_DELAYED, d)
+            micro_xs(i_nuclide) % delayed_nu_fission(d) = sigF * nuc % nu(E, EMISSION_DELAYED, d)
           end do
         else
           micro_xs(i_nuclide) % fission    = ZERO
@@ -228,7 +229,7 @@ contains
 
       else
         ! Find the appropriate temperature index.
-        kT = p % sqrtkT**2
+        kT = sqrtkT**2
         select case (temperature_method)
         case (TEMPERATURE_NEAREST)
           i_temp = minloc(abs(nuclides(i_nuclide) % kTs - kT), dim=1)
@@ -250,9 +251,9 @@ contains
           ! reduce the energy range over which a binary search needs to be
           ! performed
 
-          if (p % E < grid % energy(1)) then
+          if (E < grid % energy(1)) then
             i_grid = 1
-          elseif (p % E > grid % energy(size(grid % energy))) then
+          elseif (E > grid % energy(size(grid % energy))) then
             i_grid = size(grid % energy) - 1
           else
             ! Determine bounding indices based on which equal log-spaced
@@ -262,7 +263,7 @@ contains
 
             ! Perform binary search over reduced range
             i_grid = binary_search(grid % energy(i_low:i_high), &
-                 i_high - i_low + 1, p % E) + i_low - 1
+                 i_high - i_low + 1, E) + i_low - 1
           end if
 
           ! check for rare case where two energy points are the same
@@ -270,7 +271,7 @@ contains
                i_grid = i_grid + 1
 
           ! calculate interpolation factor
-          f = (p % E - grid % energy(i_grid)) / &
+          f = (E - grid % energy(i_grid)) / &
                (grid % energy(i_grid + 1) - grid % energy(i_grid))
 
           micro_xs(i_nuclide) % index_temp    = i_temp
@@ -343,9 +344,9 @@ contains
       ! probability tables, we need to determine cross sections from the table
 
       if (urr_ptables_on .and. nuc % urr_present .and. .not. use_mp) then
-        if (p % E > nuc % urr_data(i_temp) % energy(1) .and. p % E < nuc % &
+        if (E > nuc % urr_data(i_temp) % energy(1) .and. E < nuc % &
              urr_data(i_temp) % energy(nuc % urr_data(i_temp) % n_energy)) then
-          call calculate_urr_xs(i_nuclide, i_temp, p % E)
+          call calculate_urr_xs(i_nuclide, i_temp, E)
         end if
       end if
 

@@ -3957,30 +3957,20 @@ contains
               t % score_bins(j) = SCORE_CURRENT
               t % type = TALLY_MESH_CURRENT
 
-            ! Copy filters to temporary array
-            allocate(filters(size(t % filters) + 1))
-            filters(1:size(t % filters)) = t % filters
+              ! Check to make sure that current is the only desired response
+              ! for this tally
+              if (n_words > 1) then
+                call fatal_error("Cannot tally other scores in the &
+                     &same tally as surface currents")
+              end if
 
-            ! Move allocation back -- filters becomes deallocated during
-            ! this call
-            call move_alloc(FROM=filters, TO=t%filters)
+              ! Get index of mesh filter
+              i_filter_mesh = t % filter(t % find_filter(FILTER_MESH))
 
-            ! Add surface filter
-            n_filters = size(t % filters)
-            allocate(SurfaceFilter :: t % filters(n_filters) % obj)
-            select type (filt => t % filters(size(t % filters)) % obj)
-            type is (SurfaceFilter)
-              filt % n_bins = 4 * m % n_dimension
-              allocate(filt % surfaces(4 * m % n_dimension))
-              if (m % n_dimension == 1) then
-                filt % surfaces = (/ OUT_LEFT, IN_LEFT, OUT_RIGHT, IN_RIGHT /)
-              elseif (m % n_dimension == 2) then
-                filt % surfaces = (/ OUT_LEFT, IN_LEFT, OUT_RIGHT, IN_RIGHT, &
-                     OUT_BACK, IN_BACK, OUT_FRONT, IN_FRONT /)
-              elseif (m % n_dimension == 3) then
-                filt % surfaces = (/ OUT_LEFT, IN_LEFT, OUT_RIGHT, IN_RIGHT, &
-                     OUT_BACK, IN_BACK, OUT_FRONT, IN_FRONT, OUT_BOTTOM, &
-                     IN_BOTTOM, OUT_TOP, IN_TOP /)
+              ! Check to make sure mesh filter was specified
+              if (i_filter_mesh == 0) then
+                call fatal_error("Cannot tally surface current without a mesh &
+                     &filter.")
               end if
 
               ! Get pointer to mesh
@@ -5479,45 +5469,6 @@ contains
   subroutine assign_0K_elastic_scattering(nuc)
     type(Nuclide), intent(inout) :: nuc
 
-<<<<<<< HEAD
-    integer :: i, j
-    real(8) :: xs_cdf_sum
-
-    do i = 1, size(res_scat_nuclides)
-      if (nuc % name == res_scat_nuclides(i)) then
-        ! Make sure nuclide has 0K data
-        if (.not. allocated(nuc % energy_0K)) then
-          call fatal_error("Cannot treat " // trim(nuc % name) // " as a &
-               &resonant scatterer because 0 K elastic scattering data is not &
-               &present.")
-        end if
-
-        ! Set nuclide to be resonant
-        nuc % resonant = .true.
-
-        ! Build CDF for 0K elastic scattering
-        xs_cdf_sum = ZERO
-        allocate(nuc % xs_cdf(0:size(nuc % energy_0K)))
-        nuc % xs_cdf(0) = ZERO
-
-        associate (E => nuc % energy_0K, xs => nuc % elastic_0K)
-          do j = 1, size(E) - 1
-            ! Negative cross sections result in a CDF that is not monotonically
-            ! increasing. Set all negative xs values to zero.
-            if (xs(j) < ZERO) xs(j) = ZERO
-
-            ! build xs cdf
-            xs_cdf_sum = xs_cdf_sum + (sqrt(E(j))*xs(j) + sqrt(E(j+1))*xs(j+1))&
-                 / TWO * (E(j+1) - E(j))
-            nuc % xs_cdf(j) = xs_cdf_sum
-          end do
-        end associate
-
-        exit
-      end if
-    end do
-
-=======
     integer :: i
     real(8) :: xs_cdf_sum
 
@@ -5563,7 +5514,6 @@ contains
         end do
       end associate
     end if
->>>>>>> upstream/develop
   end subroutine assign_0K_elastic_scattering
 
 !===============================================================================

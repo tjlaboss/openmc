@@ -1420,7 +1420,7 @@ contains
         end if
 
 
-      case (SCORE_SCATTER)
+      case (SCORE_SCATTER, SCORE_SCATTER_N, SCORE_SCATTER_PN, SCORE_SCATTER_YN)
 
         ! Set the energyout filter index
         eo_filter = t % find_filter(FILTER_ENERGYOUT)
@@ -1862,7 +1862,7 @@ contains
         else
 
           if (dg_filter > 0 .and. eo_filter > 0) then
-            select type(filt_dg => t % filters(dg_filter) % obj)
+            select type(filt_dg => filters(t % filter(dg_filter)) % obj)
             type is (DelayedGroupFilter)
 
               ! Loop over all delayed group bins and tally to them individually
@@ -1886,7 +1886,7 @@ contains
             end select
             cycle SCORE_LOOP
           else if (dg_filter > 0) then
-            select type(filt => t % filters(dg_filter) % obj)
+            select type(filt => filters(t % filter(dg_filter)) % obj)
             type is (DelayedGroupFilter)
 
               ! Loop over all delayed group bins and tally to them
@@ -2857,28 +2857,35 @@ contains
     real(8), intent(in)              :: score       ! actual score
     integer, intent(in)              :: score_index ! index for score
 
+    integer :: l             ! loop index for tally filters
+    integer :: i             ! index of outgoing energy filter
+    integer :: i_bin         ! index of matching filter bin
     integer :: bin_original  ! original bin index
     integer :: filter_index  ! index for matching filter bin combination
-    integer :: eo_index      ! index for matching filter bin combination
     real(8) :: E_out         ! energy of fission bank site
     integer :: n             ! number of energies on filter
 
     ! save original energyout bin
-    eo_index = t % find_filter(FILTER_ENERGYOUT)
-    bin_original = matching_bins(eo_index)
+    i = t % filter(t % find_filter(FILTER_ENERGYOUT))
+    i_bin = filter_matches(i) % i_bin
+    bin_original = filter_matches(i) % bins % data(i_bin)
 
     ! declare the energyout filter type
-    select type(eo_filt => t % filters(eo_index) % obj)
+    select type(eo_filt => filters(t % filter(i_bin)) % obj)
     type is (EnergyoutFilter)
 
       if (run_CE) then
 
         ! change outgoing energy bin
-        matching_bins(eo_index) = g_bin
+        filter_matches(i) % bins % data(i_bin) = g_bin
 
-        ! determine scoring index and weight on the modified matching_bins
-        filter_index = sum((matching_bins(1:size(t % filters)) - 1) * t % stride) &
-             + 1
+        ! determine scoring index and weight for this filter combination
+        filter_index = 1
+        do l = 1, size(t % filter)
+          filter_index = filter_index + (filter_matches(t % filter(l)) % bins % &
+               data(filter_matches(t % filter(l)) % i_bin) - 1) * &
+               t % stride(l)
+        end do
 
 !$omp atomic
         t % results(RESULT_VALUE, score_index, filter_index) = &
@@ -2887,11 +2894,15 @@ contains
       else if (eo_filt % matches_transport_groups) then
 
         ! change outgoing energy bin
-        matching_bins(eo_index) = size(eo_filt % bins) - g_bin
+        filter_matches(i) % bins % data(i_bin) = size(eo_filt % bins) - g_bin
 
-        ! determine scoring index and weight on the modified matching_bins
-        filter_index = sum((matching_bins(1:size(t % filters)) - 1) * t % stride) &
-             + 1
+        ! determine scoring index and weight for this filter combination
+        filter_index = 1
+        do l = 1, size(t % filter)
+          filter_index = filter_index + (filter_matches(t % filter(l)) % bins % &
+               data(filter_matches(t % filter(l)) % i_bin) - 1) * &
+               t % stride(l)
+        end do
 
 !$omp atomic
         t % results(RESULT_VALUE, score_index, filter_index) = &
@@ -2908,11 +2919,15 @@ contains
         if (E_out >= eo_filt % bins(1) .and. E_out <= eo_filt % bins(n)) then
 
           ! change outgoing energy bin
-          matching_bins(eo_index) = binary_search(eo_filt % bins, n, E_out)
+          filter_matches(i) % bins % data(i_bin) = binary_search(eo_filt % bins, n, E_out)
 
-          ! determine scoring index and weight on the modified matching_bins
-          filter_index = sum((matching_bins(1:size(t % filters)) - 1) * t % stride) &
-               + 1
+          ! determine scoring index and weight for this filter combination
+          filter_index = 1
+          do l = 1, size(t % filter)
+            filter_index = filter_index + (filter_matches(t % filter(l)) % bins % &
+                 data(filter_matches(t % filter(l)) % i_bin) - 1) * &
+                 t % stride(l)
+          end do
 
 !$omp atomic
           t % results(RESULT_VALUE, score_index, filter_index) = &
@@ -2922,7 +2937,7 @@ contains
     end select
 
     ! reset original energyout bin
-    matching_bins(eo_index) = bin_original
+    filter_matches(i) % bins % data(i_bin) = bin_original
 
   end subroutine score_eout
 
@@ -2940,34 +2955,43 @@ contains
     real(8), intent(in)              :: score       ! actual score
     integer, intent(in)              :: score_index ! index for score
 
+    integer :: l                ! loop index for tally filters
     integer :: bin_eo_original  ! original bin index
     integer :: bin_dg_original  ! original bin index
-    integer :: eo_index         ! index for matching filter bin combination
-    integer :: dg_index         ! index for matching filter bin combination
+    integer :: eo_i             ! index for matching filter bin combination
+    integer :: dg_i             ! index for matching filter bin combination
+    integer :: eo_bin           ! index for matching filter bin combination
+    integer :: dg_bin           ! index for matching filter bin combination
     integer :: filter_index     ! index for matching filter bin combination
     real(8) :: E_out            ! energy of fission bank site
     integer :: n                ! number of energies on filter
 
     ! save original energyout bin
-    eo_index = t % find_filter(FILTER_ENERGYOUT)
-    dg_index = t % find_filter(FILTER_DELAYEDGROUP)
-    bin_eo_original = matching_bins(eo_index)
-    bin_dg_original = matching_bins(dg_index)
+    eo_i = t % filter(t % find_filter(FILTER_ENERGYOUT))
+    eo_bin = filter_matches(eo_i) % i_bin
+    bin_eo_original = filter_matches(eo_i) % bins % data(eo_bin)
+    dg_i = t % filter(t % find_filter(FILTER_DELAYEDGROUP))
+    dg_bin = filter_matches(dg_i) % i_bin
+    bin_dg_original = filter_matches(dg_i) % bins % data(dg_bin)
 
     ! declare the energyout filter type
-    select type(eo_filt => t % filters(eo_index) % obj)
+    select type(eo_filt => filters(t % filter(eo_bin)) % obj)
     type is (EnergyoutFilter)
 
-      matching_bins(dg_index) = d_bin
+      filter_matches(dg_i) % bins % data(dg_bin) = d_bin
 
       if (run_CE) then
 
         ! change outgoing energy bin
-        matching_bins(eo_index) = g_bin
+        filter_matches(eo_i) % bins % data(eo_bin) = g_bin
 
         ! determine scoring index and weight on the modified matching_bins
-        filter_index = sum((matching_bins(1:size(t % filters)) - 1) * t % stride) &
-             + 1
+        filter_index = 1
+        do l = 1, size(t % filter)
+          filter_index = filter_index + (filter_matches(t % filter(l)) % bins % &
+               data(filter_matches(t % filter(l)) % i_bin) - 1) * &
+               t % stride(l)
+        end do
 
 !$omp atomic
         t % results(RESULT_VALUE, score_index, filter_index) = &
@@ -2976,11 +3000,15 @@ contains
       else if (eo_filt % matches_transport_groups) then
 
         ! change outgoing energy bin
-        matching_bins(eo_index) = size(eo_filt % bins) - g_bin
+        filter_matches(eo_i) % bins % data(eo_bin) = size(eo_filt % bins) - g_bin
 
         ! determine scoring index and weight on the modified matching_bins
-        filter_index = sum((matching_bins(1:size(t % filters)) - 1) * t % stride) &
-             + 1
+        filter_index = 1
+        do l = 1, size(t % filter)
+          filter_index = filter_index + (filter_matches(t % filter(l)) % bins % &
+               data(filter_matches(t % filter(l)) % i_bin) - 1) * &
+               t % stride(l)
+        end do
 
 !$omp atomic
         t % results(RESULT_VALUE, score_index, filter_index) = &
@@ -2997,11 +3025,15 @@ contains
         if (E_out >= eo_filt % bins(1) .and. E_out <= eo_filt % bins(n)) then
 
           ! change outgoing energy bin
-          matching_bins(eo_index) = binary_search(eo_filt % bins, n, E_out)
+          filter_matches(eo_i) % bins % data(eo_bin) = binary_search(eo_filt % bins, n, E_out)
 
           ! determine scoring index and weight on the modified matching_bins
-          filter_index = sum((matching_bins(1:size(t % filters)) - 1) * t % stride) &
-               + 1
+          filter_index = 1
+          do l = 1, size(t % filter)
+            filter_index = filter_index + (filter_matches(t % filter(l)) % bins % &
+                 data(filter_matches(t % filter(l)) % i_bin) - 1) * &
+                 t % stride(l)
+          end do
 
 !$omp atomic
           t % results(RESULT_VALUE, score_index, filter_index) = &
@@ -3011,8 +3043,8 @@ contains
     end select
 
     ! reset original energyout bin
-    matching_bins(eo_index) = bin_eo_original
-    matching_bins(dg_index) = bin_dg_original
+    filter_matches(eo_i) % bins % data(eo_bin) = bin_eo_original
+    filter_matches(dg_i) % bins % data(dg_bin) = bin_dg_original
 
   end subroutine score_eout_dg
 

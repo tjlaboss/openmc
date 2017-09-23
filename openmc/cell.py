@@ -248,8 +248,11 @@ class Cell(IDManagerMixin):
 
     @property
     def num_instances(self):
-<<<<<<< HEAD
-        return len(self.paths)
+        if self._num_instances is None:
+            raise ValueError(
+                'Number of cell instances have not been determined. Call the '
+                'Geometry.determine_paths() method.')
+        return self._num_instances
 
     @property
     def time(self):
@@ -258,24 +261,6 @@ class Cell(IDManagerMixin):
     @property
     def translation_times(self):
         return self._translation_times
-
-    @id.setter
-    def id(self, cell_id):
-        if cell_id is None:
-            global AUTO_CELL_ID
-            self._id = AUTO_CELL_ID
-            AUTO_CELL_ID += 1
-        else:
-            cv.check_type('cell ID', cell_id, Integral)
-            cv.check_greater_than('cell ID', cell_id, 0, equality=True)
-            self._id = cell_id
-=======
-        if self._num_instances is None:
-            raise ValueError(
-                'Number of cell instances have not been determined. Call the '
-                'Geometry.determine_paths() method.')
-        return self._num_instances
->>>>>>> upstream/develop
 
     @name.setter
     def name(self, name):
@@ -594,10 +579,6 @@ class Cell(IDManagerMixin):
 
         # If no nemoize'd clone exists, instantiate one
         if self not in memo:
-<<<<<<< HEAD
-            clone = deepcopy(self)
-            clone.id = None
-=======
             # Temporarily remove paths
             paths = self._paths
             self._paths = None
@@ -609,7 +590,6 @@ class Cell(IDManagerMixin):
             # Restore paths on original instance
             self._paths = paths
 
->>>>>>> upstream/develop
             if self.region is not None:
                 clone.region = self.region.clone(memo)
             if self.fill is not None:

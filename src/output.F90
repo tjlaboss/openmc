@@ -411,18 +411,6 @@ contains
     ! write out information batch and option independent output
     write(UNIT=OUTPUT_UNIT, FMT='(2X,A9)', ADVANCE='NO') &
          trim(to_str(current_batch)) // "/" // trim(to_str(gen_per_batch))
-<<<<<<< HEAD
-    write(UNIT=OUTPUT_UNIT, FMT='(3X,F8.6)', ADVANCE='NO') &
-         k_generation(overall_gen)
-
-    ! write out entropy info
-    if (entropy_on) write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6)', ADVANCE='NO') &
-         entropy(current_batch*gen_per_batch)
-
-    ! write out accumulated k-effective if after first active batch
-    if (overall_gen - n_inactive*gen_per_batch > 1) then
-      write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.6," +/-",F8.6)', ADVANCE='NO') &
-=======
     write(UNIT=OUTPUT_UNIT, FMT='(3X,F8.5)', ADVANCE='NO') &
          k_generation(i)
 
@@ -433,7 +421,6 @@ contains
     ! write out accumulated k-effective if after first active batch
     if (n > 1) then
       write(UNIT=OUTPUT_UNIT, FMT='(3X, F8.5," +/-",F8.5)', ADVANCE='NO') &
->>>>>>> upstream/develop
            keff, keff_std
     else
       write(UNIT=OUTPUT_UNIT, FMT='(23X)', ADVANCE='NO')
@@ -1136,24 +1123,12 @@ contains
           x(:) = mean_stdev(r(:, 1, filter_index + (OUT_FRONT - 1) * &
                stride_surf), nr)
           write(UNIT=unit_tally, FMT='(5X,A,T35,A,"+/- ",A)') &
-<<<<<<< HEAD
-               "Outgoing Current on Front", &
-               to_str(t % results(RESULT_SUM,1,filter_index)), &
-               trim(to_str(t % results(RESULT_SUM_SQ,1,filter_index)))
-=======
                "Outgoing Current on Front", to_str(x(1)), trim(to_str(x(2)))
->>>>>>> upstream/develop
 
           x(:) = mean_stdev(r(:, 1, filter_index + (IN_FRONT - 1) * &
                stride_surf), nr)
           write(UNIT=unit_tally, FMT='(5X,A,T35,A,"+/- ",A)') &
-<<<<<<< HEAD
-               "Incoming Current on Front", &
-               to_str(t % results(RESULT_SUM,1,filter_index)), &
-               trim(to_str(t % results(RESULT_SUM_SQ,1,filter_index)))
-=======
                "Incoming Current on Front", to_str(x(1)), trim(to_str(x(2)))
->>>>>>> upstream/develop
         end if
 
         if (n_dim == 3) then
