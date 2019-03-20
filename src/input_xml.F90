@@ -1,39 +1,59 @@
 module input_xml
 
+  use, intrinsic :: ISO_C_BINDING
+
   use algorithm,        only: find
   use cmfd_input,       only: configure_cmfd
+  use cmfd_header,      only: cmfd_mesh
   use constants
-  use dict_header,      only: DictIntInt, DictCharInt, ElemKeyValueCI
+  use dict_header,      only: DictIntInt, DictCharInt, DictEntryCI
   use distribution_multivariate
   use distribution_univariate
   use endf,             only: reaction_name
-  use error,            only: fatal_error, warning
-  use geometry_header,  only: Cell, Lattice, RectLattice, HexLattice, &
-                              get_temperatures, root_universe
-  use global
+  use error,            only: fatal_error, warning, write_message, openmc_err_msg
+  use geometry,         only: calc_offsets, maximum_levels, count_instance, &
+                              neighbor_lists
+  use geometry_header
   use hdf5_interface
   use list_header,      only: ListChar, ListInt, ListReal
-  use mesh_header,      only: RegularMesh
+  use material_header
+  use mesh_header
   use message_passing
   use mgxs_data,        only: create_macro_xs, read_mgxs
-  use multipole,        only: multipole_read
-  use output,           only: write_message, title, header
+  use mgxs_header
+  use nuclide_header
+  use output,           only: title, header, print_plot
   use plot_header
-  use random_lcg,       only: prn, seed
+  use random_lcg,       only: prn, openmc_set_seed
   use surface_header
   use set_header,       only: SetChar
+  use settings
+  use source_header
   use stl_vector,       only: VectorInt, VectorReal, VectorChar
   use string,           only: to_lower, to_str, str_to_int, str_to_real, &
                               starts_with, ends_with, tokenize, split_string, &
-                              zero_padded
-  use tally_header,     only: TallyObject
-  use tally_filter_header, only: TallyFilterContainer
+                              zero_padded, to_c_string
+  use summary,          only: write_summary
+  use tally
+  use tally_header,     only: openmc_extend_tallies
+  use tally_derivative_header
+  use tally_filter_header
   use tally_filter
-  use tally_initialize, only: add_tallies
+  use timer_header,     only: time_read_xs
+  use trigger_header
+  use volume_header
   use xml_interface
 
   implicit none
   save
+
+  interface
+    subroutine read_surfaces(node_ptr) bind(C, name='read_surfaces')
+      use ISO_C_BINDING
+      implicit none
+      type(C_PTR) :: node_ptr
+    end subroutine read_surfaces
+  end interface
 
 contains
 
@@ -44,24 +64,86 @@ contains
 
   subroutine read_input_xml()
 
-    call read_settings_xml()
-    call read_geometry_xml()
-    call read_materials()
-    call read_tallies_xml()
-    if (cmfd_run) call configure_cmfd()
+    type(VectorReal), allocatable :: nuc_temps(:) ! List of T to read for each nuclide
+    type(VectorReal), allocatable :: sab_temps(:) ! List of T to read for each S(a,b)
+    real(8), allocatable    :: material_temps(:)
 
-    if (.not. run_CE) then
-      ! Create material macroscopic data for MGXS
+    call read_settings_xml()
+    call read_cross_sections_xml()
+    call read_materials_xml(material_temps)
+    call read_geometry_xml()
+
+    ! Set up neighbor lists, convert user IDs -> indices, assign temperatures
+    call finalize_geometry(material_temps, nuc_temps, sab_temps)
+
+    if (run_mode /= MODE_PLOTTING) then
       call time_read_xs % start()
-      call read_mgxs()
-      call create_macro_xs()
+      if (run_CE) then
+        ! Read continuous-energy cross sections
+        call read_ce_cross_sections(nuc_temps, sab_temps)
+      else
+        ! Create material macroscopic data for MGXS
+        call read_mgxs()
+        call create_macro_xs()
+      end if
       call time_read_xs % stop()
     end if
 
-    ! Normalize atom/weight percents
-    if (run_mode /= MODE_PLOTTING) call normalize_ao()
+    call read_tallies_xml()
+
+    ! Initialize distribcell_filters
+    call prepare_distribcell()
+
+    if (cmfd_run) call configure_cmfd()
+
+    if (run_mode == MODE_PLOTTING) then
+      ! Read plots.xml if it exists
+      call read_plots_xml()
+      if (master .and. verbosity >= 5) call print_plot()
+
+    else
+      ! Normalize atom/weight percents
+      call normalize_ao()
+
+      ! Write summary information
+      if (master .and. output_summary) call write_summary()
+
+      ! Warn if overlap checking is on
+      if (master .and. check_overlaps) &
+           call warning("Cell overlap checking is ON.")
+    end if
 
   end subroutine read_input_xml
+
+  subroutine finalize_geometry(material_temps, nuc_temps, sab_temps)
+    real(8), intent(in) :: material_temps(:)
+    type(VectorReal),            allocatable, intent(out) :: nuc_temps(:)
+    type(VectorReal),  optional, allocatable, intent(out) :: sab_temps(:)
+
+    ! Perform some final operations to set up the geometry
+    call adjust_indices()
+    call count_instance(universes(root_universe))
+
+    ! After reading input and basic geometry setup is complete, build lists of
+    ! neighboring cells for efficient tracking
+    call neighbor_lists()
+
+    ! Assign temperatures to cells that don't have temperatures already assigned
+    call assign_temperatures(material_temps)
+
+    ! Determine desired txemperatures for each nuclide and S(a,b) table
+    call get_temperatures(nuc_temps, sab_temps)
+
+    ! Check to make sure there are not too many nested coordinate levels in the
+    ! geometry since the coordinate list is statically allocated for performance
+    ! reasons
+    if (maximum_levels(universes(root_universe)) > MAX_COORD) then
+      call fatal_error("Too many nested coordinate levels in the geometry. &
+           &Try increasing the maximum number of coordinate levels by &
+           &providing the CMake -Dmaxcoord= option.")
+    end if
+
+  end subroutine finalize_geometry
 
 !===============================================================================
 ! READ_SETTINGS_XML reads data from a settings.xml file and parses it, checking
@@ -76,8 +158,10 @@ contains
     integer :: j, k
     integer :: temp_int
     integer :: temp_int_array3(3)
+    integer(C_INT32_T) :: i_start, i_end
+    integer(C_INT64_T) :: seed
+    integer(C_INT) :: err
     integer, allocatable :: temp_int_array(:)
-    real(8), allocatable :: temp_real(:)
     integer :: n_tracks
     logical :: file_exists
     character(MAX_WORD_LEN) :: type
@@ -85,10 +169,6 @@ contains
     type(XMLDocument) :: doc
     type(XMLNode) :: root
     type(XMLNode) :: node_mode
-    type(XMLNode) :: node_source
-    type(XMLNode) :: node_space
-    type(XMLNode) :: node_angle
-    type(XMLNode) :: node_dist
     type(XMLNode) :: node_cutoff
     type(XMLNode) :: node_entropy
     type(XMLNode) :: node_frequency
@@ -99,6 +179,7 @@ contains
     type(XMLNode) :: node_trigger
     type(XMLNode) :: node_vol
     type(XMLNode) :: node_tab_leg
+    type(XMLNode), allocatable :: node_mesh_list(:)
     type(XMLNode), allocatable :: node_source_list(:)
     type(XMLNode), allocatable :: node_vol_list(:)
 
@@ -257,7 +338,7 @@ contains
       call get_run_parameters(node_mode)
 
       ! Check number of active batches, inactive batches, and particles
-      if (n_active <= 0) then
+      if (n_batches <= n_inactive) then
         call fatal_error("Number of active batches must be greater than zero.")
       elseif (n_inactive < 0) then
         call fatal_error("Number of inactive batches must be non-negative.")
@@ -267,7 +348,10 @@ contains
     end if
 
     ! Copy random number seed if specified
-    if (check_for_node(root, "seed")) call get_node_value(root, "seed", seed)
+    if (check_for_node(root, "seed")) then
+      call get_node_value(root, "seed", seed)
+      call openmc_set_seed(seed)
+    end if
 
     ! Number of bins for logarithmic grid
     if (check_for_node(root, "log_grid_bins")) then
@@ -327,241 +411,14 @@ contains
       allocate(external_source(n))
     end if
 
+    ! Check if we want to write out source
+    if (check_for_node(root, "write_initial_source")) then
+      call get_node_value(root, "write_initial_source", write_initial_source)
+    end if
+
     ! Read each source
     do i = 1, n
-      ! Get pointer to source
-      node_source = node_source_list(i)
-
-      ! Check if we want to write out source
-      if (check_for_node(node_source, "write_initial")) then
-        call get_node_value(node_source, "write_initial", write_initial_source)
-      end if
-
-      ! Check for source strength
-      if (check_for_node(node_source, "strength")) then
-        call get_node_value(node_source, "strength", external_source(i)%strength)
-      else
-        external_source(i)%strength = ONE
-      end if
-
-      ! Check for external source file
-      if (check_for_node(node_source, "file")) then
-        ! Copy path of source file
-        call get_node_value(node_source, "file", path_source)
-
-        ! Check if source file exists
-        inquire(FILE=path_source, EXIST=file_exists)
-        if (.not. file_exists) then
-          call fatal_error("Source file '" // trim(path_source) &
-               // "' does not exist!")
-        end if
-
-      else
-
-        ! Spatial distribution for external source
-        if (check_for_node(node_source, "space")) then
-
-          ! Get pointer to spatial distribution
-          node_space = node_source % child("space")
-
-          ! Check for type of spatial distribution
-          type = ''
-          if (check_for_node(node_space, "type")) &
-               call get_node_value(node_space, "type", type)
-          select case (to_lower(type))
-          case ('cartesian')
-            allocate(CartesianIndependent :: external_source(i)%space)
-
-          case ('box')
-            allocate(SpatialBox :: external_source(i)%space)
-
-          case ('fission')
-            allocate(SpatialBox :: external_source(i)%space)
-            select type(space => external_source(i)%space)
-            type is (SpatialBox)
-              space%only_fissionable = .true.
-            end select
-
-          case ('point')
-            allocate(SpatialPoint :: external_source(i)%space)
-
-          case default
-            call fatal_error("Invalid spatial distribution for external source: "&
-                 // trim(type))
-          end select
-
-          select type (space => external_source(i)%space)
-          type is (CartesianIndependent)
-            ! Read distribution for x coordinate
-            if (check_for_node(node_space, "x")) then
-              node_dist = node_space % child("x")
-              call distribution_from_xml(space%x, node_dist)
-            else
-              allocate(Discrete :: space%x)
-              select type (dist => space%x)
-              type is (Discrete)
-                allocate(dist%x(1), dist%p(1))
-                dist%x(1) = ZERO
-                dist%p(1) = ONE
-              end select
-            end if
-
-            ! Read distribution for y coordinate
-            if (check_for_node(node_space, "y")) then
-              node_dist = node_space % child("y")
-              call distribution_from_xml(space%y, node_dist)
-            else
-              allocate(Discrete :: space%y)
-              select type (dist => space%y)
-              type is (Discrete)
-                allocate(dist%x(1), dist%p(1))
-                dist%x(1) = ZERO
-                dist%p(1) = ONE
-              end select
-            end if
-
-            if (check_for_node(node_space, "z")) then
-              node_dist = node_space % child("z")
-              call distribution_from_xml(space%z, node_dist)
-            else
-              allocate(Discrete :: space%z)
-              select type (dist => space%z)
-              type is (Discrete)
-                allocate(dist%x(1), dist%p(1))
-                dist%x(1) = ZERO
-                dist%p(1) = ONE
-              end select
-            end if
-
-          type is (SpatialBox)
-            ! Make sure correct number of parameters are given
-            if (node_word_count(node_space, "parameters") /= 6) then
-              call fatal_error('Box/fission spatial source must have &
-                   &six parameters specified.')
-            end if
-
-            ! Read lower-right/upper-left coordinates
-            allocate(temp_real(6))
-            call get_node_array(node_space, "parameters", temp_real)
-            space%lower_left(:) = temp_real(1:3)
-            space%upper_right(:) = temp_real(4:6)
-            deallocate(temp_real)
-
-          type is (SpatialPoint)
-            ! Make sure correct number of parameters are given
-            if (node_word_count(node_space, "parameters") /= 3) then
-              call fatal_error('Point spatial source must have &
-                   &three parameters specified.')
-            end if
-
-            ! Read location of point source
-            allocate(temp_real(3))
-            call get_node_array(node_space, "parameters", temp_real)
-            space%xyz(:) = temp_real
-            deallocate(temp_real)
-
-          end select
-
-        else
-          ! If no spatial distribution specified, make it a point source
-          allocate(SpatialPoint :: external_source(i) % space)
-          select type (space => external_source(i) % space)
-          type is (SpatialPoint)
-            space % xyz(:) = [ZERO, ZERO, ZERO]
-          end select
-        end if
-
-        ! Determine external source angular distribution
-        if (check_for_node(node_source, "angle")) then
-
-          ! Get pointer to angular distribution
-          node_angle = node_source % child("angle")
-
-          ! Check for type of angular distribution
-          type = ''
-          if (check_for_node(node_angle, "type")) &
-               call get_node_value(node_angle, "type", type)
-          select case (to_lower(type))
-          case ('isotropic')
-            allocate(Isotropic :: external_source(i)%angle)
-
-          case ('monodirectional')
-            allocate(Monodirectional :: external_source(i)%angle)
-
-          case ('mu-phi')
-            allocate(PolarAzimuthal :: external_source(i)%angle)
-
-          case default
-            call fatal_error("Invalid angular distribution for external source: "&
-                 // trim(type))
-          end select
-
-          ! Read reference directional unit vector
-          if (check_for_node(node_angle, "reference_uvw")) then
-            n = node_word_count(node_angle, "reference_uvw")
-            if (n /= 3) then
-              call fatal_error('Angular distribution reference direction must have &
-                   &three parameters specified.')
-            end if
-            call get_node_array(node_angle, "reference_uvw", &
-                 external_source(i)%angle%reference_uvw)
-          else
-            ! By default, set reference unit vector to be positive z-direction
-            external_source(i)%angle%reference_uvw(:) = [ZERO, ZERO, ONE]
-          end if
-
-          ! Read parameters for angle distribution
-          select type (angle => external_source(i)%angle)
-          type is (Monodirectional)
-            call get_node_array(node_angle, "reference_uvw", &
-                 external_source(i)%angle%reference_uvw)
-
-          type is (PolarAzimuthal)
-            if (check_for_node(node_angle, "mu")) then
-              node_dist = node_angle % child("mu")
-              call distribution_from_xml(angle%mu, node_dist)
-            else
-              allocate(Uniform :: angle%mu)
-              select type (mu => angle%mu)
-              type is (Uniform)
-                mu%a = -ONE
-                mu%b = ONE
-              end select
-            end if
-
-            if (check_for_node(node_angle, "phi")) then
-              node_dist = node_angle % child("phi")
-              call distribution_from_xml(angle%phi, node_dist)
-            else
-              allocate(Uniform :: angle%phi)
-              select type (phi => angle%phi)
-              type is (Uniform)
-                phi%a = ZERO
-                phi%b = TWO*PI
-              end select
-            end if
-          end select
-
-        else
-          ! Set default angular distribution isotropic
-          allocate(Isotropic :: external_source(i)%angle)
-          external_source(i)%angle%reference_uvw(:) = [ZERO, ZERO, ONE]
-        end if
-
-        ! Determine external source energy distribution
-        if (check_for_node(node_source, "energy")) then
-          node_dist = node_source % child("energy")
-          call distribution_from_xml(external_source(i)%energy, node_dist)
-        else
-          ! Default to a Watt spectrum with parameters 0.988 MeV and 2.249 MeV^-1
-          allocate(Watt :: external_source(i)%energy)
-          select type(energy => external_source(i)%energy)
-          type is (Watt)
-            energy%a = 0.988e6_8
-            energy%b = 2.249e-6_8
-          end select
-        end if
-      end if
+      call external_source(i) % from_xml(node_source_list(i), path_source)
     end do
 
     ! Survival biasing
@@ -615,121 +472,108 @@ contains
       track_identifiers = reshape(temp_int_array, [3, n_tracks/3])
     end if
 
+    ! Read meshes
+    call get_node_list(root, "mesh", node_mesh_list)
+
+    ! Check for user meshes and allocate
+    n = size(node_mesh_list)
+    if (n > 0) then
+      err = openmc_extend_meshes(n, i_start, i_end)
+    end if
+
+    do i = 1, n
+      associate (m => meshes(i_start + i - 1))
+        ! Instantiate mesh from XML node
+        call m % from_xml(node_mesh_list(i))
+
+        ! Add mesh to dictionary
+        call mesh_dict % set(m % id, i_start + i - 1)
+      end associate
+    end do
+
     ! Shannon Entropy mesh
-    if (check_for_node(root, "entropy")) then
+    if (check_for_node(root, "entropy_mesh")) then
+      call get_node_value(root, "entropy_mesh", temp_int)
+      if (mesh_dict % has(temp_int)) then
+        index_entropy_mesh = mesh_dict % get(temp_int)
+      else
+        call fatal_error("Mesh " // to_str(temp_int) // " specified for &
+             &Shannon entropy does not exist.")
+      end if
+    elseif (check_for_node(root, "entropy")) then
+      call warning("Specifying a Shannon entropy mesh via the <entropy> element &
+           &is deprecated. Please create a mesh using <mesh> and then reference &
+           &it by specifying its ID in an <entropy_mesh> element.")
 
       ! Get pointer to entropy node
       node_entropy = root % child("entropy")
 
-      ! Check to make sure enough values were supplied
-      if (node_word_count(node_entropy, "lower_left") /= 3) then
-        call fatal_error("Need to specify (x,y,z) coordinates of lower-left &
-             &corner of Shannon entropy mesh.")
-      elseif (node_word_count(node_entropy, "upper_right") /= 3) then
-        call fatal_error("Need to specify (x,y,z) coordinates of upper-right &
-             &corner of Shannon entropy mesh.")
-      end if
+      err = openmc_extend_meshes(1, index_entropy_mesh)
 
-      ! Allocate mesh object and coordinates on mesh
-      allocate(entropy_mesh)
-      allocate(entropy_mesh % lower_left(3))
-      allocate(entropy_mesh % upper_right(3))
-      allocate(entropy_mesh % width(3))
+      associate (m => meshes(index_entropy_mesh))
+        ! Assign ID
+        m % id = 10000
 
-      ! Copy values
-      call get_node_array(node_entropy, "lower_left", &
-           entropy_mesh % lower_left)
-      call get_node_array(node_entropy, "upper_right", &
-           entropy_mesh % upper_right)
+        call m % from_xml(node_entropy)
+      end associate
+    end if
 
-      ! Check on values provided
-      if (.not. all(entropy_mesh % upper_right > entropy_mesh % lower_left)) &
-           &then
-        call fatal_error("Upper-right coordinate must be greater than &
-             &lower-left coordinate for Shannon entropy mesh.")
-      end if
+    if (index_entropy_mesh > 0) then
+      associate(m => meshes(index_entropy_mesh))
+        if (.not. allocated(m % dimension)) then
+          ! If the user did not specify how many mesh cells are to be used in
+          ! each direction, we automatically determine an appropriate number of
+          ! cells
+          m % n_dimension = 3
+          allocate(m % dimension(3))
+          m % dimension = ceiling((n_particles/20)**(ONE/THREE))
 
-      ! Check if dimensions were specified -- if not, they will be calculated
-      ! automatically upon first entry into shannon_entropy
-      if (check_for_node(node_entropy, "dimension")) then
-
-        ! If so, make sure proper number of values were given
-        if (node_word_count(node_entropy, "dimension") /= 3) then
-          call fatal_error("Dimension of entropy mesh must be given as three &
-               &integers.")
+          ! Calculate width
+          m % width = (m % upper_right - m % lower_left) / m % dimension
         end if
 
-        ! Allocate dimensions
-        entropy_mesh % n_dimension = 3
-        allocate(entropy_mesh % dimension(3))
-
-        ! Copy dimensions
-        call get_node_array(node_entropy, "dimension", entropy_mesh % dimension)
-
-        ! Calculate width
-        entropy_mesh % width = (entropy_mesh % upper_right - &
-             entropy_mesh % lower_left) / entropy_mesh % dimension
-
-      end if
+        ! Allocate space for storing number of fission sites in each mesh cell
+        allocate(entropy_p(1, product(m % dimension)))
+      end associate
 
       ! Turn on Shannon entropy calculation
       entropy_on = .true.
     end if
 
     ! Uniform fission source weighting mesh
-    if (check_for_node(root, "uniform_fs")) then
+    if (check_for_node(root, "ufs_mesh")) then
+      call get_node_value(root, "ufs_mesh", temp_int)
+      if (mesh_dict % has(temp_int)) then
+        index_ufs_mesh = mesh_dict % get(temp_int)
+      else
+        call fatal_error("Mesh " // to_str(temp_int) // " specified for &
+             &uniform fission site method does not exist.")
+      end if
+    elseif (check_for_node(root, "uniform_fs")) then
+      call warning("Specifying a UFS mesh via the <uniform_fs> element &
+           &is deprecated. Please create a mesh using <mesh> and then reference &
+           &it by specifying its ID in a <ufs_mesh> element.")
 
       ! Get pointer to ufs node
       node_ufs = root % child("uniform_fs")
 
-      ! Check to make sure enough values were supplied
-      if (node_word_count(node_ufs, "lower_left") /= 3) then
-        call fatal_error("Need to specify (x,y,z) coordinates of lower-left &
-             &corner of UFS mesh.")
-      elseif (node_word_count(node_ufs, "upper_right") /= 3) then
-        call fatal_error("Need to specify (x,y,z) coordinates of upper-right &
-             &corner of UFS mesh.")
-      elseif (node_word_count(node_ufs, "dimension") /= 3) then
-        call fatal_error("Dimension of UFS mesh must be given as three &
-             &integers.")
-      end if
+      err = openmc_extend_meshes(1, index_ufs_mesh)
 
       ! Allocate mesh object and coordinates on mesh
-      allocate(ufs_mesh)
-      allocate(ufs_mesh % lower_left(3))
-      allocate(ufs_mesh % upper_right(3))
-      allocate(ufs_mesh % width(3))
+      associate (m => meshes(index_ufs_mesh))
+        ! Assign ID
+        m % id = 10001
 
-      ! Allocate dimensions
-      ufs_mesh % n_dimension = 3
-      allocate(ufs_mesh % dimension(3))
+        call m % from_xml(node_ufs)
+      end associate
+    end if
 
-      ! Copy dimensions
-      call get_node_array(node_ufs, "dimension", ufs_mesh % dimension)
-
-      ! Copy values
-      call get_node_array(node_ufs, "lower_left", ufs_mesh % lower_left)
-      call get_node_array(node_ufs, "upper_right", ufs_mesh % upper_right)
-
-      ! Check on values provided
-      if (.not. all(ufs_mesh % upper_right > ufs_mesh % lower_left)) then
-        call fatal_error("Upper-right coordinate must be greater than &
-             &lower-left coordinate for UFS mesh.")
-      end if
-
-      ! Calculate width
-      ufs_mesh % width = (ufs_mesh % upper_right - &
-           ufs_mesh % lower_left) / ufs_mesh % dimension
-
-      ! Calculate volume fraction of each cell
-      ufs_mesh % volume_frac = ONE/real(product(ufs_mesh % dimension),8)
+    if (index_ufs_mesh > 0) then
+      ! Allocate array to store source fraction for UFS
+      allocate(source_frac(1, product(meshes(index_ufs_mesh) % dimension)))
 
       ! Turn on uniform fission source weighting
       ufs = .true.
-
-      ! Allocate source_frac
-      allocate(source_frac(1, ufs_mesh % dimension(1), &
-           ufs_mesh % dimension(2), ufs_mesh % dimension(3)))
     end if
 
     ! Frequency mesh
@@ -1134,10 +978,9 @@ contains
         call get_node_value(node_base, "generations_per_batch", gen_per_batch)
       end if
 
-      ! Allocate array for batch keff and entropy
-      allocate(k_generation(n_max_batches*gen_per_batch))
-      allocate(entropy(n_max_batches*gen_per_batch))
-      entropy = ZERO
+      ! Preallocate space for keff and entropy by generation
+      call k_generation % reserve(n_max_batches*gen_per_batch)
+      call entropy % reserve(n_max_batches*gen_per_batch)
 
       ! Get the trigger information for keff
       if (check_for_node(node_base, "keff_trigger")) then
@@ -1171,9 +1014,6 @@ contains
       end if
     end if
 
-    ! Determine number of active batches
-    n_active = n_batches - n_inactive
-
   end subroutine get_run_parameters
 
 !===============================================================================
@@ -1185,30 +1025,23 @@ contains
 
     integer :: i, j, k, m, i_x, i_a, input_index
     integer :: n, n_mats, n_x, n_y, n_z, n_rings, n_rlats, n_hlats
+    integer :: id
     integer :: univ_id
     integer :: n_cells_in_univ
-    integer :: coeffs_reqd
-    integer :: i_xmin, i_xmax, i_ymin, i_ymax, i_zmin, i_zmax
-    real(8) :: xmin, xmax, ymin, ymax, zmin, zmax
     integer, allocatable :: temp_int_array(:)
     real(8) :: phi, theta, psi
-    real(8), allocatable :: coeffs(:)
     logical :: file_exists
     logical :: boundary_exists
     character(MAX_LINE_LEN) :: filename
-    character(MAX_WORD_LEN) :: word
     character(MAX_WORD_LEN), allocatable :: sarray(:)
     character(:), allocatable :: region_spec
     type(Cell),     pointer :: c
-    class(Surface), pointer :: s
     class(Lattice), pointer :: lat
     type(XMLDocument) :: doc
     type(XMLNode) :: root
     type(XMLNode) :: node_cell
-    type(XMLNode) :: node_surf
     type(XMLNode) :: node_lat
     type(XMLNode), allocatable :: node_cell_list(:)
-    type(XMLNode), allocatable :: node_surf_list(:)
     type(XMLNode), allocatable :: node_rlat_list(:)
     type(XMLNode), allocatable :: node_hlat_list(:)
     type(VectorInt) :: tokens
@@ -1218,12 +1051,8 @@ contains
     type(DictIntInt) :: cells_in_univ_dict ! Used to count how many cells each
                                            ! universe contains
 
-
     ! Display output message
     call write_message("Reading geometry XML file...", 5)
-
-    ! ==========================================================================
-    ! READ CELLS FROM GEOMETRY.XML
 
     ! Check if geometry.xml exists
     filename = trim(path_input) // "geometry.xml"
@@ -1236,6 +1065,38 @@ contains
     ! Parse geometry.xml file
     call doc % load_file(filename)
     root = doc % document_element()
+
+    ! ==========================================================================
+    ! READ SURFACES FROM GEOMETRY.XML
+
+    ! This variable is used to check whether at least one boundary condition was
+    ! applied to a surface
+    boundary_exists = .false.
+
+    call read_surfaces(root % ptr)
+
+    ! Allocate surfaces array
+    allocate(surfaces(n_surfaces))
+
+    do i = 1, n_surfaces
+      surfaces(i) % ptr = surface_pointer_c(i - 1);
+
+      if (surfaces(i) % bc() /= BC_TRANSMIT) boundary_exists = .true.
+
+      ! Add surface to dictionary
+      call surface_dict % set(surfaces(i) % id(), i)
+    end do
+
+    ! Check to make sure a boundary condition was applied to at least one
+    ! surface
+    if (run_mode /= MODE_PLOTTING) then
+      if (.not. boundary_exists) then
+        call fatal_error("No boundary conditions were applied to any surfaces!")
+      end if
+    end if
+
+    ! ==========================================================================
+    ! READ CELLS FROM GEOMETRY.XML
 
     ! Get pointer to list of XML <cell>
     call get_node_list(root, "cell", node_cell_list)
@@ -1293,7 +1154,7 @@ contains
       end if
 
       ! Check to make sure 'id' hasn't been used
-      if (cell_dict % has_key(c % id)) then
+      if (cell_dict % has(c % id)) then
         call fatal_error("Two or more cells use the same unique ID: " &
              // to_str(c % id))
       end if
@@ -1363,6 +1224,17 @@ contains
       if (len_trim(region_spec) > 0) then
         ! Create surfaces array from string
         call tokenize(region_spec, tokens)
+
+        ! Convert user IDs to surface indices
+        do j = 1, tokens % size()
+          id = tokens % data(j)
+          if (id < OP_UNION) then
+            if (surface_dict % has(abs(id))) then
+              k = surface_dict % get(abs(id))
+              tokens % data(j) = sign(k, id)
+            end if
+          end if
+        end do
 
         ! Use shunting-yard algorithm to determine RPN for surface algorithm
         call generate_rpn(c%id, tokens, rpn)
@@ -1478,321 +1350,22 @@ contains
       end if
 
       ! Add cell to dictionary
-      call cell_dict % add_key(c % id, i)
+      call cell_dict % set(c % id, i)
 
       ! For cells, we also need to check if there's a new universe --
       ! also for every cell add 1 to the count of cells for the
       ! specified universe
       univ_id = c % universe
-      if (.not. cells_in_univ_dict % has_key(univ_id)) then
+      if (.not. cells_in_univ_dict % has(univ_id)) then
         n_universes = n_universes + 1
         n_cells_in_univ = 1
-        call universe_dict % add_key(univ_id, n_universes)
+        call universe_dict % set(univ_id, n_universes)
         call univ_ids % push_back(univ_id)
       else
-        n_cells_in_univ = 1 + cells_in_univ_dict % get_key(univ_id)
+        n_cells_in_univ = 1 + cells_in_univ_dict % get(univ_id)
       end if
-      call cells_in_univ_dict % add_key(univ_id, n_cells_in_univ)
+      call cells_in_univ_dict % set(univ_id, n_cells_in_univ)
 
-    end do
-
-    ! ==========================================================================
-    ! READ SURFACES FROM GEOMETRY.XML
-
-    ! This variable is used to check whether at least one boundary condition was
-    ! applied to a surface
-    boundary_exists = .false.
-
-    ! get pointer to list of xml <surface>
-    call get_node_list(root, "surface", node_surf_list)
-
-    ! Get number of <surface> tags
-    n_surfaces = size(node_surf_list)
-
-    ! Check for no surfaces
-    if (n_surfaces == 0) then
-      call fatal_error("No surfaces found in geometry.xml!")
-    end if
-
-    xmin = INFINITY
-    xmax = -INFINITY
-    ymin = INFINITY
-    ymax = -INFINITY
-    zmin = INFINITY
-    zmax = -INFINITY
-
-    ! Allocate cells array
-    allocate(surfaces(n_surfaces))
-
-    do i = 1, n_surfaces
-      ! Get pointer to i-th surface node
-      node_surf = node_surf_list(i)
-
-      ! Copy and interpret surface type
-      word = ''
-      if (check_for_node(node_surf, "type")) &
-           call get_node_value(node_surf, "type", word)
-      select case(to_lower(word))
-      case ('x-plane')
-        coeffs_reqd  = 1
-        allocate(SurfaceXPlane :: surfaces(i)%obj)
-      case ('y-plane')
-        coeffs_reqd  = 1
-        allocate(SurfaceYPlane :: surfaces(i)%obj)
-      case ('z-plane')
-        coeffs_reqd  = 1
-        allocate(SurfaceZPlane :: surfaces(i)%obj)
-      case ('plane')
-        coeffs_reqd  = 4
-        allocate(SurfacePlane :: surfaces(i)%obj)
-      case ('x-cylinder')
-        coeffs_reqd  = 3
-        allocate(SurfaceXCylinder :: surfaces(i)%obj)
-      case ('y-cylinder')
-        coeffs_reqd  = 3
-        allocate(SurfaceYCylinder :: surfaces(i)%obj)
-      case ('z-cylinder')
-        coeffs_reqd  = 3
-        allocate(SurfaceZCylinder :: surfaces(i)%obj)
-      case ('sphere')
-        coeffs_reqd  = 4
-        allocate(SurfaceSphere :: surfaces(i)%obj)
-      case ('x-cone')
-        coeffs_reqd  = 4
-        allocate(SurfaceXCone :: surfaces(i)%obj)
-      case ('y-cone')
-        coeffs_reqd  = 4
-        allocate(SurfaceYCone :: surfaces(i)%obj)
-      case ('z-cone')
-        coeffs_reqd  = 4
-        allocate(SurfaceZCone :: surfaces(i)%obj)
-      case ('quadric')
-        coeffs_reqd  = 10
-        allocate(SurfaceQuadric :: surfaces(i)%obj)
-      case default
-        call fatal_error("Invalid surface type: " // trim(word))
-      end select
-
-      s => surfaces(i)%obj
-
-      ! Copy data into cells
-      if (check_for_node(node_surf, "id")) then
-        call get_node_value(node_surf, "id", s%id)
-      else
-        call fatal_error("Must specify id of surface in geometry XML file.")
-      end if
-
-      ! Check to make sure 'id' hasn't been used
-      if (surface_dict % has_key(s%id)) then
-        call fatal_error("Two or more surfaces use the same unique ID: " &
-             // to_str(s%id))
-      end if
-
-      ! Copy surface name
-      if (check_for_node(node_surf, "name")) then
-        call get_node_value(node_surf, "name", s%name)
-      end if
-
-      ! Check to make sure that the proper number of coefficients
-      ! have been specified for the given type of surface. Then copy
-      ! surface coordinates.
-
-      n = node_word_count(node_surf, "coeffs")
-      if (n < coeffs_reqd) then
-        call fatal_error("Not enough coefficients specified for surface: " &
-             // trim(to_str(s%id)))
-      elseif (n > coeffs_reqd) then
-        call fatal_error("Too many coefficients specified for surface: " &
-             // trim(to_str(s%id)))
-      end if
-
-      allocate(coeffs(n))
-      call get_node_array(node_surf, "coeffs", coeffs)
-
-      select type(s)
-      type is (SurfaceXPlane)
-        s%x0 = coeffs(1)
-
-        ! Determine outer surfaces
-        xmin = min(xmin, s % x0)
-        xmax = max(xmax, s % x0)
-        if (xmin == s % x0) i_xmin = i
-        if (xmax == s % x0) i_xmax = i
-      type is (SurfaceYPlane)
-        s%y0 = coeffs(1)
-
-        ! Determine outer surfaces
-        ymin = min(ymin, s % y0)
-        ymax = max(ymax, s % y0)
-        if (ymin == s % y0) i_ymin = i
-        if (ymax == s % y0) i_ymax = i
-      type is (SurfaceZPlane)
-        s%z0 = coeffs(1)
-
-        ! Determine outer surfaces
-        zmin = min(zmin, s % z0)
-        zmax = max(zmax, s % z0)
-        if (zmin == s % z0) i_zmin = i
-        if (zmax == s % z0) i_zmax = i
-      type is (SurfacePlane)
-        s%A = coeffs(1)
-        s%B = coeffs(2)
-        s%C = coeffs(3)
-        s%D = coeffs(4)
-      type is (SurfaceXCylinder)
-        s%y0 = coeffs(1)
-        s%z0 = coeffs(2)
-        s%r = coeffs(3)
-      type is (SurfaceYCylinder)
-        s%x0 = coeffs(1)
-        s%z0 = coeffs(2)
-        s%r = coeffs(3)
-      type is (SurfaceZCylinder)
-        s%x0 = coeffs(1)
-        s%y0 = coeffs(2)
-        s%r = coeffs(3)
-      type is (SurfaceSphere)
-        s%x0 = coeffs(1)
-        s%y0 = coeffs(2)
-        s%z0 = coeffs(3)
-        s%r = coeffs(4)
-      type is (SurfaceXCone)
-        s%x0 = coeffs(1)
-        s%y0 = coeffs(2)
-        s%z0 = coeffs(3)
-        s%r2 = coeffs(4)
-      type is (SurfaceYCone)
-        s%x0 = coeffs(1)
-        s%y0 = coeffs(2)
-        s%z0 = coeffs(3)
-        s%r2 = coeffs(4)
-      type is (SurfaceZCone)
-        s%x0 = coeffs(1)
-        s%y0 = coeffs(2)
-        s%z0 = coeffs(3)
-        s%r2 = coeffs(4)
-      type is (SurfaceQuadric)
-        s%A = coeffs(1)
-        s%B = coeffs(2)
-        s%C = coeffs(3)
-        s%D = coeffs(4)
-        s%E = coeffs(5)
-        s%F = coeffs(6)
-        s%G = coeffs(7)
-        s%H = coeffs(8)
-        s%J = coeffs(9)
-        s%K = coeffs(10)
-      end select
-
-      ! No longer need coefficients
-      deallocate(coeffs)
-
-      ! Boundary conditions
-      word = ''
-      if (check_for_node(node_surf, "boundary")) &
-           call get_node_value(node_surf, "boundary", word)
-      select case (to_lower(word))
-      case ('transmission', 'transmit', '')
-        s%bc = BC_TRANSMIT
-      case ('vacuum')
-        s%bc = BC_VACUUM
-        boundary_exists = .true.
-      case ('reflective', 'reflect', 'reflecting')
-        s%bc = BC_REFLECT
-        boundary_exists = .true.
-      case ('periodic')
-        s%bc = BC_PERIODIC
-        boundary_exists = .true.
-
-        ! Check for specification of periodic surface
-        if (check_for_node(node_surf, "periodic_surface_id")) then
-          call get_node_value(node_surf, "periodic_surface_id", &
-               s % i_periodic)
-        end if
-      case default
-        call fatal_error("Unknown boundary condition '" // trim(word) // &
-             &"' specified on surface " // trim(to_str(s%id)))
-      end select
-      ! Add surface to dictionary
-      call surface_dict % add_key(s%id, i)
-    end do
-
-    ! Check to make sure a boundary condition was applied to at least one
-    ! surface
-    if (run_mode /= MODE_PLOTTING) then
-      if (.not. boundary_exists) then
-        call fatal_error("No boundary conditions were applied to any surfaces!")
-      end if
-    end if
-
-    ! Determine opposite side for periodic boundaries
-    do i = 1, size(surfaces)
-      if (surfaces(i) % obj % bc == BC_PERIODIC) then
-        select type (surf => surfaces(i) % obj)
-        type is (SurfaceXPlane)
-          if (surf % i_periodic == NONE) then
-            if (i == i_xmin) then
-              surf % i_periodic = i_xmax
-            elseif (i == i_xmax) then
-              surf % i_periodic = i_xmin
-            else
-              call fatal_error("Periodic boundary condition applied to &
-                   &interior surface.")
-            end if
-          else
-            surf % i_periodic = surface_dict % get_key(surf % i_periodic)
-          end if
-
-        type is (SurfaceYPlane)
-          if (surf % i_periodic == NONE) then
-            if (i == i_ymin) then
-              surf % i_periodic = i_ymax
-            elseif (i == i_ymax) then
-              surf % i_periodic = i_ymin
-            else
-              call fatal_error("Periodic boundary condition applied to &
-                   &interior surface.")
-            end if
-          else
-            surf % i_periodic = surface_dict % get_key(surf % i_periodic)
-          end if
-
-        type is (SurfaceZPlane)
-          if (surf % i_periodic == NONE) then
-            if (i == i_zmin) then
-              surf % i_periodic = i_zmax
-            elseif (i == i_zmax) then
-              surf % i_periodic = i_zmin
-            else
-              call fatal_error("Periodic boundary condition applied to &
-                   &interior surface.")
-            end if
-          else
-            surf % i_periodic = surface_dict % get_key(surf % i_periodic)
-          end if
-
-        type is (SurfacePlane)
-          if (surf % i_periodic == NONE) then
-            call fatal_error("No matching periodic surface specified for &
-                 &periodic boundary condition on surface " // &
-                 trim(to_str(surf % id)) // ".")
-          else
-            surf % i_periodic = surface_dict % get_key(surf % i_periodic)
-          end if
-
-        class default
-          call fatal_error("Periodic boundary condition applied to &
-               &non-planar surface.")
-        end select
-
-        ! Make sure opposite surface is also periodic
-        associate (surf => surfaces(i) % obj)
-          if (surfaces(surf % i_periodic) % obj % bc /= BC_PERIODIC) then
-            call fatal_error("Could not find matching surface for periodic &
-                 &boundary on surface " // trim(to_str(surf % id)) // ".")
-          end if
-        end associate
-      end if
     end do
 
     ! ==========================================================================
@@ -1825,7 +1398,7 @@ contains
       end if
 
       ! Check to make sure 'id' hasn't been used
-      if (lattice_dict % has_key(lat % id)) then
+      if (lattice_dict % has(lat % id)) then
         call fatal_error("Two or more lattices use the same unique ID: " &
              // to_str(lat % id))
       end if
@@ -1935,7 +1508,7 @@ contains
       end if
 
       ! Add lattice to dictionary
-      call lattice_dict % add_key(lat % id, i)
+      call lattice_dict % set(lat % id, i)
 
       end select
     end do RECT_LATTICES
@@ -1957,7 +1530,7 @@ contains
       end if
 
       ! Check to make sure 'id' hasn't been used
-      if (lattice_dict % has_key(lat % id)) then
+      if (lattice_dict % has(lat % id)) then
         call fatal_error("Two or more lattices use the same unique ID: " &
              // to_str(lat % id))
       end if
@@ -2122,7 +1695,7 @@ contains
       end if
 
       ! Add lattice to dictionary
-      call lattice_dict % add_key(lat % id, n_rlats + i)
+      call lattice_dict % set(lat % id, n_rlats + i)
 
       end select
     end do HEX_LATTICES
@@ -2137,7 +1710,7 @@ contains
         u % id = univ_ids % data(i)
 
         ! Allocate cell list
-        n_cells_in_univ = cells_in_univ_dict % get_key(u % id)
+        n_cells_in_univ = cells_in_univ_dict % get(u % id)
         allocate(u % cells(n_cells_in_univ))
         u % cells(:) = 0
 
@@ -2156,7 +1729,7 @@ contains
 
     do i = 1, n_cells
       ! Get index in universes array
-      j = universe_dict % get_key(cells(i) % universe)
+      j = universe_dict % get(cells(i) % universe)
 
       ! Set the first zero entry in the universe cells array to the index in the
       ! global cells array
@@ -2178,21 +1751,15 @@ contains
 ! for errors and placing properly-formatted data in the right data structures
 !===============================================================================
 
-  subroutine read_materials()
+  subroutine read_cross_sections_xml()
     integer :: i, j
-    type(VectorReal), allocatable :: nuc_temps(:) ! List of T to read for each nuclide
-    type(VectorReal), allocatable :: sab_temps(:) ! List of T to read for each S(a,b)
-    real(8), allocatable    :: material_temps(:)
     logical                 :: file_exists
     character(MAX_FILE_LEN) :: env_variable
     character(MAX_LINE_LEN) :: filename
     type(XMLDocument)       :: doc
     type(XMLNode)           :: root
 
-    ! Display output message
-    call write_message("Reading materials XML file...", 5)
-
-    ! Check is materials.xml exists
+    ! Check if materials.xml exists
     filename = trim(path_input) // "materials.xml"
     inquire(FILE=filename, EXIST=file_exists)
     if (.not. file_exists) then
@@ -2276,44 +1843,28 @@ contains
     ! Creating dictionary that maps the name of the material to the entry
     do i = 1, size(libraries)
       do j = 1, size(libraries(i) % materials)
-        call library_dict % add_key(to_lower(libraries(i) % materials(j)), i)
+        call library_dict % set(to_lower(libraries(i) % materials(j)), i)
       end do
     end do
 
     ! Check that 0K nuclides are listed in the cross_sections.xml file
     if (allocated(res_scat_nuclides)) then
       do i = 1, size(res_scat_nuclides)
-        if (.not. library_dict % has_key(to_lower(res_scat_nuclides(i)))) then
+        if (.not. library_dict % has(to_lower(res_scat_nuclides(i)))) then
           call fatal_error("Could not find resonant scatterer " &
                // trim(res_scat_nuclides(i)) // " in cross_sections.xml file!")
         end if
       end do
     end if
 
-    ! Parse data from materials.xml
-    call read_materials_xml(material_temps)
-
-    ! Assign temperatures to cells that don't have temperatures already assigned
-    call assign_temperatures(material_temps)
-
-    ! Determine desired temperatures for each nuclide and S(a,b) table
-    call get_temperatures(cells, materials, material_dict, nuclide_dict, &
-                          n_nuclides_total, nuc_temps, sab_dict, &
-                          n_sab_tables, sab_temps)
-
-    ! Read continuous-energy cross sections
-    if (run_CE .and. run_mode /= MODE_PLOTTING) then
-      call time_read_xs % start()
-      call read_ce_cross_sections(nuc_temps, sab_temps)
-      call time_read_xs % stop()
-    end if
-  end subroutine read_materials
+  end subroutine read_cross_sections_xml
 
   subroutine read_materials_xml(material_temps)
     real(8), allocatable, intent(out) :: material_temps(:)
 
     integer :: i              ! loop index for materials
     integer :: j              ! loop index for nuclides
+    integer :: k              ! loop index
     integer :: n              ! number of nuclides
     integer :: n_sab          ! number of sab tables for a material
     integer :: i_library      ! index in libraries array
@@ -2324,11 +1875,12 @@ contains
     character(MAX_WORD_LEN) :: units        ! units on density
     character(MAX_LINE_LEN) :: filename     ! absolute path to materials.xml
     character(MAX_LINE_LEN) :: temp_str     ! temporary string when reading
+    character(MAX_WORD_LEN), allocatable :: sarray(:)
     real(8)                 :: val          ! value entered for density
     real(8)                 :: temp_dble    ! temporary double prec. real
     logical                 :: sum_density  ! density is sum of nuclide densities
     type(VectorChar)        :: names        ! temporary list of nuclide names
-    type(VectorInt)         :: list_iso_lab ! temporary list of isotropic lab scatterers
+    type(VectorChar)        :: list_iso_lab ! temporary list of isotropic lab scatterers
     type(VectorReal)        :: densities    ! temporary list of nuclide densities
     type(Material), pointer :: mat => null()
     type(XMLDocument) :: doc
@@ -2343,7 +1895,10 @@ contains
     type(XMLNode), allocatable :: node_macro_list(:)
     type(XMLNode), allocatable :: node_sab_list(:)
 
-    ! Check is materials.xml exists
+    ! Display output message
+    call write_message("Reading materials XML file...", 5)
+
+    ! Check if materials.xml exists
     filename = trim(path_input) // "materials.xml"
     inquire(FILE=filename, EXIST=file_exists)
     if (.not. file_exists) then
@@ -2388,7 +1943,7 @@ contains
       end if
 
       ! Check to make sure 'id' hasn't been used
-      if (material_dict % has_key(mat % id)) then
+      if (material_dict % has(mat % id)) then
         call fatal_error("Two or more materials use the same unique ID: " &
              // to_str(mat % id))
       end if
@@ -2532,23 +2087,6 @@ contains
                  // trim(to_str(mat % id)))
           end if
 
-          ! Check enforced isotropic lab scattering
-          if (run_CE) then
-            if (check_for_node(node_nuc, "scattering")) then
-              call get_node_value(node_nuc, "scattering", temp_str)
-              if (adjustl(to_lower(temp_str)) == "iso-in-lab") then
-                call list_iso_lab % push_back(1)
-              else if (adjustl(to_lower(temp_str)) == "data") then
-                call list_iso_lab % push_back(0)
-              else
-                call fatal_error("Scattering must be isotropic in lab or follow&
-                     & the ACE file data")
-              end if
-            else
-              call list_iso_lab % push_back(0)
-            end if
-          end if
-
           ! store nuclide name
           call get_node_value(node_nuc, "name", name)
           name = trim(name)
@@ -2583,6 +2121,19 @@ contains
         end do INDIVIDUAL_NUCLIDES
       end if
 
+      ! =======================================================================
+      ! READ AND PARSE <isotropic> element
+
+      if (check_for_node(node_mat, "isotropic")) then
+        n = node_word_count(node_mat, "isotropic")
+        allocate(sarray(n))
+        call get_node_array(node_mat, "isotropic", sarray)
+        do j = 1, n
+          call list_iso_lab % push_back(sarray(j))
+        end do
+        deallocate(sarray)
+      end if
+
       ! ========================================================================
       ! COPY NUCLIDES TO ARRAYS IN MATERIAL
 
@@ -2592,16 +2143,15 @@ contains
       allocate(mat % names(n))
       allocate(mat % nuclide(n))
       allocate(mat % atom_density(n))
-      allocate(mat % p0(n))
 
       ALL_NUCLIDES: do j = 1, mat % n_nuclides
         ! Check that this nuclide is listed in the cross_sections.xml file
         name = trim(names % data(j))
-        if (.not. library_dict % has_key(to_lower(name))) then
+        if (.not. library_dict % has(to_lower(name))) then
           call fatal_error("Could not find nuclide " // trim(name) &
                // " in cross_sections data file!")
         end if
-        i_library = library_dict % get_key(to_lower(name))
+        i_library = library_dict % get(to_lower(name))
 
         if (run_CE) then
           ! Check to make sure cross-section is continuous energy neutron table
@@ -2613,29 +2163,38 @@ contains
 
         ! If this nuclide hasn't been encountered yet, we need to add its name
         ! and alias to the nuclide_dict
-        if (.not. nuclide_dict % has_key(to_lower(name))) then
+        if (.not. nuclide_dict % has(to_lower(name))) then
           index_nuclide    = index_nuclide + 1
           mat % nuclide(j) = index_nuclide
 
-          call nuclide_dict % add_key(to_lower(name), index_nuclide)
+          call nuclide_dict % set(to_lower(name), index_nuclide)
         else
-          mat % nuclide(j) = nuclide_dict % get_key(to_lower(name))
+          mat % nuclide(j) = nuclide_dict % get(to_lower(name))
         end if
 
         ! Copy name and atom/weight percent
         mat % names(j) = name
         mat % atom_density(j) = densities % data(j)
 
-        ! Cast integer isotropic lab scattering flag to boolean
-        if (run_CE) then
-          if (list_iso_lab % data(j) == 1) then
-            mat % p0(j) = .true.
-          else
-            mat % p0(j) = .false.
-          end if
-        end if
-
       end do ALL_NUCLIDES
+
+      if (run_CE) then
+        ! By default, isotropic-in-lab is not used
+        if (list_iso_lab % size() > 0) then
+          mat % has_isotropic_nuclides = .true.
+          allocate(mat % p0(n))
+          mat % p0(:) = .false.
+
+          ! Apply isotropic-in-lab treatment to specified nuclides
+          do j = 1, list_iso_lab % size()
+            do k = 1, n
+              if (names % data(k) == list_iso_lab % data(j)) then
+                mat % p0(k) = .true.
+              end if
+            end do
+          end do
+        end if
+      end if
 
       ! Check to make sure either all atom percents or all weight percents are
       ! given
@@ -2692,14 +2251,14 @@ contains
             end if
 
             ! Check that this nuclide is listed in the cross_sections.xml file
-            if (.not. library_dict % has_key(to_lower(name))) then
+            if (.not. library_dict % has(to_lower(name))) then
               call fatal_error("Could not find S(a,b) table " // trim(name) &
                    // " in cross_sections.xml file!")
             end if
 
             ! Find index in xs_listing and set the name and alias according to the
             ! listing
-            i_library = library_dict % get_key(to_lower(name))
+            i_library = library_dict % get(to_lower(name))
 
             if (run_CE) then
               ! Check to make sure cross-section is continuous energy neutron table
@@ -2711,24 +2270,24 @@ contains
 
             ! If this S(a,b) table hasn't been encountered yet, we need to add its
             ! name and alias to the sab_dict
-            if (.not. sab_dict % has_key(to_lower(name))) then
+            if (.not. sab_dict % has(to_lower(name))) then
               index_sab = index_sab + 1
               mat % i_sab_tables(j) = index_sab
-              call sab_dict % add_key(to_lower(name), index_sab)
+              call sab_dict % set(to_lower(name), index_sab)
             else
-              mat % i_sab_tables(j) = sab_dict % get_key(to_lower(name))
+              mat % i_sab_tables(j) = sab_dict % get(to_lower(name))
             end if
           end do
         end if
       end if
 
       ! Add material to dictionary
-      call material_dict % add_key(mat % id, i)
+      call material_dict % set(mat % id, i)
     end do
 
     ! Set total number of nuclides and S(a,b) tables
-    n_nuclides_total = index_nuclide
-    n_sab_tables     = index_sab
+    n_nuclides = index_nuclide
+    n_sab_tables = index_sab
 
     ! Close materials XML file
     call doc % clear()
@@ -2742,16 +2301,13 @@ contains
 
   subroutine read_tallies_xml()
 
-    integer :: d             ! delayed group index
     integer :: i             ! loop over user-specified tallies
     integer :: j             ! loop over words
     integer :: k             ! another loop index
     integer :: l             ! another loop index
-    integer :: id            ! user-specified identifier
     integer :: filter_id     ! user-specified identifier for filter
-    integer :: i_mesh        ! index in meshes array
     integer :: i_filt        ! index in filters array
-    integer :: i_filter_mesh ! index of mesh filter
+    integer :: i_elem        ! index of entry in dictionary
     integer :: n             ! size of arrays in mesh specification
     integer :: n_words       ! number of words read
     integer :: n_filter      ! number of filters
@@ -2761,17 +2317,14 @@ contains
     integer :: n_user_trig   ! number of user-specified tally triggers
     integer :: trig_ind      ! index of triggers array for each tally
     integer :: user_trig_ind ! index of user-specified triggers for each tally
+    integer :: i_start, i_end
+    integer(C_INT) :: err
     real(8) :: threshold     ! trigger convergence threshold
     integer :: n_order       ! moment order requested
     integer :: n_order_pos   ! oosition of Scattering order in score name string
     integer :: MT            ! user-specified MT for score
-    integer :: iarray3(3)    ! temporary integer array
     integer :: imomstr       ! Index of MOMENT_STRS & MOMENT_N_STRS
     logical :: file_exists   ! does tallies.xml file exist?
-    real(8) :: rarray3(3)    ! temporary double prec. array
-    integer :: Nangle        ! Number of angular bins
-    real(8) :: dangle        ! Mu spacing if using automatic allocation
-    integer :: iangle        ! Loop counter for building mu filter bins
     integer, allocatable :: temp_filter(:) ! temporary filter indices
     character(MAX_LINE_LEN) :: filename
     character(MAX_WORD_LEN) :: word
@@ -2779,24 +2332,19 @@ contains
     character(MAX_WORD_LEN) :: temp_str
     character(MAX_WORD_LEN), allocatable :: sarray(:)
     type(DictCharInt) :: trigger_scores
-    type(ElemKeyValueCI), pointer :: pair_list
-    type(TallyObject), pointer :: t
     type(TallyFilterContainer), pointer :: f
     type(RegularMesh), pointer :: m
     type(XMLDocument) :: doc
     type(XMLNode) :: root
-    type(XMLNode) :: node_mesh
     type(XMLNode) :: node_tal
     type(XMLNode) :: node_filt
     type(XMLNode) :: node_trigger
-    type(XMLNode) :: node_deriv
     type(XMLNode), allocatable :: node_mesh_list(:)
     type(XMLNode), allocatable :: node_tal_list(:)
     type(XMLNode), allocatable :: node_filt_list(:)
     type(XMLNode), allocatable :: node_trigger_list(:)
     type(XMLNode), allocatable :: node_deriv_list(:)
-    type(ElemKeyValueCI), pointer :: scores
-    type(ElemKeyValueCI), pointer :: next
+    type(DictEntryCI) :: elem
 
     ! Check if tallies.xml exists
     filename = trim(path_input) // "tallies.xml"
@@ -2831,34 +2379,6 @@ contains
     ! Get pointer list to XML <tally>
     call get_node_list(root, "tally", node_tal_list)
 
-    ! Check for user meshes
-    n_user_meshes = size(node_mesh_list)
-    if (cmfd_run) then
-      n_meshes = n_user_meshes + n_cmfd_meshes
-    else
-      n_meshes = n_user_meshes
-    end if
-
-    ! Allocate mesh array
-    if (n_meshes > 0) allocate(meshes(n_meshes))
-
-    ! Check for user filters
-    n_user_filters = size(node_filt_list)
-
-    ! Allocate filters array
-    if (n_user_filters > 0) call add_filters(n_user_filters)
-
-    ! Check for user tallies
-    n_user_tallies = size(node_tal_list)
-    if (n_user_tallies == 0) then
-      if (master) call warning("No tallies present in tallies.xml file!")
-    end if
-
-    ! Allocate tally array
-    if (n_user_tallies > 0 .and. run_mode /= MODE_PLOTTING) then
-      call add_tallies("user", n_user_tallies)
-    end if
-
     ! Check for <assume_separate> setting
     if (check_for_node(root, "assume_separate")) then
       call get_node_value(root, "assume_separate", assume_separate)
@@ -2867,131 +2387,27 @@ contains
     ! ==========================================================================
     ! READ MESH DATA
 
-    do i = 1, n_user_meshes
-      m => meshes(i)
+    ! Check for user meshes and allocate
+    n = size(node_mesh_list)
+    if (n > 0) then
+      err = openmc_extend_meshes(n, i_start, i_end)
+    end if
 
-      ! Get pointer to mesh node
-      node_mesh = node_mesh_list(i)
+    do i = 1, n
+      m => meshes(i_start + i - 1)
 
-      ! Copy mesh id
-      if (check_for_node(node_mesh, "id")) then
-        call get_node_value(node_mesh, "id", m % id)
-      else
-        call fatal_error("Must specify id for mesh in tally XML file.")
-      end if
-
-      ! Check to make sure 'id' hasn't been used
-      if (mesh_dict % has_key(m % id)) then
-        call fatal_error("Two or more meshes use the same unique ID: " &
-             // to_str(m % id))
-      end if
-
-      ! Read mesh type
-      temp_str = ''
-      if (check_for_node(node_mesh, "type")) &
-           call get_node_value(node_mesh, "type", temp_str)
-      select case (to_lower(temp_str))
-      case ('rect', 'rectangle', 'rectangular')
-        call warning("Mesh type '" // trim(temp_str) // "' is deprecated. &
-             &Please use 'regular' instead.")
-        m % type = MESH_REGULAR
-      case ('regular')
-        m % type = MESH_REGULAR
-      case default
-        call fatal_error("Invalid mesh type: " // trim(temp_str))
-      end select
-
-      ! Determine number of dimensions for mesh
-      n = node_word_count(node_mesh, "dimension")
-      if (n /= 1 .and. n /= 2 .and. n /= 3) then
-        call fatal_error("Mesh must be one, two, or three dimensions.")
-      end if
-      m % n_dimension = n
-
-      ! Allocate attribute arrays
-      allocate(m % dimension(n))
-      allocate(m % lower_left(n))
-      allocate(m % width(n))
-      allocate(m % upper_right(n))
-
-      ! Check that dimensions are all greater than zero
-      call get_node_array(node_mesh, "dimension", iarray3(1:n))
-      if (any(iarray3(1:n) <= 0)) then
-        call fatal_error("All entries on the <dimension> element for a tally &
-             &mesh must be positive.")
-      end if
-
-      ! Read dimensions in each direction
-      m % dimension = iarray3(1:n)
-
-      ! Read mesh lower-left corner location
-      if (m % n_dimension /= node_word_count(node_mesh, "lower_left")) then
-        call fatal_error("Number of entries on <lower_left> must be the same &
-             &as the number of entries on <dimension>.")
-      end if
-      call get_node_array(node_mesh, "lower_left", m % lower_left)
-
-      ! Make sure both upper-right or width were specified
-      if (check_for_node(node_mesh, "upper_right") .and. &
-           check_for_node(node_mesh, "width")) then
-        call fatal_error("Cannot specify both <upper_right> and <width> on a &
-             &tally mesh.")
-      end if
-
-      ! Make sure either upper-right or width was specified
-      if (.not. check_for_node(node_mesh, "upper_right") .and. &
-           .not. check_for_node(node_mesh, "width")) then
-        call fatal_error("Must specify either <upper_right> and <width> on a &
-             &tally mesh.")
-      end if
-
-      if (check_for_node(node_mesh, "width")) then
-        ! Check to ensure width has same dimensions
-        if (node_word_count(node_mesh, "width") /= &
-             node_word_count(node_mesh, "lower_left")) then
-          call fatal_error("Number of entries on <width> must be the same as &
-               &the number of entries on <lower_left>.")
-        end if
-
-        ! Check for negative widths
-        call get_node_array(node_mesh, "width", rarray3(1:n))
-        if (any(rarray3(1:n) < ZERO)) then
-          call fatal_error("Cannot have a negative <width> on a tally mesh.")
-        end if
-
-        ! Set width and upper right coordinate
-        m % width = rarray3(1:n)
-        m % upper_right = m % lower_left + m % dimension * m % width
-
-      elseif (check_for_node(node_mesh, "upper_right")) then
-        ! Check to ensure width has same dimensions
-        if (node_word_count(node_mesh, "upper_right") /= &
-             node_word_count(node_mesh, "lower_left")) then
-          call fatal_error("Number of entries on <upper_right> must be the &
-               &same as the number of entries on <lower_left>.")
-        end if
-
-        ! Check that upper-right is above lower-left
-        call get_node_array(node_mesh, "upper_right", rarray3(1:n))
-        if (any(rarray3(1:n) < m % lower_left)) then
-          call fatal_error("The <upper_right> coordinates must be greater than &
-               &the <lower_left> coordinates on a tally mesh.")
-        end if
-
-        ! Set width and upper right coordinate
-        m % upper_right = rarray3(1:n)
-        m % width = (m % upper_right - m % lower_left) / m % dimension
-      end if
-
-      ! Set volume fraction
-      m % volume_frac = ONE/real(product(m % dimension),8)
+      ! Instantiate mesh from XML node
+      call m % from_xml(node_mesh_list(i))
 
       ! Add mesh to dictionary
-      call mesh_dict % add_key(m % id, i)
+      call mesh_dict % set(m % id, i_start + i - 1)
     end do
 
     ! We only need the mesh info for plotting
-    if (run_mode == MODE_PLOTTING) return
+    if (run_mode == MODE_PLOTTING) then
+      call doc % clear()
+      return
+    end if
 
     ! ==========================================================================
     ! READ DATA FOR DERIVATIVES
@@ -3010,82 +2426,23 @@ contains
 
     ! Read derivative attributes.
     do i = 1, size(node_deriv_list)
-      associate(deriv => tally_derivs(i))
-        ! Get pointer to derivative node.
-        node_deriv = node_deriv_list(i)
+      call tally_derivs(i) % from_xml(node_deriv_list(i))
 
-        ! Copy the derivative id.
-        if (check_for_node(node_deriv, "id")) then
-          call get_node_value(node_deriv, "id", deriv % id)
-        else
-          call fatal_error("Must specify an ID for <derivative> elements in the&
-               & tally XML file")
-        end if
-
-        ! Make sure the id is > 0.
-        if (deriv % id <= 0) then
-          call fatal_error("<derivative> IDs must be an integer greater than &
-               &zero")
-        end if
-
-        ! Make sure this id has not already been used.
-        do j = 1, i-1
-          if (tally_derivs(j) % id == deriv % id) then
-            call fatal_error("Two or more <derivative>'s use the same unique &
-                 &ID: " // trim(to_str(deriv % id)))
-          end if
-        end do
-
-        ! Read the independent variable name.
-        temp_str = ""
-        call get_node_value(node_deriv, "variable", temp_str)
-        temp_str = to_lower(temp_str)
-
-        select case(temp_str)
-
-        case("density")
-          deriv % variable = DIFF_DENSITY
-          call get_node_value(node_deriv, "material", deriv % diff_material)
-
-        case("nuclide_density")
-          deriv % variable = DIFF_NUCLIDE_DENSITY
-          call get_node_value(node_deriv, "material", deriv % diff_material)
-
-          call get_node_value(node_deriv, "nuclide", word)
-          word = trim(to_lower(word))
-          pair_list => nuclide_dict % keys()
-          do while (associated(pair_list))
-            if (starts_with(pair_list % key, word)) then
-              word = pair_list % key(1:150)
-              exit
-            end if
-
-            ! Advance to next
-            pair_list => pair_list % next
-          end do
-
-          ! Check if no nuclide was found
-          if (.not. associated(pair_list)) then
-            call fatal_error("Could not find the nuclide " &
-                 // trim(word) // " specified in derivative " &
-                 // trim(to_str(deriv % id)) // " in any material.")
-          end if
-          deallocate(pair_list)
-
-          deriv % diff_nuclide = nuclide_dict % get_key(word)
-
-        case("temperature")
-          deriv % variable = DIFF_TEMPERATURE
-          call get_node_value(node_deriv, "material", deriv % diff_material)
-        end select
-      end associate
+      ! Update tally derivative dictionary
+      call tally_deriv_dict % set(tally_derivs(i) % id, i)
     end do
 
     ! ==========================================================================
     ! READ FILTER DATA
 
-    READ_FILTERS: do i = 1, n_user_filters
-      f => filters(i)
+    ! Check for user filters and allocate
+    n = size(node_filt_list)
+    if (n > 0) then
+      err = openmc_extend_filters(n, i_start, i_end)
+    end if
+
+    READ_FILTERS: do i = 1, n
+      f => filters(i_start + i - 1)
 
       ! Get pointer to filter xml node
       node_filt = node_filt_list(i)
@@ -3098,7 +2455,7 @@ contains
       end if
 
       ! Check to make sure 'id' hasn't been used
-      if (filter_dict % has_key(filter_id)) then
+      if (filter_dict % has(filter_id)) then
         call fatal_error("Two or more filters use the same unique ID: " &
              // to_str(filter_id))
       end if
@@ -3109,361 +2466,57 @@ contains
            call get_node_value(node_filt, "type", temp_str)
       temp_str = to_lower(temp_str)
 
-      ! Determine number of bins
+      ! Make sure bins have been set
       select case(temp_str)
       case ("energy", "energyout", "mu", "polar", "azimuthal")
         if (.not. check_for_node(node_filt, "bins")) then
           call fatal_error("Bins not set in filter " // trim(to_str(filter_id)))
         end if
-        n_words = node_word_count(node_filt, "bins")
-      case ("mesh", "universe", "material", "cell", "distribcell", &
+      case ("mesh", "meshsurface", "universe", "material", "cell", "distribcell", &
             "cellborn", "cellfrom", "surface", "delayedgroup")
         if (.not. check_for_node(node_filt, "bins")) then
           call fatal_error("Bins not set in filter " // trim(to_str(filter_id)))
         end if
-        n_words = node_word_count(node_filt, "bins")
       end select
 
-      ! Determine type of filter
-      select case (temp_str)
+      ! Allocate according to the filter type
+      err = openmc_filter_set_type(i_start + i - 1, to_c_string(temp_str))
+      if (err /= 0) call fatal_error(to_f_string(openmc_err_msg))
 
-      case ('distribcell')
-        ! Allocate and declare the filter type
-        allocate(DistribcellFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (DistribcellFilter)
-          if (n_words /= 1) call fatal_error("Only one cell can be &
-               &specified per distribcell filter.")
-          ! Store bins
-          call get_node_value(node_filt, "bins", filt % cell)
-        end select
-
-      case ('cell')
-        ! Allocate and declare the filter type
-        allocate(CellFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (CellFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words
-          allocate(filt % cells(n_words))
-          call get_node_array(node_filt, "bins", filt % cells)
-        end select
-
-      case ('cellfrom')
-        ! Allocate and declare the filter type
-        allocate(CellFromFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (CellFromFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words
-          allocate(filt % cells(n_words))
-          call get_node_array(node_filt, "bins", filt % cells)
-        end select
-
-      case ('cellborn')
-        ! Allocate and declare the filter type
-        allocate(CellbornFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (CellbornFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words
-          allocate(filt % cells(n_words))
-          call get_node_array(node_filt, "bins", filt % cells)
-        end select
-
-      case ('material')
-        ! Allocate and declare the filter type
-        allocate(MaterialFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (MaterialFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words
-          allocate(filt % materials(n_words))
-          call get_node_array(node_filt, "bins", filt % materials)
-        end select
-
-      case ('universe')
-        ! Allocate and declare the filter type
-        allocate(UniverseFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (UniverseFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words
-          allocate(filt % universes(n_words))
-          call get_node_array(node_filt, "bins", filt % universes)
-        end select
-
-      case ('surface')
-        ! Allocate and declare the filter type
-        allocate(SurfaceFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (SurfaceFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words
-          allocate(filt % surfaces(n_words))
-          call get_node_array(node_filt, "bins", filt % surfaces)
-        end select
-
-      case ('mesh')
-        ! Allocate and declare the filter type
-        allocate(MeshFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (MeshFilter)
-          if (n_words /= 1) call fatal_error("Only one mesh can be &
-               &specified per mesh filter.")
-
-          ! Determine id of mesh
-          call get_node_value(node_filt, "bins", id)
-
-          ! Get pointer to mesh
-          if (mesh_dict % has_key(id)) then
-            i_mesh = mesh_dict % get_key(id)
-            m => meshes(i_mesh)
-          else
-            call fatal_error("Could not find mesh " // trim(to_str(id)) &
-                 // " specified on filter " // trim(to_str(filter_id)))
-          end if
-
-          ! Determine number of bins
-          filt % n_bins = product(m % dimension)
-
-          ! Store the index of the mesh
-          filt % mesh = i_mesh
-        end select
-
-      case ('energy')
-
-        ! Allocate and declare the filter type
-        allocate(EnergyFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (EnergyFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words - 1
-          allocate(filt % bins(n_words))
-          call get_node_array(node_filt, "bins", filt % bins)
-
-          ! We can save tallying time if we know that the tally bins match
-          ! the energy group structure.  In that case, the matching bin
-          ! index is simply the group (after flipping for the different
-          ! ordering of the library and tallying systems).
-          if (.not. run_CE) then
-            if (n_words == num_energy_groups + 1) then
-              if (all(filt % bins == energy_bins(num_energy_groups + 1:1:-1))) &
-                   then
-                filt % matches_transport_groups = .true.
-              end if
-            end if
-          end if
-        end select
-
-      case ('energyout')
-        ! Allocate and declare the filter type
-        allocate(EnergyoutFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (EnergyoutFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words - 1
-          allocate(filt % bins(n_words))
-          call get_node_array(node_filt, "bins", filt % bins)
-
-          ! We can save tallying time if we know that the tally bins match
-          ! the energy group structure.  In that case, the matching bin
-          ! index is simply the group (after flipping for the different
-          ! ordering of the library and tallying systems).
-          if (.not. run_CE) then
-            if (n_words == num_energy_groups + 1) then
-              if (all(filt % bins == energy_bins(num_energy_groups + 1:1:-1))) &
-                   then
-                filt % matches_transport_groups = .true.
-              end if
-            end if
-          end if
-        end select
-
-      case ('delayedgroup')
-
-        ! Allocate and declare the filter type
-        allocate(DelayedGroupFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (DelayedGroupFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words
-          allocate(filt % groups(n_words))
-          call get_node_array(node_filt, "bins", filt % groups)
-
-          ! Check that bins are all are between 1 and MAX_DELAYED_GROUPS
-          do d = 1, n_words
-            if (filt % groups(d) < 1 .or. &
-                 filt % groups(d) > MAX_DELAYED_GROUPS) then
-              call fatal_error("Encountered delayedgroup bin with index " &
-                   // trim(to_str(filt % groups(d))) // " that is outside &
-                   &the range of 1 to MAX_DELAYED_GROUPS ( " &
-                   // trim(to_str(MAX_DELAYED_GROUPS)) // ")")
-            end if
-          end do
-        end select
-
-      case ('mu')
-        ! Allocate and declare the filter type
-        allocate(MuFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (MuFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words - 1
-          allocate(filt % bins(n_words))
-          call get_node_array(node_filt, "bins", filt % bins)
-
-          ! Allow a user to input a lone number which will mean that you
-          ! subdivide [-1,1] evenly with the input being the number of bins
-          if (n_words == 1) then
-            Nangle = int(filt % bins(1))
-            if (Nangle > 1) then
-              filt % n_bins = Nangle
-              dangle = TWO / real(Nangle,8)
-              deallocate(filt % bins)
-              allocate(filt % bins(Nangle + 1))
-              do iangle = 1, Nangle
-                filt % bins(iangle) = -ONE + (iangle - 1) * dangle
-              end do
-              filt % bins(Nangle + 1) = ONE
-            else
-              call fatal_error("Number of bins for mu filter must be&
-                   & greater than 1 on filter " &
-                   // trim(to_str(filter_id)) // ".")
-            end if
-          end if
-        end select
-
-      case ('polar')
-        ! Allocate and declare the filter type
-        allocate(PolarFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (PolarFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words - 1
-          allocate(filt % bins(n_words))
-          call get_node_array(node_filt, "bins", filt % bins)
-
-          ! Allow a user to input a lone number which will mean that you
-          ! subdivide [0,pi] evenly with the input being the number of bins
-          if (n_words == 1) then
-            Nangle = int(filt % bins(1))
-            if (Nangle > 1) then
-              filt % n_bins = Nangle
-              dangle = PI / real(Nangle,8)
-              deallocate(filt % bins)
-              allocate(filt % bins(Nangle + 1))
-              do iangle = 1, Nangle
-                filt % bins(iangle) = (iangle - 1) * dangle
-              end do
-              filt % bins(Nangle + 1) = PI
-            else
-              call fatal_error("Number of bins for polar filter must be&
-                   & greater than 1 on filter " &
-                   // trim(to_str(filter_id)) // ".")
-            end if
-          end if
-        end select
-
-      case ('azimuthal')
-        ! Allocate and declare the filter type
-        allocate(AzimuthalFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (AzimuthalFilter)
-          ! Allocate and store bins
-          filt % n_bins = n_words - 1
-          allocate(filt % bins(n_words))
-          call get_node_array(node_filt, "bins", filt % bins)
-
-          ! Allow a user to input a lone number which will mean that you
-          ! subdivide [-pi,pi) evenly with the input being the number of
-          ! bins
-          if (n_words == 1) then
-            Nangle = int(filt % bins(1))
-            if (Nangle > 1) then
-              filt % n_bins = Nangle
-              dangle = TWO * PI / real(Nangle,8)
-              deallocate(filt % bins)
-              allocate(filt % bins(Nangle + 1))
-              do iangle = 1, Nangle
-                filt % bins(iangle) = -PI + (iangle - 1) * dangle
-              end do
-              filt % bins(Nangle + 1) = PI
-            else
-              call fatal_error("Number of bins for azimuthal filter must be&
-                   & greater than 1 on filter " &
-                   // trim(to_str(filter_id)) // ".")
-            end if
-          end if
-        end select
-
-      case ('energyfunction')
-        ! Allocate and declare the filter type.
-        allocate(EnergyFunctionFilter :: f % obj)
-        select type (filt => f % obj)
-        type is (EnergyFunctionFilter)
-          filt % n_bins = 1
-          ! Make sure this is continuous-energy mode.
-          if (.not. run_CE) then
-            call fatal_error("EnergyFunction filters are only supported for &
-                 &continuous-energy transport calculations")
-          end if
-
-          ! Allocate and store energy grid.
-          if (.not. check_for_node(node_filt, "energy")) then
-            call fatal_error("Energy grid not specified for EnergyFunction &
-                 &filter on filter " // trim(to_str(filter_id)))
-          end if
-          n_words = node_word_count(node_filt, "energy")
-          allocate(filt % energy(n_words))
-          call get_node_array(node_filt, "energy", filt % energy)
-
-          ! Allocate and store interpolant values.
-          if (.not. check_for_node(node_filt, "y")) then
-            call fatal_error("y values not specified for EnergyFunction &
-                 &filter on filter " // trim(to_str(filter_id)))
-          end if
-          n_words = node_word_count(node_filt, "y")
-          allocate(filt % y(n_words))
-          call get_node_array(node_filt, "y", filt % y)
-        end select
-
-      case default
-        ! Specified filter is invalid, raise error
-        call fatal_error("Unknown filter type '" &
-             // trim(temp_str) // "' on filter " &
-             // trim(to_str(filter_id)) // ".")
-
-      end select
+      ! Read filter data from XML
+      call f % obj % from_xml(node_filt)
 
       ! Set filter id
-      f % obj % id = filter_id
+      err = openmc_filter_set_id(i_start + i - 1, filter_id)
 
-      ! Add filter to dictionary
-      call filter_dict % add_key(filter_id, i)
-
+      ! Initialize filter
+      call f % obj % initialize()
     end do READ_FILTERS
 
     ! ==========================================================================
     ! READ TALLY DATA
 
-    READ_TALLIES: do i = 1, n_user_tallies
+    ! Check for user tallies
+    n = size(node_tal_list)
+    if (n == 0) then
+      if (master) call warning("No tallies present in tallies.xml file!")
+    end if
+
+    ! Allocate user tallies
+    if (n > 0 .and. run_mode /= MODE_PLOTTING) then
+      err = openmc_extend_tallies(n, i_start, i_end)
+    end if
+
+    READ_TALLIES: do i = 1, n
+      ! Allocate tally
+      err = openmc_tally_set_type(i_start + i - 1, &
+           C_CHAR_'generic' // C_NULL_CHAR)
+
       ! Get pointer to tally
-      t => tallies(i)
+      associate (t => tallies(i_start + i - 1) % obj)
 
       ! Get pointer to tally xml node
       node_tal = node_tal_list(i)
-
-      ! Set tally type to volume by default
-      t % type = TALLY_VOLUME
-
-      ! It's desirable to use a track-length esimator for tallies since
-      ! generally more events will score to the tally, reducing the
-      ! variance. However, for tallies that require information on
-      ! post-collision parameters (e.g. tally with an energyout filter) the
-      ! analog esimator must be used.
-
-      t % estimator = ESTIMATOR_TRACKLENGTH
 
       ! Copy tally id
       if (check_for_node(node_tal, "id")) then
@@ -3473,7 +2526,7 @@ contains
       end if
 
       ! Check to make sure 'id' hasn't been used
-      if (tally_dict % has_key(t % id)) then
+      if (tally_dict % has(t % id)) then
         call fatal_error("Two or more tallies use the same unique ID: " &
              // to_str(t % id))
       end if
@@ -3505,63 +2558,26 @@ contains
       allocate(temp_filter(n_filter))
       if (n_filter > 0) then
         call get_node_array(node_tal, "filters", temp_filter)
+
+        do j = 1, n_filter
+          ! Get pointer to filter
+          if (filter_dict % has(temp_filter(j))) then
+            i_filt = filter_dict % get(temp_filter(j))
+            f => filters(i_filt)
+          else
+            call fatal_error("Could not find filter " &
+                 // trim(to_str(temp_filter(j))) // " specified on tally " &
+                 // trim(to_str(t % id)))
+          end if
+
+          ! Store the index of the filter
+          temp_filter(j) = i_filt
+        end do
+
+        ! Set the filters
+        err = openmc_tally_set_filters(i_start + i - 1, n_filter, temp_filter)
       end if
-
-      do j = 1, n_filter
-        ! Get pointer to filter
-        if (filter_dict % has_key(temp_filter(j))) then
-          i_filt = filter_dict % get_key(temp_filter(j))
-          f => filters(i_filt)
-        else
-          call fatal_error("Could not find filter " &
-               // trim(to_str(temp_filter(j))) // " specified on tally " &
-               // trim(to_str(t % id)))
-        end if
-
-        ! Set the filter index in the tally find_filter array
-        select type (filt => f % obj)
-        type is (DistribcellFilter)
-          t % find_filter(FILTER_DISTRIBCELL) = j
-        type is (CellFilter)
-          t % find_filter(FILTER_CELL) = j
-        type is (CellFromFilter)
-          t % find_filter(FILTER_CELLFROM) = j
-        type is (CellbornFilter)
-          t % find_filter(FILTER_CELLBORN) = j
-        type is (MaterialFilter)
-          t % find_filter(FILTER_MATERIAL) = j
-        type is (UniverseFilter)
-          t % find_filter(FILTER_UNIVERSE) = j
-        type is (SurfaceFilter)
-          t % find_filter(FILTER_SURFACE) = j
-        type is (MeshFilter)
-          t % find_filter(FILTER_MESH) = j
-        type is (EnergyFilter)
-          t % find_filter(FILTER_ENERGYIN) = j
-        type is (EnergyoutFilter)
-          t % find_filter(FILTER_ENERGYOUT) = j
-          ! Set to analog estimator
-          t % estimator = ESTIMATOR_ANALOG
-        type is (DelayedGroupFilter)
-          t % find_filter(FILTER_DELAYEDGROUP) = j
-        type is (MuFilter)
-          t % find_filter(FILTER_MU) = j
-          ! Set to analog estimator
-          t % estimator = ESTIMATOR_ANALOG
-        type is (PolarFilter)
-          t % find_filter(FILTER_POLAR) = j
-        type is (AzimuthalFilter)
-          t % find_filter(FILTER_AZIMUTHAL) = j
-        type is (EnergyFunctionFilter)
-          t % find_filter(FILTER_ENERGYFUNCTION) = j
-        end select
-
-        ! Store the index of the filter
-        temp_filter(j) = i_filt
-      end do
-
-      ! Store the filter indices
-      call move_alloc(FROM=temp_filter, TO=t % filter)
+      deallocate(temp_filter)
 
       ! =======================================================================
       ! READ DATA FOR NUCLIDES
@@ -3574,15 +2590,15 @@ contains
 
         if (trim(sarray(1)) == 'all') then
           ! Handle special case <nuclides>all</nuclides>
-          allocate(t % nuclide_bins(n_nuclides_total + 1))
+          allocate(t % nuclide_bins(n_nuclides + 1))
 
-          ! Set bins to 1, 2, 3, ..., n_nuclides_total, -1
-          t % nuclide_bins(1:n_nuclides_total) = &
-               (/ (j, j=1, n_nuclides_total) /)
-          t % nuclide_bins(n_nuclides_total + 1) = -1
+          ! Set bins to 1, 2, 3, ..., n_nuclides, -1
+          t % nuclide_bins(1:n_nuclides) = &
+               (/ (j, j=1, n_nuclides) /)
+          t % nuclide_bins(n_nuclides + 1) = -1
 
           ! Set number of nuclide bins
-          t % n_nuclide_bins = n_nuclides_total + 1
+          t % n_nuclide_bins = n_nuclides + 1
 
           ! Set flag so we can treat this case specially
           t % all_nuclides = .true.
@@ -3602,27 +2618,14 @@ contains
             word = to_lower(sarray(j))
 
             ! Search through nuclides
-            pair_list => nuclide_dict % keys()
-            do while (associated(pair_list))
-              if (trim(pair_list % key) == trim(word)) then
-                word = pair_list % key(1:150)
-                exit
-              end if
-
-              ! Advance to next
-              pair_list => pair_list % next
-            end do
-
-            ! Check if no nuclide was found
-            if (.not. associated(pair_list)) then
+            if (.not. nuclide_dict % has(word)) then
               call fatal_error("Could not find the nuclide " &
                    // trim(word) // " specified in tally " &
                    // trim(to_str(t % id)) // " in any material.")
             end if
-            deallocate(pair_list)
 
             ! Set bin to index in nuclides array
-            t % nuclide_bins(j) = nuclide_dict % get_key(word)
+            t % nuclide_bins(j) = nuclide_dict % get(word)
           end do
 
           ! Set number of nuclide bins
@@ -3660,7 +2663,7 @@ contains
           score_name = trim(sarray(j))
 
           ! Append the score to the list of possible trigger scores
-          if (trigger_on) call trigger_scores % add_key(trim(score_name), j)
+          if (trigger_on) call trigger_scores % set(trim(score_name), j)
 
           do imomstr = 1, size(MOMENT_STRS)
             if (starts_with(score_name,trim(MOMENT_STRS(imomstr)))) then
@@ -3889,12 +2892,15 @@ contains
                  &please remove")
           case ('n2n', '(n,2n)')
             t % score_bins(j) = N_2N
+            t % depletion_rx = .true.
 
           case ('n3n', '(n,3n)')
             t % score_bins(j) = N_3N
+            t % depletion_rx = .true.
 
           case ('n4n', '(n,4n)')
             t % score_bins(j) = N_4N
+            t % depletion_rx = .true.
 
           case ('absorption')
             t % score_bins(j) = SCORE_ABSORPTION
@@ -3944,18 +2950,18 @@ contains
                  &t % find_filter(FILTER_CELL) > 0 .or. &
                  &t % find_filter(FILTER_CELLFROM) > 0) then
 
-              ! Check to make sure that mesh currents are not desired as well
-              if (t % find_filter(FILTER_MESH) > 0) then
-                call fatal_error("Cannot tally other mesh currents &
-                     &in the same tally as surface currents")
+              ! Check to make sure that mesh surface currents are not desired as well
+              if (t % find_filter(FILTER_MESHSURFACE) > 0) then
+                call fatal_error("Cannot tally mesh surface currents &
+                     &in the same tally as normal surface currents")
               end if
 
               t % type = TALLY_SURFACE
               t % score_bins(j) = SCORE_CURRENT
 
-            else if (t % find_filter(FILTER_MESH) > 0) then
+            else if (t % find_filter(FILTER_MESHSURFACE) > 0) then
               t % score_bins(j) = SCORE_CURRENT
-              t % type = TALLY_MESH_CURRENT
+              t % type = TALLY_MESH_SURFACE
 
               ! Check to make sure that current is the only desired response
               ! for this tally
@@ -3963,86 +2969,6 @@ contains
                 call fatal_error("Cannot tally other scores in the &
                      &same tally as surface currents")
               end if
-
-              ! Get index of mesh filter
-              i_filter_mesh = t % filter(t % find_filter(FILTER_MESH))
-
-              ! Check to make sure mesh filter was specified
-              if (i_filter_mesh == 0) then
-                call fatal_error("Cannot tally surface current without a mesh &
-                     &filter.")
-              end if
-
-              ! Get pointer to mesh
-              select type(filt => filters(i_filter_mesh) % obj)
-              type is (MeshFilter)
-                i_mesh = filt % mesh
-                m => meshes(i_mesh)
-              end select
-
-              ! Copy filter indices to temporary array
-              allocate(temp_filter(size(t % filter) + 1))
-              temp_filter(1:size(t % filter)) = t % filter
-
-              ! Move allocation back -- temp_filter becomes deallocated during
-              ! this call
-              call move_alloc(FROM=temp_filter, TO=t % filter)
-              n_filter = size(t % filter)
-
-              ! Extend the filters array so we can add a surface filter and
-              ! mesh filter
-              call add_filters(2)
-
-              ! Increment number of user filters
-              n_user_filters = n_user_filters + 2
-
-              ! Get index of the new mesh filter
-              i_filt = n_user_filters - 1
-
-              ! Duplicate the mesh filter since other tallies might use this
-              ! filter and we need to change the dimension
-              allocate(MeshFilter :: filters(i_filt) % obj)
-              select type(filt => filters(i_filt) % obj)
-              type is (MeshFilter)
-                filt % id = i_filt
-                filt % mesh = i_mesh
-
-                ! We need to increase the dimension by one since we also need
-                ! currents coming into and out of the boundary mesh cells.
-                filt % n_bins = product(m % dimension + 1)
-
-              ! Add filter to dictionary
-              call filter_dict % add_key(filt % id, i_filt)
-              end select
-              t % filter(t % find_filter(FILTER_MESH)) = i_filt
-
-              ! Get index of the new surface filter
-              i_filt = n_user_filters
-
-              ! Add surface filter
-              allocate(SurfaceFilter :: filters(i_filt) % obj)
-              select type (filt => filters(i_filt) % obj)
-              type is (SurfaceFilter)
-                filt % id = i_filt
-                filt % n_bins = 4 * m % n_dimension
-                allocate(filt % surfaces(4 * m % n_dimension))
-                if (m % n_dimension == 1) then
-                  filt % surfaces = (/ OUT_LEFT, IN_LEFT, OUT_RIGHT, IN_RIGHT /)
-                elseif (m % n_dimension == 2) then
-                  filt % surfaces = (/ OUT_LEFT, IN_LEFT, OUT_RIGHT, IN_RIGHT, &
-                       OUT_BACK, IN_BACK, OUT_FRONT, IN_FRONT /)
-                elseif (m % n_dimension == 3) then
-                  filt % surfaces = (/ OUT_LEFT, IN_LEFT, OUT_RIGHT, IN_RIGHT, &
-                       OUT_BACK, IN_BACK, OUT_FRONT, IN_FRONT, OUT_BOTTOM, &
-                       IN_BOTTOM, OUT_TOP, IN_TOP /)
-                end if
-                filt % current = .true.
-
-                ! Add filter to dictionary
-                call filter_dict % add_key(filt % id, i_filt)
-              end select
-              t % find_filter(FILTER_SURFACE) = n_filter
-              t % filter(n_filter) = i_filt
             end if
 
           case ('events')
@@ -4091,8 +3017,10 @@ contains
             t % score_bins(j) = N_NC
           case ('(n,gamma)')
             t % score_bins(j) = N_GAMMA
+            t % depletion_rx = .true.
           case ('(n,p)')
             t % score_bins(j) = N_P
+            t % depletion_rx = .true.
           case ('(n,d)')
             t % score_bins(j) = N_D
           case ('(n,t)')
@@ -4101,6 +3029,7 @@ contains
             t % score_bins(j) = N_3HE
           case ('(n,a)')
             t % score_bins(j) = N_A
+            t % depletion_rx = .true.
           case ('(n,2a)')
             t % score_bins(j) = N_2A
           case ('(n,3a)')
@@ -4260,15 +3189,7 @@ contains
             score_name = trim(to_lower(sarray(j)))
 
             if (score_name == "all") then
-              scores => trigger_scores % keys()
-
-              do while (associated(scores))
-                next => scores % next
-                deallocate(scores)
-                scores => next
-                t % n_triggers = t % n_triggers + 1
-              end do
-
+              t % n_triggers = t % n_triggers + trigger_scores % size()
             else
               t % n_triggers = t % n_triggers + 1
             end if
@@ -4327,16 +3248,19 @@ contains
 
             ! Expand "all" to include TriggerObjects for each score in tally
             if (score_name == "all") then
-              scores => trigger_scores % keys()
 
               ! Loop over all tally scores
-              do while (associated(scores))
-                score_name = trim(scores % key)
+              i_elem = 0
+              do
+                ! Move to next score
+                call trigger_scores % next_entry(elem, i_elem)
+                if (i_elem == 0) exit
+
+                score_name = trim(elem % key)
 
                 ! Store the score name and index in the trigger
-                t % triggers(trig_ind) % score_name = trim(score_name)
-                t % triggers(trig_ind) % score_index = &
-                     trigger_scores % get_key(trim(score_name))
+                t % triggers(trig_ind) % score_name = score_name
+                t % triggers(trig_ind) % score_index = elem % value
 
                 ! Set the trigger convergence threshold type
                 select case (temp_str)
@@ -4354,11 +3278,6 @@ contains
                 ! Store the trigger convergence threshold
                 t % triggers(trig_ind) % threshold = threshold
 
-                ! Move to next score
-                next => scores % next
-                deallocate(scores)
-                scores => next
-
                 ! Increment the overall trigger index
                 trig_ind = trig_ind + 1
               end do
@@ -4369,7 +3288,7 @@ contains
               ! Store the score name and index
               t % triggers(trig_ind) % score_name = trim(score_name)
               t % triggers(trig_ind) % score_index = &
-                   trigger_scores % get_key(trim(score_name))
+                   trigger_scores % get(trim(score_name))
 
               ! Check if an invalid score was set for the trigger
               if (t % triggers(trig_ind) % score_index == 0) then
@@ -4446,8 +3365,9 @@ contains
       end if
 
       ! Add tally to dictionary
-      call tally_dict % add_key(t % id, i)
+      call tally_dict % set(t % id, i)
 
+      end associate
     end do READ_TALLIES
 
     ! Close XML document
@@ -4464,7 +3384,6 @@ contains
     integer :: i, j
     integer :: n_cols, col_id, n_comp, n_masks, n_meshlines
     integer :: meshid
-    integer :: i_mesh
     integer, allocatable :: iarray(:)
     logical :: file_exists              ! does plots.xml file exist?
     character(MAX_LINE_LEN) :: filename ! absolute path to plots.xml
@@ -4518,7 +3437,7 @@ contains
       end if
 
       ! Check to make sure 'id' hasn't been used
-      if (plot_dict % has_key(pl % id)) then
+      if (plot_dict % has(pl % id)) then
         call fatal_error("Two or more plots use the same unique ID: " &
              // to_str(pl % id))
       end if
@@ -4703,8 +3622,8 @@ contains
           ! Add RGB
           if (pl % color_by == PLOT_COLOR_CELLS) then
 
-            if (cell_dict % has_key(col_id)) then
-              col_id = cell_dict % get_key(col_id)
+            if (cell_dict % has(col_id)) then
+              col_id = cell_dict % get(col_id)
               call get_node_array(node_col, "rgb", pl % colors(col_id) % rgb)
             else
               call fatal_error("Could not find cell " // trim(to_str(col_id)) &
@@ -4713,8 +3632,8 @@ contains
 
           else if (pl % color_by == PLOT_COLOR_MATS) then
 
-            if (material_dict % has_key(col_id)) then
-              col_id = material_dict % get_key(col_id)
+            if (material_dict % has(col_id)) then
+              col_id = material_dict % get(col_id)
               call get_node_array(node_col, "rgb", pl % colors(col_id) % rgb)
             else
               call fatal_error("Could not find material " &
@@ -4782,12 +3701,12 @@ contains
             select case (trim(meshtype))
             case ('ufs')
 
-              if (.not. associated(ufs_mesh)) then
+              if (index_ufs_mesh < 0) then
                 call fatal_error("No UFS mesh for meshlines on plot " &
                      // trim(to_str(pl % id)))
               end if
 
-              pl % meshlines_mesh => ufs_mesh
+              pl % meshlines_mesh => meshes(index_ufs_mesh)
 
             case ('cmfd')
 
@@ -4796,26 +3715,16 @@ contains
                      &meshlines on plot " // trim(to_str(pl % id)))
               end if
 
-              select type(filt => filters(cmfd_tallies(1) % &
-                   filter(cmfd_tallies(1) % find_filter(FILTER_MESH))) % obj)
-              type is (MeshFilter)
-                i_mesh = filt % mesh
-              end select
-              pl % meshlines_mesh => meshes(i_mesh)
+              pl % meshlines_mesh => cmfd_mesh
 
             case ('entropy')
 
-              if (.not. associated(entropy_mesh)) then
+              if (index_entropy_mesh < 0) then
                 call fatal_error("No entropy mesh for meshlines on plot " &
                      // trim(to_str(pl % id)))
               end if
 
-              if (.not. allocated(entropy_mesh % dimension)) then
-                call fatal_error("No dimension specified on entropy mesh &
-                     &for meshlines on plot " // trim(to_str(pl % id)))
-              end if
-
-              pl % meshlines_mesh => entropy_mesh
+              pl % meshlines_mesh => meshes(index_entropy_mesh)
 
             case ('tally')
 
@@ -4828,8 +3737,8 @@ contains
               end if
 
               ! Check if the specified tally mesh exists
-              if (mesh_dict % has_key(meshid)) then
-                pl % meshlines_mesh => meshes(mesh_dict % get_key(meshid))
+              if (mesh_dict % has(meshid)) then
+                pl % meshlines_mesh => meshes(mesh_dict % get(meshid))
                 if (meshes(meshid) % type /= LATTICE_RECT) then
                   call fatal_error("Non-rectangular mesh specified in &
                        &meshlines for plot " // trim(to_str(pl % id)))
@@ -4888,8 +3797,8 @@ contains
 
               if (pl % color_by == PLOT_COLOR_CELLS) then
 
-                if (cell_dict % has_key(col_id)) then
-                  iarray(j) = cell_dict % get_key(col_id)
+                if (cell_dict % has(col_id)) then
+                  iarray(j) = cell_dict % get(col_id)
                 else
                   call fatal_error("Could not find cell " &
                        // trim(to_str(col_id)) // " specified in the mask in &
@@ -4898,8 +3807,8 @@ contains
 
               else if (pl % color_by == PLOT_COLOR_MATS) then
 
-                if (material_dict % has_key(col_id)) then
-                  iarray(j) = material_dict % get_key(col_id)
+                if (material_dict % has(col_id)) then
+                  iarray(j) = material_dict % get(col_id)
                 else
                   call fatal_error("Could not find material " &
                        // trim(to_str(col_id)) // " specified in the mask in &
@@ -4927,7 +3836,7 @@ contains
       end if
 
       ! Add plot to dictionary
-      call plot_dict % add_key(pl % id, i)
+      call plot_dict % set(pl % id, i)
 
     end do READ_PLOTS
 
@@ -5049,7 +3958,6 @@ contains
     integer :: n_libraries
     logical :: file_exists ! does mgxs.h5 exist?
     integer(HID_T) :: file_id
-    real(8), allocatable :: rev_energy_bins(:)
     character(len=MAX_WORD_LEN), allocatable :: names(:)
 
     ! Check if MGXS Library exists
@@ -5090,12 +3998,18 @@ contains
     end if
 
     ! First reverse the order of energy_groups
+    rev_energy_bins = energy_bins
     energy_bins = energy_bins(num_energy_groups + 1:1:-1)
 
+    ! Get the midpoint of the energy groups
     allocate(energy_bin_avg(num_energy_groups))
     do i = 1, num_energy_groups
       energy_bin_avg(i) = HALF * (energy_bins(i) + energy_bins(i + 1))
     end do
+
+    ! Get the minimum and maximum energies
+    energy_min_neutron = energy_bins(num_energy_groups + 1)
+    energy_max_neutron = energy_bins(1)
 
     ! Get the datasets present in the library
     call get_groups(file_id, names)
@@ -5299,7 +4213,7 @@ contains
     character(MAX_WORD_LEN) :: name
     type(SetChar) :: already_read
 
-    allocate(nuclides(n_nuclides_total))
+    allocate(nuclides(n_nuclides))
     allocate(sab_tables(n_sab_tables))
 
     ! Read cross sections
@@ -5308,8 +4222,8 @@ contains
         name = materials(i) % names(j)
 
         if (.not. already_read % contains(name)) then
-          i_library = library_dict % get_key(to_lower(name))
-          i_nuclide = nuclide_dict % get_key(to_lower(name))
+          i_library = library_dict % get(to_lower(name))
+          i_nuclide = nuclide_dict % get(to_lower(name))
 
           call write_message('Reading ' // trim(name) // ' from ' // &
                trim(libraries(i_library) % path), 6)
@@ -5322,12 +4236,12 @@ contains
           group_id = open_group(file_id, name)
           call nuclides(i_nuclide) % from_hdf5(group_id, nuc_temps(i_nuclide), &
                temperature_method, temperature_tolerance, temperature_range, &
-               master)
+               master, i_nuclide)
           call close_group(group_id)
           call file_close(file_id)
 
           ! Assign resonant scattering data
-          if (res_scat_on) call assign_0K_elastic_scattering(nuclides(i_nuclide))
+          if (res_scat_on) call nuclides(i_nuclide) % assign_0K_elastic_scattering()
 
           ! Determine if minimum/maximum energy for this nuclide is greater/less
           ! than the previous
@@ -5368,8 +4282,8 @@ contains
         name = materials(i) % sab_names(j)
 
         if (.not. already_read % contains(name)) then
-          i_library = library_dict % get_key(to_lower(name))
-          i_sab  = sab_dict % get_key(to_lower(name))
+          i_library = library_dict % get(to_lower(name))
+          i_sab  = sab_dict % get(to_lower(name))
 
           call write_message('Reading ' // trim(name) // ' from ' // &
                trim(libraries(i_library) % path), 6)
@@ -5391,17 +4305,21 @@ contains
       end do
 
       ! Associate S(a,b) tables with specific nuclides
-      call materials(i) % assign_sab_tables(nuclides, sab_tables)
+      call materials(i) % assign_sab_tables()
     end do
 
     ! Show which nuclide results in lowest energy for neutron transport
     do i = 1, size(nuclides)
-      if (nuclides(i) % grid(1) % energy(size(nuclides(i) % grid(1) % energy)) &
-           == energy_max_neutron) then
-        call write_message("Maximum neutron transport energy: " // &
-             trim(to_str(energy_max_neutron)) // " eV for " // &
-             trim(adjustl(nuclides(i) % name)), 7)
-        exit
+      ! If a nuclide is present in a material that's not used in the model, its
+      ! grid has not been allocated
+      if (size(nuclides(i) % grid) > 0) then
+        if (nuclides(i) % grid(1) % energy(size(nuclides(i) % grid(1) % energy)) &
+             == energy_max_neutron) then
+          call write_message("Maximum neutron transport energy: " // &
+               trim(to_str(energy_max_neutron)) // " eV for " // &
+               trim(adjustl(nuclides(i) % name)), 7)
+          exit
+        end if
       end if
     end do
 
@@ -5451,7 +4369,7 @@ contains
         end if
 
         ! Use material default or global default temperature
-        i_material = material_dict % get_key(cells(i) % material(j))
+        i_material = cells(i) % material(j)
         if (material_temps(i_material) /= ERROR_REAL) then
           cells(i) % sqrtkT(j) = sqrt(K_BOLTZMANN * &
                material_temps(i_material))
@@ -5461,60 +4379,6 @@ contains
       end do
     end do
   end subroutine assign_temperatures
-
-!===============================================================================
-! ASSIGN_0K_ELASTIC_SCATTERING
-!===============================================================================
-
-  subroutine assign_0K_elastic_scattering(nuc)
-    type(Nuclide), intent(inout) :: nuc
-
-    integer :: i
-    real(8) :: xs_cdf_sum
-
-    nuc % resonant = .false.
-    if (allocated(res_scat_nuclides)) then
-      ! If resonant nuclides were specified, check the list explicitly
-      do i = 1, size(res_scat_nuclides)
-        if (nuc % name == res_scat_nuclides(i)) then
-          nuc % resonant = .true.
-
-          ! Make sure nuclide has 0K data
-          if (.not. allocated(nuc % energy_0K)) then
-            call fatal_error("Cannot treat " // trim(nuc % name) // " as a &
-                 &resonant scatterer because 0 K elastic scattering data is &
-                 &not present.")
-          end if
-
-          exit
-        end if
-      end do
-    else
-      ! Otherwise, assume that any that have 0 K elastic scattering data are
-      ! resonant
-      nuc % resonant = allocated(nuc % energy_0K)
-    end if
-
-    if (nuc % resonant) then
-      ! Build CDF for 0K elastic scattering
-      xs_cdf_sum = ZERO
-      allocate(nuc % xs_cdf(0:size(nuc % energy_0K)))
-      nuc % xs_cdf(0) = ZERO
-
-      associate (E => nuc % energy_0K, xs => nuc % elastic_0K)
-        do i = 1, size(E) - 1
-          ! Negative cross sections result in a CDF that is not monotonically
-          ! increasing. Set all negative xs values to zero.
-          if (xs(i) < ZERO) xs(i) = ZERO
-
-          ! build xs cdf
-          xs_cdf_sum = xs_cdf_sum + (sqrt(E(i))*xs(i) + sqrt(E(i+1))*xs(i+1))&
-               / TWO * (E(i+1) - E(i))
-          nuc % xs_cdf(i) = xs_cdf_sum
-        end do
-      end associate
-    end if
-  end subroutine assign_0K_elastic_scattering
 
 !===============================================================================
 ! READ_MULTIPOLE_DATA checks for the existence of a multipole library in the
@@ -5558,7 +4422,7 @@ contains
       allocate(nuc % multipole)
 
       ! Call the read routine
-      call multipole_read(filename, nuc % multipole, i_table)
+      call nuc % multipole % from_hdf5(filename)
       nuc % mp_present = .true.
 
     end associate
@@ -5566,28 +4430,303 @@ contains
   end subroutine read_multipole_data
 
 !===============================================================================
-! CHECK_DATA_VERSION checks for the right version of nuclear data within HDF5
-! files
+! ADJUST_INDICES changes the values for 'surfaces' for each cell and the
+! material index assigned to each to the indices in the surfaces and material
+! array rather than the unique IDs assigned to each surface and material. Also
+! assigns boundary conditions to surfaces based on those read into the bc_dict
+! dictionary
 !===============================================================================
 
-  subroutine check_data_version(file_id)
-    integer(HID_T), intent(in) :: file_id
+  subroutine adjust_indices()
 
-    integer, allocatable :: version(:)
+    integer :: i                      ! index for various purposes
+    integer :: j                      ! index for various purposes
+    integer :: k                      ! loop index for lattices
+    integer :: m                      ! loop index for lattices
+    integer :: lid                    ! lattice IDs
+    integer :: id                     ! user-specified id
+    class(Lattice),    pointer :: lat => null()
 
-    if (attribute_exists(file_id, 'version')) then
-      call read_attribute(version, file_id, 'version')
-      if (version(1) /= HDF5_VERSION(1)) then
-        call fatal_error("HDF5 data format uses version " // trim(to_str(&
-             version(1))) // "." // trim(to_str(version(2))) // " whereas &
-             &your installation of OpenMC expects version " // trim(to_str(&
-             HDF5_VERSION(1))) // ".x data.")
+    do i = 1, n_cells
+      ! =======================================================================
+      ! ADJUST UNIVERSE INDEX FOR EACH CELL
+      associate (c => cells(i))
+
+      id = c % universe
+      if (universe_dict % has(id)) then
+        c % universe = universe_dict % get(id)
+      else
+        call fatal_error("Could not find universe " // trim(to_str(id)) &
+             &// " specified on cell " // trim(to_str(c % id)))
       end if
-    else
-      call fatal_error("HDF5 data does not indicate a version. Your &
-           &installation of OpenMC expects version " // trim(to_str(&
-           HDF5_VERSION(1))) // ".x data.")
+
+      ! =======================================================================
+      ! ADJUST MATERIAL/FILL POINTERS FOR EACH CELL
+
+      if (c % material(1) == NONE) then
+        id = c % fill
+        if (universe_dict % has(id)) then
+          c % type = FILL_UNIVERSE
+          c % fill = universe_dict % get(id)
+        elseif (lattice_dict % has(id)) then
+          lid = lattice_dict % get(id)
+          c % type = FILL_LATTICE
+          c % fill = lid
+        else
+          call fatal_error("Specified fill " // trim(to_str(id)) // " on cell "&
+               // trim(to_str(c % id)) // " is neither a universe nor a &
+               &lattice.")
+        end if
+      else
+        do j = 1, size(c % material)
+          id = c % material(j)
+          if (id == MATERIAL_VOID) then
+            c % type = FILL_MATERIAL
+          else if (material_dict % has(id)) then
+            c % type = FILL_MATERIAL
+            c % material(j) = material_dict % get(id)
+          else
+            call fatal_error("Could not find material " // trim(to_str(id)) &
+                 // " specified on cell " // trim(to_str(c % id)))
+          end if
+        end do
+      end if
+      end associate
+    end do
+
+    ! ==========================================================================
+    ! ADJUST UNIVERSE INDICES FOR EACH LATTICE
+
+    do i = 1, n_lattices
+      lat => lattices(i) % obj
+      select type (lat)
+
+      type is (RectLattice)
+        do m = 1, lat % n_cells(3)
+          do k = 1, lat % n_cells(2)
+            do j = 1, lat % n_cells(1)
+              id = lat % universes(j,k,m)
+              if (universe_dict % has(id)) then
+                lat % universes(j,k,m) = universe_dict % get(id)
+              else
+                call fatal_error("Invalid universe number " &
+                     &// trim(to_str(id)) // " specified on lattice " &
+                     &// trim(to_str(lat % id)))
+              end if
+            end do
+          end do
+        end do
+
+      type is (HexLattice)
+        do m = 1, lat % n_axial
+          do k = 1, 2*lat % n_rings - 1
+            do j = 1, 2*lat % n_rings - 1
+              if (j + k < lat % n_rings + 1) then
+                cycle
+              else if (j + k > 3*lat % n_rings - 1) then
+                cycle
+              end if
+              id = lat % universes(j, k, m)
+              if (universe_dict % has(id)) then
+                lat % universes(j, k, m) = universe_dict % get(id)
+              else
+                call fatal_error("Invalid universe number " &
+                     &// trim(to_str(id)) // " specified on lattice " &
+                     &// trim(to_str(lat % id)))
+              end if
+            end do
+          end do
+        end do
+
+      end select
+
+      if (lat % outer /= NO_OUTER_UNIVERSE) then
+        if (universe_dict % has(lat % outer)) then
+          lat % outer = universe_dict % get(lat % outer)
+        else
+          call fatal_error("Invalid universe number " &
+               &// trim(to_str(lat % outer)) &
+               &// " specified on lattice " // trim(to_str(lat % id)))
+        end if
+      end if
+
+    end do
+
+  end subroutine adjust_indices
+
+!===============================================================================
+! PREPARE_DISTRIBCELL initializes any distribcell filters present and sets the
+! offsets for distribcells
+!===============================================================================
+
+  subroutine prepare_distribcell()
+
+    integer :: i, j                ! Tally, filter loop counters
+    logical :: distribcell_active  ! Does simulation use distribcell?
+    integer, allocatable :: univ_list(:)              ! Target offsets
+    integer, allocatable :: counts(:,:)               ! Target count
+    logical, allocatable :: found(:,:)                ! Target found
+
+    ! Assume distribcell is not needed until proven otherwise.
+    distribcell_active = .false.
+
+    ! We need distribcell if any tallies have distribcell filters.
+    do i = 1, n_tallies
+      do j = 1, size(tallies(i) % obj % filter)
+        select type(filt => filters(tallies(i) % obj % filter(j)) % obj)
+        type is (DistribcellFilter)
+          distribcell_active = .true.
+        end select
+      end do
+    end do
+
+    ! We also need distribcell if any distributed materials or distributed
+    ! temperatues are present.
+    if (.not. distribcell_active) then
+      do i = 1, n_cells
+        if (size(cells(i) % material) > 1 .or. size(cells(i) % sqrtkT) > 1) then
+          distribcell_active = .true.
+          exit
+        end if
+      end do
     end if
-  end subroutine check_data_version
+
+    ! If distribcell isn't used in this simulation then no more work left to do.
+    if (.not. distribcell_active) return
+
+    ! Make sure the number of materials and temperatures matches the number of
+    ! cell instances.
+    do i = 1, n_cells
+      associate (c => cells(i))
+        if (size(c % material) > 1) then
+          if (size(c % material) /= c % instances) then
+            call fatal_error("Cell " // trim(to_str(c % id)) // " was &
+                 &specified with " // trim(to_str(size(c % material))) &
+                 // " materials but has " // trim(to_str(c % instances)) &
+                 // " distributed instances. The number of materials must &
+                 &equal one or the number of instances.")
+          end if
+        end if
+        if (size(c % sqrtkT) > 1) then
+          if (size(c % sqrtkT) /= c % instances) then
+            call fatal_error("Cell " // trim(to_str(c % id)) // " was &
+                 &specified with " // trim(to_str(size(c % sqrtkT))) &
+                 // " temperatures but has " // trim(to_str(c % instances)) &
+                 // " distributed instances. The number of temperatures must &
+                 &equal one or the number of instances.")
+          end if
+        end if
+      end associate
+    end do
+
+    ! Allocate offset maps at each level in the geometry
+    call allocate_offsets(univ_list, counts, found)
+
+    ! Calculate offsets for each target distribcell
+    do i = 1, n_maps
+      do j = 1, n_universes
+        call calc_offsets(univ_list(i), i, universes(j), counts, found)
+      end do
+    end do
+
+  end subroutine prepare_distribcell
+
+!===============================================================================
+! ALLOCATE_OFFSETS determines the number of maps needed and allocates required
+! memory for distribcell offset tables
+!===============================================================================
+
+  recursive subroutine allocate_offsets(univ_list, counts, found)
+
+    integer, intent(out), allocatable     :: univ_list(:) ! Target offsets
+    integer, intent(out), allocatable     :: counts(:,:)  ! Target count
+    logical, intent(out), allocatable     :: found(:,:)   ! Target found
+
+    integer      :: i, j, k   ! Loop counters
+    type(SetInt) :: cell_list ! distribells to track
+
+    ! Begin gathering list of cells in distribcell tallies
+    n_maps = 0
+
+    ! List all cells referenced in distribcell filters.
+    do i = 1, n_tallies
+      do j = 1, size(tallies(i) % obj % filter)
+        select type(filt => filters(tallies(i) % obj % filter(j)) % obj)
+        type is (DistribcellFilter)
+          call cell_list % add(filt % cell)
+        end select
+      end do
+    end do
+
+    ! List all cells with multiple (distributed) materials or temperatures.
+    do i = 1, n_cells
+      if (size(cells(i) % material) > 1 .or. size(cells(i) % sqrtkT) > 1) then
+        call cell_list % add(i)
+      end if
+    end do
+
+    ! Compute the number of unique universes containing these distribcells
+    ! to determine the number of offset tables to allocate
+    do i = 1, n_universes
+      do j = 1, size(universes(i) % cells)
+        if (cell_list % contains(universes(i) % cells(j))) then
+          n_maps = n_maps + 1
+        end if
+      end do
+    end do
+
+    ! Allocate the list of offset tables for each unique universe
+    allocate(univ_list(n_maps))
+
+    ! Allocate list to accumulate target distribcell counts in each universe
+    allocate(counts(n_universes, n_maps))
+    counts(:,:) = 0
+
+    ! Allocate list to track if target distribcells are found in each universe
+    allocate(found(n_universes, n_maps))
+    found(:,:) = .false.
+
+
+    ! Search through universes for distributed cells and assign each one a
+    ! unique distribcell array index.
+    k = 1
+    do i = 1, n_universes
+      do j = 1, size(universes(i) % cells)
+        if (cell_list % contains(universes(i) % cells(j))) then
+          cells(universes(i) % cells(j)) % distribcell_index = k
+          univ_list(k) = universes(i) % id
+          k = k + 1
+        end if
+      end do
+    end do
+
+    ! Allocate the offset tables for lattices
+    do i = 1, n_lattices
+      associate(lat => lattices(i) % obj)
+        select type(lat)
+
+        type is (RectLattice)
+          allocate(lat % offset(n_maps, lat % n_cells(1), lat % n_cells(2), &
+                   lat % n_cells(3)))
+        type is (HexLattice)
+          allocate(lat % offset(n_maps, 2 * lat % n_rings - 1, &
+               2 * lat % n_rings - 1, lat % n_axial))
+        end select
+
+        lat % offset(:, :, :, :) = 0
+      end associate
+    end do
+
+    ! Allocate offset table for fill cells
+    do i = 1, n_cells
+      if (cells(i) % type /= FILL_MATERIAL) then
+        allocate(cells(i) % offset(n_maps))
+      end if
+    end do
+
+    ! Free up memory
+    call cell_list % clear()
+
+  end subroutine allocate_offsets
 
 end module input_xml

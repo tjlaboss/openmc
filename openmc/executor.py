@@ -1,9 +1,6 @@
-from __future__ import print_function
-from collections import Iterable
+from collections.abc import Iterable
 import subprocess
 from numbers import Integral
-
-from six import string_types
 
 import openmc
 from openmc import VolumeCalculation
@@ -14,18 +11,22 @@ def _run(command, output, cwd):
                          stderr=subprocess.STDOUT, universal_newlines=True)
 
     # Capture and re-print OpenMC output in real-time
+    lines = []
     while True:
         # If OpenMC is finished, break loop
         line = p.stdout.readline()
         if not line and p.poll() is not None:
             break
 
+        lines.append(line)
         if output:
             # If user requested output, print to screen
             print(line, end='')
 
-    # Return the returncode (integer, zero if no problems encountered)
-    return p.returncode
+    # Raise an exception if return status is non-zero
+    if p.returncode != 0:
+        raise subprocess.CalledProcessError(p.returncode, ' '.join(args),
+                                            ''.join(lines))
 
 
 def plot_geometry(output=True, openmc_exec='openmc', cwd='.'):
@@ -40,8 +41,13 @@ def plot_geometry(output=True, openmc_exec='openmc', cwd='.'):
     cwd : str, optional
         Path to working directory to run in
 
+    Raises
+    ------
+    subprocess.CalledProcessError
+        If the `openmc` executable returns a non-zero status
+
     """
-    return _run([openmc_exec, '-p'], output, cwd)
+    _run([openmc_exec, '-p'], output, cwd)
 
 
 def plot_inline(plots, openmc_exec='openmc', cwd='.', convert_exec='convert'):
@@ -61,6 +67,11 @@ def plot_inline(plots, openmc_exec='openmc', cwd='.', convert_exec='convert'):
         Path to working directory to run in
     convert_exec : str, optional
         Command that can convert PPM files into PNG files
+
+    Raises
+    ------
+    subprocess.CalledProcessError
+        If the `openmc` executable returns a non-zero status
 
     """
     from IPython.display import Image, display
@@ -120,6 +131,11 @@ def calculate_volumes(threads=None, output=True, cwd='.',
         Path to working directory to run in. Defaults to the current working
         directory.
 
+    Raises
+    ------
+    subprocess.CalledProcessError
+        If the `openmc` executable returns a non-zero status
+
     See Also
     --------
     openmc.VolumeCalculation
@@ -132,7 +148,7 @@ def calculate_volumes(threads=None, output=True, cwd='.',
     if mpi_args is not None:
         args = mpi_args + args
 
-    return _run(args, output, cwd)
+    _run(args, output, cwd)
 
 
 def run(particles=None, threads=None, geometry_debug=False,
@@ -167,10 +183,15 @@ def run(particles=None, threads=None, geometry_debug=False,
     cwd : str, optional
         Path to working directory to run in. Defaults to the current working directory.
 
-    """
+    Raises
+    ------
+    subprocess.CalledProcessError
+        If the `openmc` executable returns a non-zero status
 
     post_args = ' '
     pre_args = ''
+    """
+    args = [openmc_exec]
 
     if isinstance(particles, Integral) and particles > 0:
         post_args += '-n {0} '.format(particles)
@@ -181,8 +202,13 @@ def run(particles=None, threads=None, geometry_debug=False,
     if geometry_debug:
         post_args += '-g '
 
+<<<<<<< HEAD
     if isinstance(restart_file, string_types):
         post_args += '-r {0} '.format(restart_file)
+=======
+    if isinstance(restart_file, str):
+        args += ['-r', restart_file]
+>>>>>>> origin/mesh_surf_merg
 
     if tracks:
         post_args += '-t'
@@ -190,6 +216,10 @@ def run(particles=None, threads=None, geometry_debug=False,
     if isinstance(mpi_procs, Integral) and mpi_procs > 1:
         pre_args += '{} -n {} '.format(mpi_exec, mpi_procs)
 
+<<<<<<< HEAD
     command = pre_args + openmc_exec + ' ' + post_args
 
     return _run(command, output, cwd)
+=======
+    _run(args, output, cwd)
+>>>>>>> origin/mesh_surf_merg
