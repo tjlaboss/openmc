@@ -2778,7 +2778,6 @@ class TransportXS(MGXS):
             # Switch EnergyoutFilter to EnergyFilter.
             old_filt = self.tallies['scatter-1'].filters[-1]
             new_filt = openmc.EnergyFilter(old_filt.bins)
-            new_filt.stride = old_filt.stride
             self.tallies['scatter-1'].filters[-1] = new_filt
 
             self._rxn_rate_tally = \
@@ -2798,7 +2797,6 @@ class TransportXS(MGXS):
             # Switch EnergyoutFilter to EnergyFilter.
             old_filt = self.tallies['scatter-1'].filters[-1]
             new_filt = openmc.EnergyFilter(old_filt.bins)
-            new_filt.stride = old_filt.stride
             self.tallies['scatter-1'].filters[-1] = new_filt
 
             # Compute total cross section
