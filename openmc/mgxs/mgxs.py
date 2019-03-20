@@ -156,7 +156,7 @@ class MGXS(object):
         Reaction type (e.g., 'total', 'nu-fission', etc.)
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -2041,7 +2041,7 @@ class MatrixMGXS(MGXS):
         Reaction type (e.g., 'total', 'nu-fission', etc.)
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -2535,7 +2535,7 @@ class TotalXS(MGXS):
         Reaction type (e.g., 'total', 'nu-fission', etc.)
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -2672,7 +2672,7 @@ class TransportXS(MGXS):
         If True, the cross section data will include neutron multiplication
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -3142,7 +3142,7 @@ class AbsorptionXS(MGXS):
         Reaction type (e.g., 'total', 'nu-fission', etc.)
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -3270,7 +3270,7 @@ class CaptureXS(MGXS):
         Reaction type (e.g., 'total', 'nu-fission', etc.)
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -3424,7 +3424,7 @@ class FissionXS(MGXS):
         If true, computes cross sections which only includes prompt neutrons
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -3593,7 +3593,7 @@ class KappaFissionXS(MGXS):
         Reaction type (e.g., 'total', 'nu-fission', etc.)
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -3725,7 +3725,7 @@ class ScatterXS(MGXS):
         If True, the cross section data will include neutron multiplication
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -3942,7 +3942,7 @@ class ScatterMatrixXS(MatrixMGXS):
         If True, the cross section data will include neutron multiplication
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -4329,7 +4329,7 @@ class ScatterMatrixXS(MatrixMGXS):
                     # Override the nuclides for tally arithmetic
                     correction.nuclides = scatter_p1.nuclides
                     self._xs_tally -= correction
-                
+
                 self._compute_xs()
 
         return self._xs_tally
@@ -5062,7 +5062,7 @@ class MultiplicityMatrixXS(MatrixMGXS):
         Reaction type (e.g., 'total', 'nu-fission', etc.)
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -5240,7 +5240,7 @@ class ScatterProbabilityMatrix(MatrixMGXS):
         Reaction type (e.g., 'total', 'nu-fission', etc.)
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -5425,7 +5425,7 @@ class NuFissionMatrixXS(MatrixMGXS):
         If true, computes cross sections which only includes prompt neutrons
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -5601,7 +5601,7 @@ class Chi(MGXS):
         If true, computes cross sections which only includes prompt neutrons
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
@@ -6193,7 +6193,7 @@ class InverseVelocity(MGXS):
         Reaction type (e.g., 'total', 'nu-fission', etc.)
     by_nuclide : bool
         If true, computes cross sections for each nuclide in domain
-    domain : Material or Cell or Universe or Mesh
+    domain : openmc.Material or openmc.Cell or openmc.Universe or openmc.Mesh
         Domain for spatial homogenization
     domain_type : {'material', 'cell', 'distribcell', 'universe', 'mesh'}
         Domain type for spatial homogenization
