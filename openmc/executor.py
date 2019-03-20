@@ -5,10 +5,9 @@ from numbers import Integral
 import openmc
 from openmc import VolumeCalculation
 
-
-def _run(args, output, cwd):
+def _run(command, output, cwd):
     # Launch a subprocess
-    p = subprocess.Popen(args, cwd=cwd, stdout=subprocess.PIPE,
+    p = subprocess.Popen(command, shell=True, cwd=cwd, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, universal_newlines=True)
 
     # Capture and re-print OpenMC output in real-time
@@ -153,8 +152,8 @@ def calculate_volumes(threads=None, output=True, cwd='.',
 
 
 def run(particles=None, threads=None, geometry_debug=False,
-        restart_file=None, tracks=False, output=True, cwd='.',
-        openmc_exec='openmc', mpi_args=None):
+        restart_file=None, tracks=False, mpi_procs=1, output=True,
+        openmc_exec='openmc', mpi_exec='mpiexec', cwd='.'):
     """Run an OpenMC simulation.
 
     Parameters
@@ -179,34 +178,48 @@ def run(particles=None, threads=None, geometry_debug=False,
         directory.
     openmc_exec : str, optional
         Path to OpenMC executable. Defaults to 'openmc'.
-    mpi_args : list of str, optional
-        MPI execute command and any additional MPI arguments to pass,
-        e.g. ['mpiexec', '-n', '8'].
+    mpi_exec : str, optional
+        MPI execute command. Defaults to 'mpiexec'.
+    cwd : str, optional
+        Path to working directory to run in. Defaults to the current working directory.
 
     Raises
     ------
     subprocess.CalledProcessError
         If the `openmc` executable returns a non-zero status
 
+    post_args = ' '
+    pre_args = ''
     """
     args = [openmc_exec]
 
     if isinstance(particles, Integral) and particles > 0:
-        args += ['-n', str(particles)]
+        post_args += '-n {0} '.format(particles)
 
     if isinstance(threads, Integral) and threads > 0:
-        args += ['-s', str(threads)]
+        post_args += '-s {0} '.format(threads)
 
     if geometry_debug:
-        args.append('-g')
+        post_args += '-g '
 
+<<<<<<< HEAD
+    if isinstance(restart_file, string_types):
+        post_args += '-r {0} '.format(restart_file)
+=======
     if isinstance(restart_file, str):
         args += ['-r', restart_file]
+>>>>>>> origin/mesh_surf_merg
 
     if tracks:
-        args.append('-t')
+        post_args += '-t'
 
-    if mpi_args is not None:
-        args = mpi_args + args
+    if isinstance(mpi_procs, Integral) and mpi_procs > 1:
+        pre_args += '{} -n {} '.format(mpi_exec, mpi_procs)
 
+<<<<<<< HEAD
+    command = pre_args + openmc_exec + ' ' + post_args
+
+    return _run(command, output, cwd)
+=======
     _run(args, output, cwd)
+>>>>>>> origin/mesh_surf_merg

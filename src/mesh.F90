@@ -11,6 +11,133 @@ module mesh
 contains
 
 !===============================================================================
+! GET_MESH_BIN determines the tally bin for a particle in a structured mesh
+!===============================================================================
+
+  pure subroutine get_mesh_bin(m, xyz, bin)
+    type(RegularMesh), intent(in) :: m      ! mesh pointer
+    real(8), intent(in)           :: xyz(:) ! coordinates
+    integer, intent(out)          :: bin    ! tally bin
+
+    integer :: n       ! size of mesh
+    integer :: d       ! mesh dimension index
+    integer :: ijk(3)  ! indices in mesh
+    logical :: in_mesh ! was given coordinate in mesh at all?
+
+    ! Get number of dimensions
+    n = m % n_dimension
+
+    ! Loop over the dimensions of the mesh
+    do d = 1, n
+
+      ! Check for cases where particle is outside of mesh
+      if (xyz(d) < m % lower_left(d) - TINY_BIT) then
+        bin = NO_BIN_FOUND
+        return
+      elseif (xyz(d) > m % upper_right(d) + TINY_BIT) then
+        bin = NO_BIN_FOUND
+        return
+      end if
+    end do
+
+    ! Determine indices
+    call get_mesh_indices(m, xyz, ijk, in_mesh)
+
+    ! Convert indices to bin
+    if (in_mesh) then
+      bin = mesh_indices_to_bin(m, ijk)
+    else
+      bin = NO_BIN_FOUND
+    end if
+
+  end subroutine get_mesh_bin
+
+!===============================================================================
+! GET_MESH_INDICES determines the indices of a particle in a structured mesh
+!===============================================================================
+
+  pure subroutine get_mesh_indices(m, xyz, ijk, in_mesh)
+    type(RegularMesh), intent(in) :: m
+    real(8), intent(in)           :: xyz(:)  ! coordinates to check
+    integer, intent(out)          :: ijk(:)  ! indices in mesh
+    logical, intent(out)          :: in_mesh ! were given coords in mesh?
+    integer                       :: n       ! size of mesh
+    integer                       :: d       ! mesh dimension index
+
+    ! Get number of dimensions
+    n = m % n_dimension
+
+    ! Find particle in mesh
+    ijk(:n) = ceiling((xyz(:n) - m % lower_left)/m % width)
+
+    ! Loop over the dimensions of the mesh
+    do d = 1, n
+
+      ! Put points in the boundary in the mesh cells
+      if (ijk(d) == 0 .and. xyz(d) >= m % lower_left(d) - TINY_BIT) then
+        ijk(d) = 1
+      else if (ijk(d) == m % dimension(d) + 1 .and. xyz(d) <= m % upper_right(d) + TINY_BIT) then
+        ijk(d) = m % dimension(d)
+      end if
+    end do
+
+    ! Determine if particle is in mesh
+    if (any(ijk(:n) < 1) .or. any(ijk(:n) > m % dimension)) then
+      in_mesh = .false.
+    else
+      in_mesh = .true.
+    end if
+
+  end subroutine get_mesh_indices
+
+!===============================================================================
+! MESH_INDICES_TO_BIN maps (i), (i,j), or (i,j,k) indices to a single bin number
+! for use in a TallyObject results array
+!===============================================================================
+
+  pure function mesh_indices_to_bin(m, ijk) result(bin)
+    type(RegularMesh), intent(in) :: m
+    integer, intent(in)           :: ijk(:)
+    integer                       :: bin
+
+    if (m % n_dimension == 1) then
+      bin = ijk(1)
+    elseif (m % n_dimension == 2) then
+      bin = (ijk(2) - 1) * m % dimension(1) + ijk(1)
+    elseif (m % n_dimension == 3) then
+      bin = ((ijk(3) - 1) * m % dimension(2) + (ijk(2) - 1)) &
+           * m % dimension(1) + ijk(1)
+    end if
+
+  end function mesh_indices_to_bin
+
+!===============================================================================
+! BIN_TO_MESH_INDICES maps a single mesh bin from a TallyObject results array to
+! (i), (i,j), or (i,j,k) indices
+!===============================================================================
+
+  pure subroutine bin_to_mesh_indices(m, bin, ijk)
+    type(RegularMesh), intent(in) :: m
+    integer, intent(in)           :: bin
+    integer, intent(out)          :: ijk(:)
+
+    if (m % n_dimension == 1) then
+      ijk(1) = bin
+    else if (m % n_dimension == 2) then
+      ijk(1) = mod(bin - 1, m % dimension(1)) + 1
+      ijk(2) = (bin - 1)/m % dimension(1) + 1
+    else if (m % n_dimension == 3) then
+      ijk(1) = mod(bin - 1, m % dimension(1)) + 1
+      ijk(2) = mod(bin - 1, m % dimension(1) * m % dimension(2)) &
+           / m % dimension(1) + 1
+      ijk(3) = (bin - 1)/(m % dimension(1) * m % dimension(2)) + 1
+    end if
+
+  end subroutine bin_to_mesh_indices
+
+!===============================================================================
+=======
+>>>>>>> origin/mesh_surf_merg
 ! COUNT_BANK_SITES determines the number of fission bank sites in each cell of a
 ! given mesh as well as an optional energy group structure. This can be used for
 ! a variety of purposes (Shannon entropy, CMFD, uniform fission source

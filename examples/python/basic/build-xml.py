@@ -8,7 +8,7 @@ import openmc
 # OpenMC simulation parameters
 batches = 15
 inactive = 5
-particles = 10000
+particles = 1000
 
 
 ###############################################################################
@@ -86,6 +86,19 @@ settings_file.particles = particles
 bounds = [-4., -4., -4., 4., 4., 4.]
 uniform_dist = openmc.stats.Box(bounds[:3], bounds[3:], only_fissionable=True)
 settings_file.source = openmc.source.Source(space=uniform_dist)
+
+mesh = openmc.Mesh()
+mesh.lower_left = [-20., -20., -1.e50]
+mesh.upper_right = [20.,  20.,  1.e50]
+mesh.dimension = [1, 1, 1]
+
+groups = openmc.mgxs.EnergyGroups(group_edges=[1e-5, 0.0635, 20.0e6])
+
+settings_file.frequency_mesh = mesh
+settings_file.frequency_group_structure = groups
+settings_file.frequency_num_delayed_groups = 6
+settings_file.flux_frequency = [0., 0.]
+settings_file.precursor_frequency = [10, 10, 10, 10, 10, 10]
 
 settings_file.export_to_xml()
 

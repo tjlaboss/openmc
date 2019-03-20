@@ -143,11 +143,12 @@ module mgxs_header
       real(8)                       :: xs_val ! Resultant xs
     end function mgxs_get_xs_
 
-    subroutine mgxs_sample_fission_(this, gin, uvw, dg, gout)
+    subroutine mgxs_sample_fission_(this, gin, uvw, delayed_nu_fission, dg, gout)
       import Mgxs
       class(Mgxs), intent(in) :: this
       integer, intent(in)     :: gin    ! Incoming energy group
       real(8), intent(in)     :: uvw(3) ! Particle Direction
+      real(8), intent(in)     :: delayed_nu_fission(:) ! Particle Location
       integer, intent(out)    :: dg     ! Delayed group
       integer, intent(out)    :: gout   ! Sampled outgoing group
 
@@ -755,13 +756,13 @@ contains
 
                 ! Get chi-delayed
                 call read_dataset(temp_arr, xsdata_grp, "chi-delayed")
-                allocate(temp_2d(delayed_groups, energy_groups))
-                temp_2d = reshape(temp_arr, (/delayed_groups, energy_groups/))
+                allocate(temp_2d(energy_groups, delayed_groups))
+                temp_2d = reshape(temp_arr, (/energy_groups, delayed_groups/))
 
                 do dg = 1, delayed_groups
                   do gin = 1, energy_groups
                     do gout = 1, energy_groups
-                      xs % chi_delayed(dg, gout, gin) = temp_2d(dg, gout)
+                      xs % chi_delayed(dg, gout, gin) = temp_2d(gout, dg)
                     end do
 
                     ! Normalize chi so its CDF goes to 1
@@ -3054,6 +3055,7 @@ contains
       integer, optional, intent(in) :: dg     ! Delayed group
       real(8)                       :: xs ! Requested x/s
       integer                       :: t ! temperature index
+      integer                       :: d ! Delayed group
 
       t = this % index_temp
 
@@ -3082,18 +3084,45 @@ contains
         end if
 
       case('prompt-nu-fission')
-        xs = this % xs(t) % prompt_nu_fission(gin)
+        if (present(gout)) then
+          xs = this % xs(t) % chi_prompt(gout,gin) * &
+              this % xs(t) % prompt_nu_fission(gin)
+        else
+          xs = this % xs(t) % prompt_nu_fission(gin)
+        end if
 
       case('delayed-nu-fission')
         if (present(dg)) then
-          xs = this % xs(t) % delayed_nu_fission(dg, gin)
+          if (present(gout)) then
+            xs = this % xs(t) % chi_delayed(dg, gout, gin) * &
+                this % xs(t) % delayed_nu_fission(dg, gin)
+          else
+            xs = this % xs(t) % delayed_nu_fission(dg, gin)
+          end if
         else
-          xs = sum(this % xs(t) % delayed_nu_fission(:, gin))
+          if (present(gout)) then
+            xs = ZERO
+            do d = 1, num_delayed_groups
+              xs = xs + this % xs(t) % chi_delayed(d, gout, gin) * &
+                  this % xs(t) % delayed_nu_fission(d, gin)
+            end do
+          else
+            xs = sum(this % xs(t) % delayed_nu_fission(:, gin))
+          end if
         end if
 
       case('nu-fission')
-        xs = this % xs(t) % prompt_nu_fission(gin) + &
-             sum(this % xs(t) % delayed_nu_fission(:, gin))
+       if (present(gout)) then
+          xs = this % xs(t) % chi_prompt(gout,gin) * &
+              this % xs(t) % prompt_nu_fission(gin)
+          do d = 1, num_delayed_groups
+            xs = xs + this % xs(t) % chi_delayed(d, gout, gin) * &
+                this % xs(t) % delayed_nu_fission(d, gin)
+          end do
+        else
+          xs = this % xs(t) % prompt_nu_fission(gin) + &
+               sum(this % xs(t) % delayed_nu_fission(:, gin))
+        end if
 
       case('chi-prompt')
         if (present(gout)) then
@@ -3183,6 +3212,7 @@ contains
       real(8), optional, intent(in) :: mu     ! Change in angle
       integer, optional, intent(in) :: dg     ! Delayed group
       real(8)                       :: xs ! Requested x/s
+      integer                       :: d  ! Delayed group
 
       integer :: iazi, ipol, t
 
@@ -3207,18 +3237,45 @@ contains
           xs = this % xs(t) % kappa_fission(gin, iazi, ipol)
 
         case('prompt-nu-fission')
-          xs = this % xs(t) % prompt_nu_fission(gin, iazi, ipol)
+          if (present(gout)) then
+            xs = this % xs(t) % chi_prompt(gout, gin, iazi, ipol) * &
+                this % xs(t) % prompt_nu_fission(gin, iazi, ipol)
+          else
+            xs = this % xs(t) % prompt_nu_fission(gin, iazi, ipol)
+          end if
 
         case('delayed-nu-fission')
-          if (present(dg)) then
+        if (present(dg)) then
+          if (present(gout)) then
+            xs = this % xs(t) % chi_delayed(dg, gout, gin, iazi, ipol) * &
+                this % xs(t) % delayed_nu_fission(dg, gin, iazi, ipol)
+          else
             xs = this % xs(t) % delayed_nu_fission(dg, gin, iazi, ipol)
+          end if
+        else
+          if (present(gout)) then
+            xs = ZERO
+            do d = 1, num_delayed_groups
+              xs = xs + this % xs(t) % chi_delayed(d, gout, gin, iazi, ipol) * &
+                  this % xs(t) % delayed_nu_fission(d, gin, iazi, ipol)
+            end do
           else
             xs = sum(this % xs(t) % delayed_nu_fission(:, gin, iazi, ipol))
           end if
+        end if
 
         case('nu-fission')
-          xs = this % xs(t) % prompt_nu_fission(gin, iazi, ipol) + &
-               sum(this % xs(t) % delayed_nu_fission(:, gin, iazi, ipol))
+          if (present(gout)) then
+            xs = this % xs(t) % chi_prompt(gout, gin, iazi, ipol) * &
+                this % xs(t) % prompt_nu_fission(gin, iazi, ipol)
+            do d = 1, num_delayed_groups
+              xs = xs + this % xs(t) % chi_delayed(d, gout, gin, iazi, ipol) * &
+                  this % xs(t) % delayed_nu_fission(d, gin, iazi, ipol)
+            end do
+          else
+            xs = this % xs(t) % prompt_nu_fission(gin, iazi, ipol) + &
+                sum(this % xs(t) % delayed_nu_fission(:, gin, iazi, ipol))
+          end if
 
         case('chi-prompt')
           if (present(gout)) then
@@ -3319,22 +3376,28 @@ contains
 ! MGXS*_SAMPLE_FISSION_ENERGY samples the outgoing energy from a fission event
 !===============================================================================
 
-    subroutine mgxsiso_sample_fission_energy(this, gin, uvw, dg, gout)
+    subroutine mgxsiso_sample_fission_energy(this, gin, uvw, delayed_nu_fission, dg, gout)
 
       class(MgxsIso), intent(in)    :: this   ! Data to work with
       integer, intent(in)           :: gin    ! Incoming energy group
       real(8), intent(in)           :: uvw(3) ! Particle Direction
+      real(8), intent(in)           :: delayed_nu_fission(:)
       integer, intent(out)          :: dg     ! Delayed group
       integer, intent(out)          :: gout   ! Sampled outgoing group
+      integer :: mesh_bin
       real(8) :: xi_pd            ! Our random number for prompt/delayed
       real(8) :: xi_gout          ! Our random number for gout
       real(8) :: prob_gout        ! Running probability for gout
 
       ! Get nu and nu_prompt
       real(8) :: prob_prompt
+      real(8) :: delayed_nu_fission_total
+      real(8) :: prompt_nu_fission
 
-      prob_prompt = this % get_xs('prompt-nu-fission', gin) / &
-           this % get_xs('nu-fission', gin)
+      delayed_nu_fission_total = sum(delayed_nu_fission)
+
+      prompt_nu_fission = this % get_xs('prompt-nu-fission', gin)
+      prob_prompt = prompt_nu_fission / (prompt_nu_fission + delayed_nu_fission_total)
 
       ! Sample random numbers
       xi_pd = prn()
@@ -3362,9 +3425,9 @@ contains
 
         do while (xi_pd >= prob_prompt)
           dg = dg + 1
+
           prob_prompt = prob_prompt + &
-               this % get_xs('delayed-nu-fission', gin, dg=dg) &
-               / this % get_xs('nu-fission', gin)
+               delayed_nu_fission(dg) / (delayed_nu_fission_total + prompt_nu_fission)
         end do
 
         ! Adjust dg in case of round off error
@@ -3382,20 +3445,26 @@ contains
 
     end subroutine mgxsiso_sample_fission_energy
 
-    subroutine mgxsang_sample_fission_energy(this, gin, uvw, dg, gout)
+    subroutine mgxsang_sample_fission_energy(this, gin, uvw, delayed_nu_fission, dg, gout)
       class(MgxsAngle), intent(in) :: this  ! Data to work with
       integer, intent(in)          :: gin    ! Incoming energy group
       real(8), intent(in)          :: uvw(3) ! Direction vector
+      real(8), intent(in)          :: delayed_nu_fission(:)
       integer, intent(out)         :: dg     ! Delayed group
       integer, intent(out)         :: gout   ! Sampled outgoing group
+      integer                      :: mesh_bin
       real(8) :: xi_pd            ! Our random number for prompt/delayed
       real(8) :: xi_gout          ! Our random number for gout
       real(8) :: prob_gout        ! Running probability for gout
       real(8) :: prob_prompt
+      real(8) :: delayed_nu_fission_total
+      real(8) :: prompt_nu_fission
+
+      delayed_nu_fission_total = sum(delayed_nu_fission)
 
       ! Get nu and nu_prompt
-      prob_prompt = this % get_xs('prompt-nu-fission', gin, uvw=uvw) / &
-           this % get_xs('nu-fission', gin, uvw=uvw)
+      prompt_nu_fission = this % get_xs('prompt-nu-fission', gin, uvw=uvw)
+      prob_prompt = prompt_nu_fission / (prompt_nu_fission + delayed_nu_fission_total)
 
       ! Sample random numbers
       xi_pd = prn()
@@ -3424,9 +3493,9 @@ contains
 
         do while (xi_pd >= prob_prompt)
           dg = dg + 1
-          prob_prompt = prob_prompt + &
-               this % get_xs('delayed-nu-fission', gin, uvw=uvw, dg=dg) / &
-               this % get_xs('nu-fission', gin, uvw=uvw)
+
+          prob_prompt = prob_prompt + delayed_nu_fission(dg) / &
+               (delayed_nu_fission_total + prompt_nu_fission)
         end do
 
         ! Adjust dg in case of round off error
@@ -3497,6 +3566,9 @@ contains
       xs % nu_fission    = &
            this % xs(this % index_temp) % prompt_nu_fission(gin) + &
            sum(this % xs(this % index_temp) % delayed_nu_fission(:, gin))
+      xs % prompt_nu_fission = this % xs(this % index_temp) % prompt_nu_fission(gin)
+      xs % delayed_nu_fission = this % xs(this % index_temp) % delayed_nu_fission(:, gin)
+      xs % inverse_velocity = this % xs(this % index_temp) % inverse_velocity(gin)
 
     end subroutine mgxsiso_calculate_xs
 
@@ -3521,6 +3593,10 @@ contains
            prompt_nu_fission(gin, iazi, ipol) + &
            sum(this % xs(this % index_temp) % &
            delayed_nu_fission(:, gin, iazi, ipol))
+      xs % prompt_nu_fission  = this % xs(this % index_temp) % prompt_nu_fission(gin, iazi, ipol)
+      xs % delayed_nu_fission = this % xs(this % index_temp) % delayed_nu_fission(:, gin, iazi, ipol)
+      xs % inverse_velocity = this % xs(this % index_temp) % &
+           inverse_velocity(gin, iazi, ipol)
 
     end subroutine mgxsang_calculate_xs
 

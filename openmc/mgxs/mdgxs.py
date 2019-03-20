@@ -14,7 +14,7 @@ import openmc
 from openmc.mgxs import MGXS
 from openmc.mgxs.mgxs import _DOMAIN_TO_FILTER
 import openmc.checkvalue as cv
-
+from openmc.tallies import ESTIMATOR_TYPES
 
 # Supported cross section types
 MDGXS_TYPES = ['delayed-nu-fission',
@@ -1012,6 +1012,17 @@ class ChiDelayed(MDGXS):
                          by_nuclide, name, num_polar, num_azimuthal)
         self._rxn_type = 'chi-delayed'
         self._estimator = 'analog'
+        self._valid_estimators = ESTIMATOR_TYPES
+
+    @property
+    def energy_mode(self):
+        return self._energy_mode
+
+    @energy_mode.setter
+    def energy_mode(self, energy_mode):
+        cv.check_value('energy mode', energy_mode,
+                    ['continuous-energy', 'multi-group'])
+        self._energy_mode = energy_mode
 
     @property
     def scores(self):
@@ -1083,12 +1094,11 @@ class ChiDelayed(MDGXS):
         Raises
         ------
         ValueError
-            If the other_mgxs is of a different type.
+            If the other_mgxs are of a different type.
 
         """
 
         return self._get_homogenized_mgxs(other_mgxs, 'delayed-nu-fission-in')
-
 
     def get_slice(self, nuclides=[], groups=[], delayed_groups=[]):
         """Build a sliced ChiDelayed for the specified nuclides and energy
@@ -1706,7 +1716,7 @@ class Beta(MDGXS):
         Raises
         ------
         ValueError
-            If the other_mgxs is of a different type.
+            If the other_mgxs are of a different type.
 
         """
 
@@ -1898,7 +1908,7 @@ class DecayRate(MDGXS):
         Raises
         ------
         ValueError
-            If the other_mgxs is of a different type.
+            If the other_mgxs are of a different type.
 
         """
 
@@ -2607,5 +2617,13 @@ class DelayedNuFissionMatrixXS(MatrixMDGXS):
                          by_nuclide, name, num_polar, num_azimuthal)
         self._rxn_type = 'delayed-nu-fission'
         self._hdf5_key = 'delayed-nu-fission matrix'
-        self._estimator = 'analog'
-        self._valid_estimators = ['analog']
+        self._estimator = 'tracklength'
+        self._valid_estimators = ESTIMATOR_TYPES
+
+    @property
+    def energy_mode(self):
+        return self._energy_mode
+
+    @energy_mode.setter
+    def energy_mode(self, energy_mode):
+        super(DelayedNuFissionMatrixXS, self).energy_mode(energy_mode)

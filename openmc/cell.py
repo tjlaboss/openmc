@@ -68,7 +68,7 @@ class Cell(IDManagerMixin):
     temperature : float or iterable of float
         Temperature of the cell in Kelvin.  Multiple temperatures can be given
         to give each distributed cell instance a unique temperature.
-    translation : Iterable of float
+    translation : Iterable of float or np.ndarray
         If the cell is filled with a universe, this array specifies a vector
         that is used to translate (shift) the universe.
     paths : list of str
@@ -81,6 +81,10 @@ class Cell(IDManagerMixin):
         Volume of the cell in cm^3. This can either be set manually or
         calculated in a stochastic volume calculation and added via the
         :meth:`Cell.add_volume_information` method.
+    time : float
+        The time at which the material properties are created.
+    translation_times : np.ndarray
+        The times at which there are translation data points
 
     """
 
@@ -97,6 +101,9 @@ class Cell(IDManagerMixin):
         self._rotation_matrix = None
         self._temperature = None
         self._translation = None
+        self._offsets = None
+        self._time = 0.0
+        self._translation_times = None
         self._paths = None
         self._num_instances = None
         self._volume = None
@@ -108,10 +115,42 @@ class Cell(IDManagerMixin):
         else:
             return point in self.region
 
+    def __eq__(self, other):
+        if not isinstance(other, Cell):
+            return False
+        elif self.id != other.id:
+            return False
+        elif self.name != other.name:
+            return False
+        elif self.fill != other.fill:
+            return False
+        elif self.region != other.region:
+            return False
+        elif self.rotation != other.rotation:
+            return False
+        elif self.temperature != other.temperature:
+            return False
+        elif self.translation != other.translation:
+            return False
+        elif self.time != other.time:
+            return False
+        elif self.translation_times != other.translation_times:
+            return False
+        else:
+            return True
+
+    def __ne__(self, other):
+        return not self == other
+
+    def __hash__(self):
+        return hash(repr(self))
+
     def __repr__(self):
         string = 'Cell\n'
         string += '{: <16}=\t{}\n'.format('\tID', self.id)
         string += '{: <16}=\t{}\n'.format('\tName', self.name)
+
+        string += '{0: <16}{1}{2}\n'.format('\tTime', '=\t', self.time)
 
         if self.fill_type == 'material':
             string += '{: <16}=\tMaterial {}\n'.format('\tFill', self.fill.id)
@@ -171,7 +210,22 @@ class Cell(IDManagerMixin):
 
     @property
     def translation(self):
-        return self._translation
+        if self._translation is not None:
+            if self._translation_times is not None:
+                cv.check_length('cell translation', self._translation,
+                                len(self._translation_times))
+                translation = []
+                translation.append(np.interp(self.time, self.translation_times,
+                                             self._translation[:,0]))
+                translation.append(np.interp(self.time, self.translation_times,
+                                             self._translation[:,1]))
+                translation.append(np.interp(self.time, self.translation_times,
+                                             self._translation[:,2]))
+                return translation
+            else:
+                return self._translation
+        else:
+            return self._translation
 
     @property
     def volume(self):
@@ -199,6 +253,14 @@ class Cell(IDManagerMixin):
                 'Number of cell instances have not been determined. Call the '
                 'Geometry.determine_paths() method.')
         return self._num_instances
+
+    @property
+    def time(self):
+        return self._time
+
+    @property
+    def translation_times(self):
+        return self._translation_times
 
     @name.setter
     def name(self, name):
@@ -248,8 +310,21 @@ class Cell(IDManagerMixin):
 
     @translation.setter
     def translation(self, translation):
-        cv.check_type('cell translation', translation, Iterable, Real)
-        cv.check_length('cell translation', translation, 3)
+        cv.check_type('cell translation', translation, Iterable)
+        if isinstance(translation[0], Iterable):
+            cv.check_type('cell translation', translation[0], Iterable, Real)
+            cv.check_length('cell translation', translation[0], 3)
+        else:
+            cv.check_type('cell translation', translation, Iterable, Real)
+            cv.check_length('cell translation', translation, 3)
+
+        if self._translation_times is not None:
+            if len(translation) != len(self._translation_times):
+                msg = 'Unable to set translation for Cell ID="{0}" ' \
+                      'since the array is not the same length as the ' \
+                      'translation times array'.format(self._id)
+                raise ValueError(msg)
+
         self._translation = np.asarray(translation)
 
     @temperature.setter
@@ -283,6 +358,69 @@ class Cell(IDManagerMixin):
         if volume is not None:
             cv.check_type('cell volume', volume, Real)
         self._volume = volume
+
+    @time.setter
+    def time(self, time):
+        cv.check_type('Time for Cell ID="{0}"'.format(self._id),
+                      time, (Real, type(None)))
+        self._time = time
+
+    @translation_times.setter
+    def translation_times(self, translation_times):
+        cv.check_type('cell translation times', translation_times, Iterable, Real)
+
+        if self._translation is not None:
+            if len(self._translation) != len(translation_times):
+                msg = 'Unable to set translation times for Cell ID="{0}" ' \
+                      'since the array is not the same length as the ' \
+                      'translation array'.format(self._id)
+                raise ValueError(msg)
+
+        self._translation_times = np.asarray(translation_times)
+
+    def add_surface(self, surface, halfspace):
+        """Add a half-space to the list of half-spaces whose intersection defines the
+        cell.
+
+        .. deprecated:: 0.7.1
+            Use the :attr:`Cell.region` property to directly specify a Region
+            expression.
+
+        Parameters
+        ----------
+        surface : openmc.Surface
+            Quadric surface dividing space
+        halfspace : {-1, 1}
+            Indicate whether the negative or positive half-space is to be used
+
+        """
+
+        warnings.warn("Cell.add_surface(...) has been deprecated and may be "
+                      "removed in a future version. The region for a Cell "
+                      "should be defined using the region property directly.",
+                      DeprecationWarning)
+
+        if not isinstance(surface, openmc.Surface):
+            msg = 'Unable to add Surface "{0}" to Cell ID="{1}" since it is ' \
+                        'not a Surface object'.format(surface, self._id)
+            raise ValueError(msg)
+
+        if halfspace not in [-1, +1]:
+            msg = 'Unable to add Surface "{0}" to Cell ID="{1}" with halfspace ' \
+                  '"{2}" since it is not +/-1'.format(surface, self._id, halfspace)
+            raise ValueError(msg)
+
+        # If no region has been assigned, simply use the half-space. Otherwise,
+        # take the intersection of the current region and the half-space
+        # specified
+        region = +surface if halfspace == 1 else -surface
+        if self.region is None:
+            self.region = region
+        else:
+            if isinstance(self.region, Intersection):
+                self.region &= region
+            else:
+                self.region = Intersection(self.region, region)
 
     def add_volume_information(self, volume_calc):
         """Add volume information to a cell.

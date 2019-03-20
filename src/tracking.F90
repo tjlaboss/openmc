@@ -1,7 +1,14 @@
 module tracking
 
+  use algorithm,          only: binary_search
+  use cross_section,      only: calculate_xs
+  use error,              only: fatal_error, warning, write_message
+  use geometry,           only: find_cell, distance_to_boundary, cross_surface, &
+                                cross_lattice, check_cell_overlap
+  use global
+  use output,             only: write_message
+  use mesh,               only: get_mesh_bin
   use constants
-  use error,              only: warning, write_message
   use geometry_header,    only: cells
   use geometry,           only: find_cell, distance_to_boundary, cross_lattice,&
                                 check_cell_overlap
@@ -46,6 +53,18 @@ contains
     real(8) :: d_collision            ! sampled distance to collision
     real(8) :: distance               ! distance particle travels
     logical :: found_cell             ! found cell which particle is in?
+    real(8) :: nu_fission
+    real(8) :: delayed_nu_fission
+    real(8) :: freq
+    real(8) :: velocity
+    real(8) :: atom_density
+    integer :: mesh_bin
+    integer :: freq_group
+    integer :: d
+    integer :: l
+    integer :: i_nuc
+    type(Nuclide), pointer :: nuc
+
 
     ! Display message if high verbosity or trace is on
     if (verbosity >= 9 .or. trace) then
@@ -111,6 +130,13 @@ contains
                  micro_xs, nuclides, material_xs)
           end if
         else
+          material_xs % total              = ZERO
+          material_xs % absorption         = ZERO
+          material_xs % nu_fission         = ZERO
+          material_xs % prompt_nu_fission  = ZERO
+          material_xs % delayed_nu_fission = ZERO
+          material_xs % inverse_velocity   = ZERO
+        end if
           ! Get the MG data
           call macro_xs(p % material) % obj % calculate_xs(p % g, p % sqrtkT, &
                p % coord(p % n_coord) % uvw, material_xs)
@@ -130,11 +156,38 @@ contains
       call distance_to_boundary(p, d_boundary, surface_crossed, &
            lattice_translation, next_level)
 
+      ! Adjust the weight to account for the flux frequency
+      if (flux_frequency_on) then
+
+        call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
+
+        if (p % E <= frequency_energy_bins(1) .or. p % E > frequency_energy_bins(num_frequency_energy_groups + 1)) then
+          freq_group = -1
+        else
+          freq_group = binary_search(frequency_energy_bins, num_frequency_energy_groups + 1, p % E)
+          freq_group = num_frequency_energy_groups + 1 - freq_group
+        end if
+
+        if (freq_group /= -1) then
+          if (run_CE) then
+            freq = flux_frequency(freq_group)
+            velocity = sqrt(TWO * p % E / MASS_NEUTRON_EV) * C_LIGHT * 100.0_8
+            freq = freq / velocity
+          else
+            freq = flux_frequency(freq_group) * material_xs % inverse_velocity
+          end if
+        else
+          freq = ZERO
+        end if
+      else
+        freq = ZERO
+      end if
+
       ! Sample a distance to collision
-      if (material_xs % total == ZERO) then
+      if (material_xs % total == ZERO .and. freq == ZERO) then
         d_collision = INFINITY
       else
-        d_collision = -log(prn()) / material_xs % total
+        d_collision = -log(prn()) / (material_xs % total + abs(freq))
       end if
 
       ! Select smaller of the two distances
@@ -152,8 +205,27 @@ contains
 
       ! Score track-length estimate of k-eff
       if (run_mode == MODE_EIGENVALUE) then
+
+        nu_fission = material_xs % prompt_nu_fission
+
+        if (precursor_frequency_on) then
+          call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
+        else
+          mesh_bin = -1
+        end if
+
+        do d = 1, num_delayed_groups
+          delayed_nu_fission = material_xs % delayed_nu_fission(d)
+
+          if (mesh_bin /= -1 .and. d <= num_frequency_delayed_groups) then
+            delayed_nu_fission = delayed_nu_fission * precursor_frequency(d, mesh_bin)
+          end if
+
+          nu_fission = nu_fission + delayed_nu_fission
+        end do
+
         global_tally_tracklength = global_tally_tracklength + p % wgt * &
-             distance * material_xs % nu_fission
+             distance * nu_fission
       end if
 
       ! Score flux derivative accumulators for differential tallies.
@@ -193,8 +265,27 @@ contains
 
         ! Score collision estimate of keff
         if (run_mode == MODE_EIGENVALUE) then
+
+          nu_fission = material_xs % prompt_nu_fission
+
+          if (precursor_frequency_on) then
+            call get_mesh_bin(frequency_mesh, p % coord(1) % xyz, mesh_bin)
+          else
+            mesh_bin = -1
+          end if
+
+          do d = 1, num_delayed_groups
+            delayed_nu_fission = material_xs % delayed_nu_fission(d)
+
+            if (mesh_bin /= -1 .and. d <= num_frequency_delayed_groups) then
+              delayed_nu_fission = delayed_nu_fission * precursor_frequency(d, mesh_bin)
+            end if
+
+            nu_fission = nu_fission + delayed_nu_fission
+          end do
+
           global_tally_collision = global_tally_collision + p % wgt * &
-               material_xs % nu_fission / material_xs % total
+               nu_fission / (material_xs % total + abs(freq))
         end if
 
         ! score surface current tallies -- this has to be done before the collision

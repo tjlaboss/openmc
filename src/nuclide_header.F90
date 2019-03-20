@@ -54,6 +54,15 @@ module nuclide_header
   ! corresponds to the following values: 1) total, 2) absorption (MT > 100), 3)
   ! fission, 4) neutron production
   type SumXS
+    real(8), allocatable :: total(:)      ! total cross section
+    real(8), allocatable :: elastic(:)    ! elastic scattering
+    real(8), allocatable :: fission(:)    ! fission
+    real(8), allocatable :: nu_fission(:) ! neutron production
+    real(8), allocatable :: prompt_nu_fission(:) ! neutron production
+    real(8), allocatable :: delayed_nu_fission(:,:) ! neutron production
+    real(8), allocatable :: kappa_fission(:) ! neutron production
+    real(8), allocatable :: absorption(:) ! absorption (MT > 100)
+    real(8), allocatable :: heating(:)    ! heating
     real(8), allocatable :: value(:,:)
   end type SumXS
 
@@ -133,14 +142,16 @@ module nuclide_header
   type NuclideMicroXS
     ! Microscopic cross sections in barns
     real(8) :: total
-    real(8) :: absorption       ! absorption (disappearance)
-    real(8) :: fission          ! fission
-    real(8) :: nu_fission       ! neutron production from fission
-
-    real(8) :: elastic          ! If sab_frac is not 1 or 0, then this value is
-                                !   averaged over bound and non-bound nuclei
-    real(8) :: thermal          ! Bound thermal elastic & inelastic scattering
-    real(8) :: thermal_elastic  ! Bound thermal elastic scattering
+    real(8) :: elastic           ! If sab_frac is not 1 or 0, then this value is
+                                 !   averaged over bound and non-bound nuclei
+    real(8) :: absorption
+    real(8) :: fission
+    real(8) :: nu_fission
+    real(8) :: thermal           ! Bound thermal elastic & inelastic scattering
+    real(8) :: thermal_elastic   ! Bound thermal elastic scattering
+    real(8) :: kappa_fission     ! microscopic production xs
+    real(8) :: prompt_nu_fission ! microscopic production xs
+    real(8) :: delayed_nu_fission(MAX_DELAYED_GROUPS) ! microscopic production xs
 
     ! Cross sections for depletion reactions (note that these are not stored in
     ! macroscopic cache)
@@ -172,6 +183,10 @@ module nuclide_header
     real(8) :: absorption    ! macroscopic absorption xs
     real(8) :: fission       ! macroscopic fission xs
     real(8) :: nu_fission    ! macroscopic production xs
+    real(8) :: prompt_nu_fission ! macroscopic production xs
+    real(8) :: inverse_velocity  ! inverse velocity
+    real(8) :: delayed_nu_fission(MAX_DELAYED_GROUPS) ! microscopic production xs
+    real(8) :: kappa_fission ! macroscopic production xs
   end type MaterialMacroXS
 
 !===============================================================================
@@ -600,6 +615,7 @@ contains
     integer :: t
     integer :: m
     integer :: n
+    integer :: d
     integer :: n_grid
     integer :: i_fission
     integer :: n_temperature
@@ -611,6 +627,22 @@ contains
     do i = 1, n_temperature
       ! Allocate and initialize derived cross sections
       n_grid = size(this % grid(i) % energy)
+      allocate(this % sum_xs(i) % total(n_grid))
+      allocate(this % sum_xs(i) % elastic(n_grid))
+      allocate(this % sum_xs(i) % fission(n_grid))
+      allocate(this % sum_xs(i) % nu_fission(n_grid))
+      allocate(this % sum_xs(i) % prompt_nu_fission(n_grid))
+      allocate(this % sum_xs(i) % delayed_nu_fission(n_grid, MAX_DELAYED_GROUPS))
+      allocate(this % sum_xs(i) % kappa_fission(n_grid))
+      allocate(this % sum_xs(i) % absorption(n_grid))
+      this % sum_xs(i) % total(:) = ZERO
+      this % sum_xs(i) % elastic(:) = ZERO
+      this % sum_xs(i) % fission(:) = ZERO
+      this % sum_xs(i) % nu_fission(:) = ZERO
+      this % sum_xs(i) % prompt_nu_fission(:) = ZERO
+      this % sum_xs(i) % delayed_nu_fission(:,:) = ZERO
+      this % sum_xs(i) % kappa_fission(:) = ZERO
+      this % sum_xs(i) % absorption(:) = ZERO
       allocate(this % xs(i) % value(4,n_grid))
       this % xs(i) % value(:,:) = ZERO
     end do
@@ -718,11 +750,23 @@ contains
     ! Calculate nu-fission cross section
     do t = 1, n_temperature
       if (this % fissionable) then
-        do i = 1, n_grid
-          this % xs(t) % value(XS_NU_FISSION,i) = &
-               this % nu(this % grid(t) % energy(i), EMISSION_TOTAL) * &
-               this % xs(t) % value(XS_FISSION,i)
+        do i = 1, size(this % sum_xs(t) % fission)
+          this % sum_xs(t) % nu_fission(i) = this % nu(this % grid(t) % energy(i), &
+               EMISSION_TOTAL) * this % sum_xs(t) % fission(i)
+          this % sum_xs(t) % prompt_nu_fission(i) = this % nu(this % grid(t) % energy(i), &
+               EMISSION_PROMPT) * this % sum_xs(t) % fission(i)
+          this % sum_xs(t) % kappa_fission(i) = this % reactions(this % index_fission(1)) % Q_value &
+               * this % sum_xs(t) % fission(i)
+          do d = 1, this % n_precursor
+            this % sum_xs(t) % delayed_nu_fission(i,d) = this % nu(this % grid(t) % energy(i), &
+                 EMISSION_DELAYED, d) * this % sum_xs(t) % fission(i)
+          end do
         end do
+      else
+        this % sum_xs(t) % nu_fission(:) = ZERO
+        this % sum_xs(t) % prompt_nu_fission(:) = ZERO
+        this % sum_xs(t) % kappa_fission(:) = ZERO
+        this % sum_xs(t) % delayed_nu_fission(:,:) = ZERO
       end if
     end do
   end subroutine nuclide_create_derived

@@ -4,7 +4,19 @@
   <run_mode>eigenvalue</run_mode>
   <batches>15</batches>
   <inactive>5</inactive>
-  <particles>10000</particles>
+  <particles>1000</particles>
+
+  <frequency>
+    <lower_left>-40 -40 -40</lower_left>
+    <upper_right>40  40  40</upper_right>
+    <dimension>2 2 1</dimension>
+    <delayed_groups>6</delayed_groups>
+    <precursor_frequency>1 1 1 1 1 1
+                         1 1 1 1 1 1
+                         1 1 1 1 1 1
+                         100 100 100 100 100 100
+    </precursor_frequency>
+  </frequency>
 
   <!-- Starting source -->
   <source>

@@ -2,6 +2,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from copy import deepcopy
 from xml.etree import ElementTree as ET
+from numbers import Real
 
 import openmc
 from openmc.clean_xml import clean_xml_indentation
@@ -21,6 +22,8 @@ class Geometry(object):
     ----------
     root_universe : openmc.Universe
         Root universe which contains all others
+    time : float
+        The current time at which the geometry is at
     bounding_box : 2-tuple of numpy.array
         Lower-left and upper-right coordinates of an axis-aligned bounding box
         of the universe.
@@ -30,6 +33,7 @@ class Geometry(object):
     def __init__(self, root=None):
         self._root_universe = None
         self._offsets = {}
+        self._time = 0.0
         if root is not None:
             if isinstance(root, openmc.Universe):
                 self.root_universe = root
@@ -44,6 +48,14 @@ class Geometry(object):
         return self._root_universe
 
     @property
+    def time(self):
+        return self._time
+
+    @time.setter
+    def time(self, time):
+        check_type('Time for Geometry', time, (Real, type(None)))
+        self._time = time
+
     def bounding_box(self):
         return self.root_universe.bounding_box
 
@@ -83,6 +95,14 @@ class Geometry(object):
             Path to file to write. Defaults to 'geometry.xml'.
 
         """
+
+        # Set the time of all materials and cells
+        for cell in self.get_all_cells().values():
+            cell.time = self.time
+
+        for mat in self.get_all_materials().values():
+            mat.time = self.time
+
         # Create XML representation
         root_element = ET.Element("geometry")
         self.root_universe.create_xml_subelement(root_element)

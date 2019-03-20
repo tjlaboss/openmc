@@ -306,7 +306,8 @@ module constants
        EVENT_SURFACE = -2, &
        EVENT_LATTICE = -1, &
        EVENT_SCATTER =  1, &
-       EVENT_ABSORB  =  2
+       EVENT_ABSORB  =  2, &
+       EVENT_TIME_REMOVAL = 3
 
   ! Tally score type -- if you change these, make sure you also update the
   ! _SCORES dictionary in openmc/capi/tally.py

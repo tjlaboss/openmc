@@ -45,7 +45,7 @@ class Material(IDManagerMixin):
         Unique identifier for the material
     temperature : float
         Temperature of the material in Kelvin.
-    density : float
+    density : float or np.ndarray
         Density of the material (units defined separately)
     density_units : str
         Units used for `density`. Can be one of 'g/cm3', 'g/cc', 'kg/m3',
@@ -54,6 +54,11 @@ class Material(IDManagerMixin):
     depletable : bool
         Indicate whether the material is depletable.
     nuclides : list of tuple
+        List in which each item is a 3-tuple consisting of an
+        :class:`openmc.Nuclide` instance, the percent density, and the percent
+        type ('ao' or 'wo').
+    time : float
+        The time at which the material properties are created.
         List in which each item is a 3-tuple consisting of a nuclide string, the
         percent density, and the percent type ('ao' or 'wo').
     isotropic : list of str
@@ -88,7 +93,8 @@ class Material(IDManagerMixin):
         self.name = name
         self.temperature = temperature
         self._density = None
-        self._density_units = 'sum'
+        self._density_units = ''
+        self._time = 0.0
         self._depletable = False
         self._paths = None
         self._num_instances = None
@@ -121,6 +127,8 @@ class Material(IDManagerMixin):
         string += '{: <16}=\t{}'.format('\tDensity', self._density)
         string += ' [{}]\n'.format(self._density_units)
 
+        string += '{0: <16}{1}{2}\n'.format('\tTime', '=\t', self.time)
+
         string += '{: <16}\n'.format('\tS(a,b) Tables')
 
         for sab in self._sab:
@@ -148,7 +156,28 @@ class Material(IDManagerMixin):
 
     @property
     def density(self):
-        return self._density
+        if self._density is None or isinstance(self._density, Real):
+            return self._density
+        else:
+            return np.interp(self.time, self._density[0], self._density[1])
+
+    @property
+    def mass_density(self):
+
+        nuclides_densities = self.get_nuclide_atom_densities()
+        nuclides = nuclides_densities.keys()
+        densities = nuclides_densities.values()
+
+        mass_density = 0.
+        for nuclide,density in zip(nuclides,densities):
+            if isinstance(nuclide, openmc.Nuclide):
+                awr = openmc.data.atomic_mass(nuclide.name)
+            else:
+                awr = openmc.data.atomic_mass(nuclide)
+
+            mass_density += awr * density[1] * 1.e24 / openmc.data.AVOGADRO
+
+        return mass_density
 
     @property
     def density_units(self):
@@ -190,6 +219,10 @@ class Material(IDManagerMixin):
         return self._distrib_otf_file
 
     @property
+    def time(self):
+        return self._time
+
+    @property
     def average_molar_mass(self):
 
         # Get a list of all the nuclides, with elements expanded
@@ -228,6 +261,12 @@ class Material(IDManagerMixin):
         cv.check_type('Temperature for Material ID="{}"'.format(self._id),
                       temperature, (Real, type(None)))
         self._temperature = temperature
+
+    @time.setter
+    def time(self, time):
+        cv.check_type('Time for Material ID="{0}"'.format(self._id),
+                      time, (Real, type(None)))
+        self._time = time
 
     @depletable.setter
     def depletable(self, depletable):
@@ -327,7 +366,7 @@ class Material(IDManagerMixin):
         ----------
         units : {'g/cm3', 'g/cc', 'kg/m3', 'atom/b-cm', 'atom/cm3', 'sum', 'macro'}
             Physical units of density.
-        density : float, optional
+        density : float or np.ndarray, optional
             Value of the density. Must be specified unless units is given as
             'sum'.
 
@@ -348,8 +387,12 @@ class Material(IDManagerMixin):
                       '"sum" unit'.format(self.id)
                 raise ValueError(msg)
 
-            cv.check_type('the density for Material ID="{}"'.format(self.id),
-                          density, Real)
+            cv.check_type('the density for Material ID="{0}"'.format(self.id),
+                          density, (Real, np.ndarray))
+
+            if isinstance(density, np.ndarray):
+                cv.check_value('density interpolation table', len(density.shape), [2])
+
             self._density = density
 
     @distrib_otf_file.setter
@@ -406,6 +449,85 @@ class Material(IDManagerMixin):
                 self.depletable = True
 
         self._nuclides.append((nuclide, percent, percent_type))
+
+    def add_material(self, material, percent, percent_type='ao'):
+        """Add a material to the material
+
+        Parameters
+        ----------
+        material : openmc.Material
+            Material to add
+        percent : float
+            Atom or weight percent
+        percent_type : {'ao', 'wo'}
+            'ao' for atom percent and 'wo' for weight percent
+
+        """
+
+        if self._macroscopic is not None:
+            msg = 'Unable to add a Material to Material ID="{0}" as a ' \
+                  'macroscopic data-set has already been added'.format(self._id)
+            raise ValueError(msg)
+
+        if not isinstance(material, openmc.Material):
+            msg = 'Unable to add a Material to Material ID="{0}" with a ' \
+                  'non-Material value "{1}"'.format(self._id, material)
+            raise ValueError(msg)
+
+        elif not isinstance(percent, Real):
+            msg = 'Unable to add a Material to Material ID="{0}" with a ' \
+                  'non-floating point value "{1}"'.format(self._id, percent)
+            raise ValueError(msg)
+
+        elif percent_type not in ['ao', 'wo']:
+            msg = 'Unable to add a Material to Material ID="{0}" with a ' \
+                  'percent type "{1}"'.format(self._id, percent_type)
+            raise ValueError(msg)
+
+        # Get the atom densities in the given material
+        nuclides_densities = material.get_nuclide_atom_densities()
+        nuclides = nuclides_densities.keys()
+        densities = nuclides_densities.values()
+
+        sum_densities = 0.
+        for nuclide,density in zip(nuclides,densities):
+            density = density[1]
+
+            # Convert to weight percent, if requested
+            if percent_type == 'wo':
+                if isinstance(nuclide, openmc.Nuclide):
+                    awr = openmc.data.atomic_mass(nuclide.name)
+                else:
+                    awr = openmc.data.atomic_mass(nuclide)
+
+                amm = material.average_molar_mass
+                density *= awr / amm
+
+            sum_densities += density
+
+        # Add the nuclides of the given material to this material
+        for nuclide,density in zip(nuclides,densities):
+
+            density = density[1]
+
+            # Convert to weight percent, if requested
+            if percent_type == 'wo':
+                if isinstance(nuclide, openmc.Nuclide):
+                    awr = openmc.data.atomic_mass(nuclide.name)
+                else:
+                    awr = openmc.data.atomic_mass(nuclide)
+
+                amm = material.average_molar_mass
+                density *= awr / amm
+
+            # Normalize the density to sum to 1.0
+            density /= sum_densities
+
+            self.add_nuclide(nuclide, density*percent, percent_type)
+
+        # Add the s(a,b)
+        for sab in material._sab:
+            self.add_s_alpha_beta(sab)
 
     def remove_nuclide(self, nuclide):
         """Remove a nuclide from the material
@@ -669,22 +791,29 @@ class Material(IDManagerMixin):
         density_in_atom = density > 0.
         sum_percent = 0.
 
+        awrs = []
+        for nuclide in nuclides.items():
+            awr = openmc.data.atomic_mass(nuclide[0])
+            if awr is not None:
+                awrs.append(awr)
+            else:
+                raise ValueError(nuclide[0] + " is invalid")
+
         # Convert the weight amounts to atomic amounts
         if not percent_in_atom:
             for n, nuc in enumerate(nucs):
                 nuc_densities[n] *= self.average_molar_mass / \
                                     openmc.data.atomic_mass(nuc)
 
-        # Now that we have the atomic amounts, lets finish calculating densities
+        # Now that we have the awr, lets finish calculating densities
         sum_percent = np.sum(nuc_densities)
-        nuc_densities = nuc_densities / sum_percent
+        nuc_densities = [i / sum_percent for i in nuc_densities]
 
-        # Convert the mass density to an atom density
         if not density_in_atom:
-            density = -density / self.average_molar_mass * 1.E-24 \
-                      * openmc.data.AVOGADRO
+            density = -density / self.average_molar_mass * openmc.data.AVOGADRO \
+                      * 1.E-24
 
-        nuc_densities = density * nuc_densities
+        nuc_densities = [density * i for i in nuc_densities]
 
         nuclides = OrderedDict()
         for n, nuc in enumerate(nucs):
@@ -831,13 +960,16 @@ class Material(IDManagerMixin):
             subelement.text = str(self.temperature)
 
         # Create density XML subelement
-        if self._density is not None or self._density_units == 'sum':
+        if self._density_units is not '':
             subelement = ET.SubElement(element, "density")
-            if self._density_units != 'sum':
-                subelement.set("value", str(self._density))
+            if self._density_units is not 'sum':
+                if self._density is None:
+                    raise ValueError('Density has not been set for material {}!'
+                                     .format(self.id))
+                subelement.set("value", str(self.density))
             subelement.set("units", self._density_units)
         else:
-            raise ValueError('Density has not been set for material {}!'
+            raise ValueError('Density units has not been set for material {}!'
                              .format(self.id))
 
         if not self._convert_to_distrib_comps:

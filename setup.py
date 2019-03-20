@@ -23,11 +23,11 @@ else:
 with open('openmc/__init__.py', 'r') as f:
     version = f.readlines()[-1].split()[-1].strip("'")
 
-kwargs = {
-    'name': 'openmc',
-    'version': version,
-    'packages': find_packages(exclude=['tests*']),
-    'scripts': glob.glob('scripts/openmc-*'),
+kwargs = {'name': 'openmc',
+          'version': version,
+          'packages': ['openmc', 'openmc.data', 'openmc.mgxs', 'openmc.model',
+                       'openmc.stats', 'openmc.kinetics'],
+          'scripts': glob.glob('scripts/openmc-*'),
 
     # Data files and librarries
     'package_data': {
