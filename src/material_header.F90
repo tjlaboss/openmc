@@ -1,33 +1,47 @@
 module material_header
 
+  use, intrinsic :: ISO_C_BINDING
+
   use constants
-  use error, only: fatal_error
-  use nuclide_header, only: Nuclide
-  use sab_header, only: SAlphaBeta
+  use dict_header, only: DictIntInt
+  use error
+  use nuclide_header
+  use sab_header
+  use simulation_header, only: log_spacing
   use stl_vector, only: VectorReal, VectorInt
   use string, only: to_str
 
   implicit none
 
+  private
+  public :: free_memory_material
+  public :: openmc_extend_materials
+  public :: openmc_get_material_index
+  public :: openmc_material_add_nuclide
+  public :: openmc_material_get_id
+  public :: openmc_material_get_densities
+  public :: openmc_material_set_density
+  public :: openmc_material_set_densities
+  public :: openmc_material_set_id
+
 !===============================================================================
 ! MATERIAL describes a material by its constituent nuclides
 !===============================================================================
 
-  type Material
+  type, public :: Material
     integer              :: id              ! unique identifier
     character(len=104)   :: name = ""       ! User-defined name
-    integer              :: n_nuclides      ! number of nuclides
+    integer              :: n_nuclides = 0  ! number of nuclides
     integer, allocatable :: nuclide(:)      ! index in nuclides array
     real(8)              :: density         ! total atom density in atom/b-cm
     real(8), allocatable :: atom_density(:) ! nuclide atom density in atom/b-cm
     real(8)              :: density_gpcc    ! total density in g/cm^3
 
-    ! Energy grid information
-    integer              :: n_grid    ! # of union material grid points
-    real(8), allocatable :: e_grid(:) ! union material grid energies
-
-    ! Unionized energy grid information
-    integer, allocatable :: nuclide_grid_index(:,:) ! nuclide e_grid pointers
+    ! To improve performance of tallying, we store an array (direct address
+    ! table) that indicates for each nuclide in the global nuclides(:) array the
+    ! index of the corresponding nuclide in the Material % nuclide(:) array. If
+    ! it is not present in the material, the entry is set to zero.
+    integer, allocatable :: mat_nuclide_index(:)
 
     ! S(a,b) data
     integer              :: n_sab = 0         ! number of S(a,b) tables
@@ -43,13 +57,23 @@ module material_header
     logical :: fissionable = .false.
     logical :: depletable = .false.
 
-    ! enforce isotropic scattering in lab
+    ! enforce isotropic scattering in lab for specific nuclides
+    logical :: has_isotropic_nuclides = .false.
     logical, allocatable :: p0(:)
 
   contains
     procedure :: set_density => material_set_density
+    procedure :: init_nuclide_index => material_init_nuclide_index
     procedure :: assign_sab_tables => material_assign_sab_tables
+    procedure :: calculate_xs => material_calculate_xs
   end type Material
+
+  integer(C_INT32_T), public, bind(C) :: n_materials ! # of materials
+
+  type(Material), public, allocatable, target :: materials(:)
+
+  ! Dictionary that maps user IDs to indices in 'materials'
+  type(DictIntInt), public :: material_dict
 
 contains
 
@@ -57,48 +81,69 @@ contains
 ! MATERIAL_SET_DENSITY sets the total density of a material in atom/b-cm.
 !===============================================================================
 
-  function material_set_density(m, density, nuclides) result(err)
-    class(Material), intent(inout) :: m
+  function material_set_density(this, density) result(err)
+    class(Material), intent(inout) :: this
     real(8), intent(in) :: density
-    type(Nuclide), intent(in) :: nuclides(:)
     integer :: err
 
     integer :: i
     real(8) :: sum_percent
     real(8) :: awr
 
-    err = -1
-    if (allocated(m % atom_density)) then
+    if (allocated(this % atom_density)) then
       ! Set total density based on value provided
-      m % density = density
+      this % density = density
 
       ! Determine normalized atom percents
-      sum_percent = sum(m % atom_density)
-      m % atom_density(:) = m % atom_density / sum_percent
+      sum_percent = sum(this % atom_density)
+      this % atom_density(:) = this % atom_density / sum_percent
 
       ! Recalculate nuclide atom densities based on given density
-      m % atom_density(:) = density * m % atom_density
+      this % atom_density(:) = density * this % atom_density
 
       ! Calculate density in g/cm^3.
-      m % density_gpcc = ZERO
-      do i = 1, m % n_nuclides
-        awr = nuclides(m % nuclide(i)) % awr
-        m % density_gpcc = m % density_gpcc &
-             + m % atom_density(i) * awr * MASS_NEUTRON / N_AVOGADRO
+      this % density_gpcc = ZERO
+      do i = 1, this % n_nuclides
+        awr = nuclides(this % nuclide(i)) % awr
+        this % density_gpcc = this % density_gpcc &
+             + this % atom_density(i) * awr * MASS_NEUTRON / N_AVOGADRO
       end do
       err = 0
+    else
+      err = E_ALLOCATE
+      call set_errmsg("Material atom density array hasn't been allocated.")
     end if
   end function material_set_density
+
+!===============================================================================
+! INIT_NUCLIDE_INDEX creates a mapping from indices in the global nuclides(:)
+! array to the Material % nuclides array
+!===============================================================================
+
+  subroutine material_init_nuclide_index(this)
+    class(Material), intent(inout) :: this
+
+    integer :: i
+
+    ! Allocate nuclide index array and set to zeros
+    if (allocated(this % mat_nuclide_index)) &
+         deallocate(this % mat_nuclide_index)
+    allocate(this % mat_nuclide_index(n_nuclides))
+    this % mat_nuclide_index(:) = 0
+
+    ! Assign entries in the index array
+    do i = 1, this % n_nuclides
+      this % mat_nuclide_index(this % nuclide(i)) = i
+    end do
+  end subroutine material_init_nuclide_index
 
 !===============================================================================
 ! ASSIGN_SAB_TABLES assigns S(alpha,beta) tables to specific nuclides within
 ! materials so the code knows when to apply bound thermal scattering data
 !===============================================================================
 
-  subroutine material_assign_sab_tables(this, nuclides, sab_tables)
+  subroutine material_assign_sab_tables(this)
     class(Material), intent(inout) :: this
-    type(Nuclide), intent(in) :: nuclides(:)
-    type(SAlphaBeta), intent(in) :: sab_tables(:)
 
     integer :: j            ! index over nuclides in material
     integer :: k            ! index over S(a,b) tables in material
@@ -204,5 +249,375 @@ contains
     ! Deallocate temporary arrays for names of nuclides and S(a,b) tables
     if (allocated(this % names)) deallocate(this % names)
   end subroutine material_assign_sab_tables
+
+!===============================================================================
+! MATERIAL_CALCULATE_XS determines the macroscopic cross sections for the material the
+! particle is currently traveling through.
+!===============================================================================
+
+  subroutine material_calculate_xs(this, E, sqrtkT, micro_xs, nuclides, &
+                                   material_xs)
+    class(Material), intent(in) :: this
+    real(8),         intent(in) :: E       ! Particle energy
+    real(8),         intent(in) :: sqrtkT  ! Last temperature sampled
+    type(Nuclide), allocatable, intent(in)           :: nuclides(:)
+    type(NuclideMicroXS), allocatable, intent(inout) :: micro_xs(:)  ! Cache for each nuclide
+    type(MaterialMacroXS), intent(inout)             :: material_xs  ! Cache for current material
+
+    integer :: i             ! loop index over nuclides
+    integer :: i_nuclide     ! index into nuclides array
+    integer :: i_sab         ! index into sab_tables array
+    integer :: j             ! index in this % i_sab_nuclides
+    integer :: i_grid        ! index into logarithmic mapping array or material
+                             ! union grid
+    real(8) :: atom_density  ! atom density of a nuclide
+    real(8) :: sab_frac      ! fraction of atoms affected by S(a,b)
+    logical :: check_sab     ! should we check for S(a,b) table?
+
+    ! Set all material macroscopic cross sections to zero
+    material_xs % total          = ZERO
+    material_xs % absorption     = ZERO
+    material_xs % fission        = ZERO
+    material_xs % nu_fission     = ZERO
+
+    ! Find energy index on energy grid
+    i_grid = int(log(E/energy_min_neutron)/log_spacing)
+
+    ! Determine if this material has S(a,b) tables
+    check_sab = (this % n_sab > 0)
+
+    ! Initialize position in i_sab_nuclides
+    j = 1
+
+    ! Add contribution from each nuclide in material
+    do i = 1, this % n_nuclides
+      ! ======================================================================
+      ! CHECK FOR S(A,B) TABLE
+
+      i_sab = 0
+      sab_frac = ZERO
+
+      ! Check if this nuclide matches one of the S(a,b) tables specified.
+      ! This relies on i_sab_nuclides being in sorted order
+      if (check_sab) then
+        if (i == this % i_sab_nuclides(j)) then
+          ! Get index in sab_tables
+          i_sab = this % i_sab_tables(j)
+          sab_frac = this % sab_fracs(j)
+
+          ! If particle energy is greater than the highest energy for the
+          ! S(a,b) table, then don't use the S(a,b) table
+          if (E > sab_tables(i_sab) % data(1) % threshold_inelastic) then
+            i_sab = 0
+          end if
+
+          ! Increment position in i_sab_nuclides
+          j = j + 1
+
+          ! Don't check for S(a,b) tables if there are no more left
+          if (j > size(this % i_sab_tables)) check_sab = .false.
+        end if
+      end if
+
+      ! ======================================================================
+      ! CALCULATE MICROSCOPIC CROSS SECTION
+
+      ! Determine microscopic cross sections for this nuclide
+      i_nuclide = this % nuclide(i)
+
+      ! Calculate microscopic cross section for this nuclide
+      if (E /= micro_xs(i_nuclide) % last_E &
+           .or. sqrtkT /= micro_xs(i_nuclide) % last_sqrtkT &
+           .or. i_sab /= micro_xs(i_nuclide) % index_sab &
+           .or. sab_frac /= micro_xs(i_nuclide) % sab_frac) then
+        call nuclides(i_nuclide) % calculate_xs(i_sab, E, i_grid, &
+             sqrtkT, sab_frac, micro_xs(i_nuclide))
+      end if
+
+      ! ======================================================================
+      ! ADD TO MACROSCOPIC CROSS SECTION
+
+      ! Copy atom density of nuclide in material
+      atom_density = this % atom_density(i)
+
+      ! Add contributions to material macroscopic total cross section
+      material_xs % total = material_xs % total + &
+           atom_density * micro_xs(i_nuclide) % total
+
+      ! Add contributions to material macroscopic absorption cross section
+      material_xs % absorption = material_xs % absorption + &
+           atom_density * micro_xs(i_nuclide) % absorption
+
+      ! Add contributions to material macroscopic fission cross section
+      material_xs % fission = material_xs % fission + &
+           atom_density * micro_xs(i_nuclide) % fission
+
+      ! Add contributions to material macroscopic nu-fission cross section
+      material_xs % nu_fission = material_xs % nu_fission + &
+           atom_density * micro_xs(i_nuclide) % nu_fission
+    end do
+
+  end subroutine material_calculate_xs
+
+!===============================================================================
+! FREE_MEMORY_MATERIAL deallocates global arrays defined in this module
+!===============================================================================
+
+  subroutine free_memory_material()
+    n_materials = 0
+    if (allocated(materials)) deallocate(materials)
+    call material_dict % clear()
+  end subroutine free_memory_material
+
+!===============================================================================
+!                               C API FUNCTIONS
+!===============================================================================
+
+  function openmc_extend_materials(n, index_start, index_end) result(err) bind(C)
+    ! Extend the materials array by n elements
+    integer(C_INT32_T), value, intent(in) :: n
+    integer(C_INT32_T), optional, intent(out) :: index_start
+    integer(C_INT32_T), optional, intent(out) :: index_end
+    integer(C_INT) :: err
+
+    type(Material), allocatable :: temp(:) ! temporary materials array
+
+    if (n_materials == 0) then
+      ! Allocate materials array
+      allocate(materials(n))
+    else
+      ! Allocate materials array with increased size
+      allocate(temp(n_materials + n))
+
+      ! Move original materials to temporary array
+      temp(1:n_materials) = materials(:)
+
+      ! Move allocation from temporary array
+      call move_alloc(FROM=temp, TO=materials)
+    end if
+
+    ! Return indices in materials array
+    if (present(index_start)) index_start = n_materials + 1
+    if (present(index_end)) index_end = n_materials + n
+    n_materials = n_materials + n
+
+    err = 0
+  end function openmc_extend_materials
+
+  function openmc_get_material_index(id, index) result(err) bind(C)
+    ! Returns the index in the materials array of a material with a given ID
+    integer(C_INT32_T), value :: id
+    integer(C_INT32_T), intent(out) :: index
+    integer(C_INT) :: err
+
+    if (allocated(materials)) then
+      if (material_dict % has(id)) then
+        index = material_dict % get(id)
+        err = 0
+      else
+        err = E_INVALID_ID
+        call set_errmsg("No material exists with ID=" // trim(to_str(id)) // ".")
+      end if
+    else
+      err = E_ALLOCATE
+      call set_errmsg("Memory has not been allocated for materials.")
+    end if
+  end function openmc_get_material_index
+
+
+  function openmc_material_add_nuclide(index, name, density) result(err) bind(C)
+    ! Add a nuclide at a specified density in atom/b-cm to a material
+    integer(C_INT32_T), value, intent(in) :: index
+    character(kind=C_CHAR) :: name(*)
+    real(C_DOUBLE), value, intent(in) :: density
+    integer(C_INT) :: err
+
+    integer :: j, k, n
+    real(8) :: awr
+    integer, allocatable :: new_nuclide(:)
+    real(8), allocatable :: new_density(:)
+    character(:), allocatable :: name_
+
+    name_ = to_f_string(name)
+
+    err = E_UNASSIGNED
+    if (index >= 1 .and. index <= size(materials)) then
+      associate (m => materials(index))
+        ! Check if nuclide is already in material
+        do j = 1, m % n_nuclides
+          k = m % nuclide(j)
+          if (nuclides(k) % name == name_) then
+            awr = nuclides(k) % awr
+            m % density = m % density + density - m % atom_density(j)
+            m % density_gpcc = m % density_gpcc + (density - &
+                 m % atom_density(j)) * awr * MASS_NEUTRON / N_AVOGADRO
+            m % atom_density(j) = density
+            err = 0
+          end if
+        end do
+
+        ! If nuclide wasn't found, extend nuclide/density arrays
+        if (err /= 0) then
+          ! If nuclide hasn't been loaded, load it now
+          err = openmc_load_nuclide(name)
+
+          if (err == 0) then
+            ! Extend arrays
+            n = m % n_nuclides
+            allocate(new_nuclide(n + 1))
+            if (n > 0) new_nuclide(1:n) = m % nuclide
+            call move_alloc(FROM=new_nuclide, TO=m % nuclide)
+
+            allocate(new_density(n + 1))
+            if (n > 0) new_density(1:n) = m % atom_density
+            call move_alloc(FROM=new_density, TO=m % atom_density)
+
+            ! Append new nuclide/density
+            k = nuclide_dict % get(to_lower(name_))
+            m % nuclide(n + 1) = k
+            m % atom_density(n + 1) = density
+            m % density = m % density + density
+            m % density_gpcc = m % density_gpcc + &
+                 density * nuclides(k) % awr * MASS_NEUTRON / N_AVOGADRO
+            m % n_nuclides = n + 1
+          end if
+        end if
+      end associate
+    else
+      err = E_OUT_OF_BOUNDS
+      call set_errmsg("Index in materials array is out of bounds.")
+    end if
+
+  end function openmc_material_add_nuclide
+
+
+  function openmc_material_get_densities(index, nuclides, densities, n) &
+       result(err) bind(C)
+    ! returns an array of nuclide densities in a material
+    integer(C_INT32_T), value :: index
+    type(C_PTR),        intent(out) :: nuclides
+    type(C_PTR),        intent(out) :: densities
+    integer(C_INT),     intent(out) :: n
+    integer(C_INT) :: err
+
+    if (index >= 1 .and. index <= size(materials)) then
+      associate (m => materials(index))
+        if (allocated(m % atom_density)) then
+          nuclides = C_LOC(m % nuclide(1))
+          densities = C_LOC(m % atom_density(1))
+          n = size(m % atom_density)
+          err = 0
+        else
+          err = E_ALLOCATE
+          call set_errmsg("Material atom density array has not been allocated.")
+        end if
+      end associate
+    else
+      err = E_OUT_OF_BOUNDS
+      call set_errmsg("Index in materials array is out of bounds.")
+    end if
+  end function openmc_material_get_densities
+
+
+  function openmc_material_get_id(index, id) result(err) bind(C)
+    ! returns the ID of a material
+    integer(C_INT32_T), value       :: index
+    integer(C_INT32_T), intent(out) :: id
+    integer(C_INT) :: err
+
+    if (index >= 1 .and. index <= size(materials)) then
+      id = materials(index) % id
+      err = 0
+    else
+      err = E_OUT_OF_BOUNDS
+      call set_errmsg("Index in materials array is out of bounds.")
+    end if
+  end function openmc_material_get_id
+
+
+  function openmc_material_set_id(index, id) result(err) bind(C)
+    ! Set the ID of a material
+    integer(C_INT32_T), value, intent(in) :: index
+    integer(C_INT32_T), value, intent(in) :: id
+    integer(C_INT) :: err
+
+    if (index >= 1 .and. index <= n_materials) then
+      materials(index) % id = id
+      call material_dict % set(id, index)
+      err = 0
+    else
+      err = E_OUT_OF_BOUNDS
+      call set_errmsg("Index in materials array is out of bounds.")
+    end if
+  end function openmc_material_set_id
+
+
+  function openmc_material_set_density(index, density) result(err) bind(C)
+    ! Set the total density of a material in atom/b-cm
+    integer(C_INT32_T), value, intent(in) :: index
+    real(C_DOUBLE), value, intent(in) :: density
+    integer(C_INT) :: err
+
+    err = E_UNASSIGNED
+    if (index >= 1 .and. index <= size(materials)) then
+      associate (m => materials(index))
+        err = m % set_density(density)
+      end associate
+    else
+      err = E_OUT_OF_BOUNDS
+      call set_errmsg("Index in materials array is out of bounds.")
+    end if
+  end function openmc_material_set_density
+
+
+  function openmc_material_set_densities(index, n, name, density) result(err) bind(C)
+    ! Sets the densities for a list of nuclides in a material. If the nuclides
+    ! don't already exist in the material, they will be added
+    integer(C_INT32_T), value, intent(in) :: index
+    integer(C_INT), value, intent(in) :: n
+    type(C_PTR),    intent(in) :: name(n)
+    real(C_DOUBLE), intent(in) :: density(n)
+    integer(C_INT) :: err
+
+    integer :: i
+    integer :: stat
+    character(C_CHAR), pointer :: string(:)
+    character(len=:, kind=C_CHAR), allocatable :: name_
+
+    if (index >= 1 .and. index <= size(materials)) then
+      associate (m => materials(index))
+        ! If nuclide/density arrays are not correct size, reallocate
+        if (n /= m % n_nuclides) then
+          deallocate(m % nuclide, m % atom_density, STAT=stat)
+          allocate(m % nuclide(n), m % atom_density(n))
+        end if
+
+        do i = 1, n
+          ! Convert C string to Fortran string
+          call c_f_pointer(name(i), string, [10])
+          name_ = to_lower(to_f_string(string))
+
+          if (.not. nuclide_dict % has(name_)) then
+            err = openmc_load_nuclide(string)
+            if (err < 0) return
+          end if
+
+          m % nuclide(i) = nuclide_dict % get(name_)
+          m % atom_density(i) = density(i)
+        end do
+        m % n_nuclides = n
+
+        ! Set total density to the sum of the vector
+        err = m % set_density(sum(density))
+
+        ! Assign S(a,b) tables
+        call m % assign_sab_tables()
+      end associate
+    else
+      err = E_OUT_OF_BOUNDS
+      call set_errmsg("Index in materials array is out of bounds.")
+    end if
+
+  end function openmc_material_set_densities
 
 end module material_header

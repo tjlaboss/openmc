@@ -15,28 +15,36 @@ module state_point
 
   use hdf5
 
+  use cmfd_header
   use constants
   use eigenvalue,         only: openmc_get_keff
   use endf,               only: reaction_name
-  use error,              only: fatal_error, warning
-  use global
+  use error,              only: fatal_error, warning, write_message
   use hdf5_interface
-  use mesh_header,        only: RegularMesh
+  use mesh_header,        only: RegularMesh, meshes, n_meshes
   use message_passing
-  use output,             only: write_message, time_stamp
-  use random_lcg,         only: seed
-  use string,             only: to_str, count_digits, zero_padded
-  use tally_header,       only: TallyObject
+  use mgxs_header,        only: nuclides_MG
+  use nuclide_header,     only: nuclides
+  use output,             only: time_stamp
+  use random_lcg,         only: openmc_get_seed, openmc_set_seed
+  use settings
+  use simulation_header
+  use string,             only: to_str, count_digits, zero_padded, to_f_string
+  use tally_header
+  use tally_filter_header
+  use tally_derivative_header, only: tally_derivs
+  use timer_header
 
   implicit none
 
 contains
 
 !===============================================================================
-! WRITE_STATE_POINT
+! OPENMC_STATEPOINT_WRITE writes an HDF5 statepoint file to disk
 !===============================================================================
 
-  subroutine write_state_point()
+  subroutine openmc_statepoint_write(filename) bind(C)
+    type(C_PTR), intent(in), optional :: filename
 
     integer :: i, j, k
     integer :: i_xs
@@ -45,25 +53,30 @@ contains
     integer, allocatable :: id_array(:)
     integer(HID_T) :: file_id
     integer(HID_T) :: cmfd_group, tallies_group, tally_group, meshes_group, &
-                      mesh_group, filters_group, filter_group, derivs_group, &
+                      filters_group, filter_group, derivs_group, &
                       deriv_group, runtime_group
     integer(C_INT) :: err
     real(C_DOUBLE) :: k_combined(2)
     character(MAX_WORD_LEN), allocatable :: str_array(:)
-    character(MAX_FILE_LEN)    :: filename
-    type(TallyObject), pointer    :: tally
+    character(C_CHAR), pointer :: string(:)
+    character(len=:, kind=C_CHAR), allocatable :: filename_
 
-    ! Set filename for state point
-    filename = trim(path_output) // 'statepoint.' // &
-         & zero_padded(current_batch, count_digits(n_max_batches))
-    filename = trim(filename) // '.h5'
+    if (present(filename)) then
+      call c_f_pointer(filename, string, [MAX_FILE_LEN])
+      filename_ = to_f_string(string)
+    else
+      ! Set filename for state point
+      filename_ = trim(path_output) // 'statepoint.' // &
+           & zero_padded(current_batch, count_digits(n_max_batches))
+      filename_ = trim(filename_) // '.h5'
+    end if
 
     ! Write message
-    call write_message("Creating state point " // trim(filename) // "...", 5)
+    call write_message("Creating state point " // trim(filename_) // "...", 5)
 
     if (master) then
       ! Create statepoint file
-      file_id = file_create(filename)
+      file_id = file_create(filename_)
 
       ! Write file type
       call write_attribute(file_id, "filetype", "statepoint")
@@ -84,7 +97,7 @@ contains
       call write_attribute(file_id, "path", path_input)
 
       ! Write out random number seed
-      call write_dataset(file_id, "seed", seed)
+      call write_dataset(file_id, "seed", openmc_get_seed())
 
       ! Write run information
       if (run_CE) then
@@ -115,8 +128,11 @@ contains
       if (run_mode == MODE_EIGENVALUE) then
         call write_dataset(file_id, "n_inactive", n_inactive)
         call write_dataset(file_id, "generations_per_batch", gen_per_batch)
-        call write_dataset(file_id, "k_generation", k_generation)
-        call write_dataset(file_id, "entropy", entropy)
+        k = k_generation % size()
+        call write_dataset(file_id, "k_generation", k_generation % data(1:k))
+        if (entropy_on) then
+          call write_dataset(file_id, "entropy", entropy % data(1:k))
+        end if
         call write_dataset(file_id, "k_col_abs", k_col_abs)
         call write_dataset(file_id, "k_col_tra", k_col_tra)
         call write_dataset(file_id, "k_abs_tra", k_abs_tra)
@@ -158,21 +174,7 @@ contains
 
         ! Write information for meshes
         MESH_LOOP: do i = 1, n_meshes
-          associate (m => meshes(i))
-            mesh_group = create_group(meshes_group, "mesh " &
-                 // trim(to_str(m % id)))
-
-            select case (m % type)
-            case (MESH_REGULAR)
-              call write_dataset(mesh_group, "type", "regular")
-            end select
-            call write_dataset(mesh_group, "dimension", m % dimension)
-            call write_dataset(mesh_group, "lower_left", m % lower_left)
-            call write_dataset(mesh_group, "upper_right", m % upper_right)
-            call write_dataset(mesh_group, "width", m % width)
-
-            call close_group(mesh_group)
-          end associate
+          call meshes(i) % to_hdf5(meshes_group)
         end do MESH_LOOP
       end if
 
@@ -241,7 +243,7 @@ contains
         ! Write array of tally IDs
         allocate(id_array(n_tallies))
         do i = 1, n_tallies
-          id_array(i) = tallies(i) % id
+          id_array(i) = tallies(i) % obj % id
         end do
         call write_attribute(tallies_group, "ids", id_array)
         deallocate(id_array)
@@ -250,7 +252,7 @@ contains
         TALLY_METADATA: do i = 1, n_tallies
 
           ! Get pointer to tally
-          tally => tallies(i)
+          associate (tally => tallies(i) % obj)
           tally_group = create_group(tallies_group, "tally " // &
                trim(to_str(tally % id)))
 
@@ -355,6 +357,7 @@ contains
           deallocate(str_array)
 
           call close_group(tally_group)
+          end associate
         end do TALLY_METADATA
 
       end if
@@ -378,7 +381,7 @@ contains
       call write_dataset(file_id, "global_tallies", global_tallies)
 
       ! Write tallies
-      if (tallies_on) then
+      if (active_tallies % size() > 0) then
         ! Indicate that tallies are on
         call write_attribute(file_id, "tallies_present", 1)
 
@@ -386,14 +389,13 @@ contains
 
         ! Write all tally results
         TALLY_RESULTS: do i = 1, n_tallies
-          ! Set point to current tally
-          tally => tallies(i)
-
-          ! Write sum and sum_sq for each bin
-          tally_group = open_group(tallies_group, "tally " &
-               // to_str(tally % id))
-          call tally % write_results_hdf5(tally_group)
-          call close_group(tally_group)
+          associate (tally => tallies(i) % obj)
+            ! Write sum and sum_sq for each bin
+            tally_group = open_group(tallies_group, "tally " &
+                 // to_str(tally % id))
+            call tally % write_results_hdf5(tally_group)
+            call close_group(tally_group)
+          end associate
         end do TALLY_RESULTS
 
         call close_group(tallies_group)
@@ -441,7 +443,7 @@ contains
 
       call file_close(file_id)
     end if
-  end subroutine write_state_point
+  end subroutine openmc_statepoint_write
 
 !===============================================================================
 ! WRITE_SOURCE_POINT
@@ -521,7 +523,7 @@ contains
     integer(HID_T) :: tallies_group, tally_group
     real(8), allocatable :: tally_temp(:,:,:) ! contiguous array of results
     real(8), target :: global_temp(3,N_GLOBAL_TALLIES)
-#ifdef MPI
+#ifdef OPENMC_MPI
     integer :: mpi_err ! MPI error code
     real(8) :: dummy   ! temporary receive buffer for non-root reduces
 #endif
@@ -541,7 +543,7 @@ contains
     end if
 
 
-#ifdef MPI
+#ifdef OPENMC_MPI
     ! Reduce global tallies
     n_bins = size(global_tallies)
     call MPI_REDUCE(global_tallies, global_temp, n_bins, MPI_REAL8, MPI_SUM, &
@@ -558,7 +560,7 @@ contains
       call write_dataset(file_id, "global_tallies", global_temp)
     end if
 
-    if (tallies_on) then
+    if (active_tallies % size() > 0) then
       ! Indicate that tallies are on
       if (master) then
         call write_attribute(file_id, "tallies_present", 1)
@@ -566,7 +568,7 @@ contains
 
       ! Write all tally results
       TALLY_RESULTS: do i = 1, n_tallies
-        associate (t => tallies(i))
+        associate (t => tallies(i) % obj)
           ! Determine size of tally results array
           m = size(t % results, 2)
           n = size(t % results, 3)
@@ -584,7 +586,7 @@ contains
 
             ! The MPI_IN_PLACE specifier allows the master to copy values into
             ! a receive buffer without having a temporary variable
-#ifdef MPI
+#ifdef OPENMC_MPI
             call MPI_REDUCE(MPI_IN_PLACE, tally_temp, n_bins, MPI_REAL8, &
                  MPI_SUM, 0, mpi_intracomm, mpi_err)
 #endif
@@ -608,7 +610,7 @@ contains
             deallocate(dummy_tally % results)
           else
             ! Receive buffer not significant at other processors
-#ifdef MPI
+#ifdef OPENMC_MPI
             call MPI_REDUCE(tally_temp, dummy, n_bins, MPI_REAL8, MPI_SUM, &
                  0, mpi_intracomm, mpi_err)
 #endif
@@ -637,8 +639,10 @@ contains
   subroutine load_state_point()
 
     integer :: i
+    integer :: n
     integer :: int_array(3)
     integer, allocatable :: array(:)
+    integer(C_INT64_T) :: seed
     integer(HID_T) :: file_id
     integer(HID_T) :: cmfd_group
     integer(HID_T) :: tallies_group
@@ -669,6 +673,7 @@ contains
 
     ! Read and overwrite random number seed
     call read_dataset(seed, file_id, "seed")
+    call openmc_set_seed(seed)
 
     ! It is not impossible for a state point to be generated from a CE run but
     ! to be loaded in to an MG run (or vice versa), check to prevent that.
@@ -715,10 +720,15 @@ contains
     if (run_mode == MODE_EIGENVALUE) then
       call read_dataset(int_array(1), file_id, "n_inactive")
       call read_dataset(gen_per_batch, file_id, "generations_per_batch")
-      call read_dataset(k_generation(1:restart_batch*gen_per_batch), &
-           file_id, "k_generation")
-      call read_dataset(entropy(1:restart_batch*gen_per_batch), &
-           file_id, "entropy")
+
+      n = restart_batch*gen_per_batch
+      call k_generation % resize(n)
+      call read_dataset(k_generation % data(1:n), file_id, "k_generation")
+
+      if (entropy_on) then
+        call entropy % resize(n)
+        call read_dataset(entropy % data(1:n), file_id, "entropy")
+      end if
       call read_dataset(k_col_abs, file_id, "k_col_abs")
       call read_dataset(k_col_tra, file_id, "k_col_tra")
       call read_dataset(k_abs_tra, file_id, "k_abs_tra")
@@ -775,7 +785,7 @@ contains
         tallies_group = open_group(file_id, "tallies")
 
         TALLY_RESULTS: do i = 1, n_tallies
-          associate (t => tallies(i))
+          associate (t => tallies(i) % obj)
             ! Read sum, sum_sq, and N for each bin
             tally_group = open_group(tallies_group, "tally " // &
                  trim(to_str(t % id)))
@@ -841,7 +851,7 @@ contains
     integer(HID_T) :: plist    ! property list
 #else
     integer :: i
-#ifdef MPI
+#ifdef OPENMC_MPI
     integer :: mpi_err ! MPI error code
     type(Bank), allocatable, target :: temp_source(:)
 #endif
@@ -889,7 +899,7 @@ contains
            dspace, dset, hdf5_err)
 
       ! Save source bank sites since the souce_bank array is overwritten below
-#ifdef MPI
+#ifdef OPENMC_MPI
       allocate(temp_source(work))
       temp_source(:) = source_bank(:)
 #endif
@@ -899,7 +909,7 @@ contains
         dims(1) = work_index(i+1) - work_index(i)
         call h5screate_simple_f(1, dims, memspace, hdf5_err)
 
-#ifdef MPI
+#ifdef OPENMC_MPI
         ! Receive source sites from other processes
         if (i > 0) then
           call MPI_RECV(source_bank, int(dims(1)), MPI_BANK, i, i, &
@@ -925,12 +935,12 @@ contains
       call h5dclose_f(dset, hdf5_err)
 
       ! Restore state of source bank
-#ifdef MPI
+#ifdef OPENMC_MPI
       source_bank(:) = temp_source(:)
       deallocate(temp_source)
 #endif
     else
-#ifdef MPI
+#ifdef OPENMC_MPI
       call MPI_SEND(source_bank, int(work), MPI_BANK, 0, rank, &
            mpi_intracomm, mpi_err)
 #endif

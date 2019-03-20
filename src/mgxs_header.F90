@@ -164,10 +164,11 @@ module mgxs_header
       real(8),        intent(inout) :: wgt    ! Particle weight
     end subroutine mgxs_sample_scatter_
 
-    subroutine mgxs_calculate_xs_(this, gin, uvw, xs)
+    subroutine mgxs_calculate_xs_(this, gin, sqrtkT, uvw, xs)
       import Mgxs, MaterialMacroXS
-      class(Mgxs),           intent(in)    :: this
+      class(Mgxs),           intent(inout) :: this
       integer,               intent(in)    :: gin    ! Incoming neutron group
+      real(8),               intent(in)    :: sqrtkT ! Material temperature
       real(8),               intent(in)    :: uvw(3) ! Incoming neutron direction
       type(MaterialMacroXS), intent(inout) :: xs     ! Resultant Mgxs Data
     end subroutine mgxs_calculate_xs_
@@ -210,7 +211,28 @@ module mgxs_header
     procedure :: calculate_xs => mgxsang_calculate_xs
   end type MgxsAngle
 
-  contains
+  ! Cross section arrays
+  type(MgxsContainer), allocatable, target :: nuclides_MG(:)
+
+  ! Cross section caches
+  type(MgxsContainer), target, allocatable :: macro_xs(:)
+
+  ! Number of energy groups
+  integer :: num_energy_groups
+
+  ! Number of delayed groups
+  integer :: num_delayed_groups
+
+  ! Energy group structure with decreasing energy
+  real(8), allocatable :: energy_bins(:)
+
+  ! Midpoint of the energy group structure
+  real(8), allocatable :: energy_bin_avg(:)
+
+  ! Energy group structure with increasing energy
+  real(8), allocatable :: rev_energy_bins(:)
+
+contains
 
 !===============================================================================
 ! MGXS*_FROM_HDF5 reads in the data from the HDF5 Library. At the point of entry
@@ -3529,11 +3551,15 @@ module mgxs_header
 ! for the material the particle is currently traveling through.
 !===============================================================================
 
-    subroutine mgxsiso_calculate_xs(this, gin, uvw, xs)
-      class(MgxsIso),        intent(in)    :: this
+    subroutine mgxsiso_calculate_xs(this, gin, sqrtkT, uvw, xs)
+      class(MgxsIso),        intent(inout) :: this
       integer,               intent(in)    :: gin    ! Incoming neutron group
+      real(8),               intent(in)    :: sqrtkT ! Material temperature
       real(8),               intent(in)    :: uvw(3) ! Incoming neutron direction
       type(MaterialMacroXS), intent(inout) :: xs     ! Resultant Mgxs Data
+
+      ! Update the temperature index
+      call this % find_temperature(sqrtkT)
 
       xs % total         = this % xs(this % index_temp) % total(gin)
       xs % absorption    = this % xs(this % index_temp) % absorption(gin)
@@ -3546,15 +3572,19 @@ module mgxs_header
 
     end subroutine mgxsiso_calculate_xs
 
-    subroutine mgxsang_calculate_xs(this, gin, uvw, xs)
-      class(MgxsAngle),      intent(in)    :: this
+    subroutine mgxsang_calculate_xs(this, gin, sqrtkT, uvw, xs)
+      class(MgxsAngle),      intent(inout) :: this
       integer,               intent(in)    :: gin    ! Incoming neutron group
+      real(8),               intent(in)    :: sqrtkT ! Material temperature
       real(8),               intent(in)    :: uvw(3) ! Incoming neutron direction
       type(MaterialMacroXS), intent(inout) :: xs     ! Resultant Mgxs Data
 
       integer :: iazi, ipol
 
+      ! Update the temperature and angle indices
+      call this % find_temperature(sqrtkT)
       call find_angle(this % polar, this % azimuthal, uvw, iazi, ipol)
+
       xs % total         = this % xs(this % index_temp) % &
            total(gin, iazi, ipol)
       xs % absorption    = this % xs(this % index_temp) % &
@@ -3608,5 +3638,16 @@ module mgxs_header
       i_azi  = floor((my_azi + PI) / dangle + ONE)
 
     end subroutine find_angle
+
+!===============================================================================
+! FREE_MEMORY_MGXS deallocates global arrays defined in this module
+!===============================================================================
+
+  subroutine free_memory_mgxs()
+    if (allocated(nuclides_MG)) deallocate(nuclides_MG)
+    if (allocated(macro_xs)) deallocate(macro_xs)
+    if (allocated(energy_bins)) deallocate(energy_bins)
+    if (allocated(energy_bin_avg)) deallocate(energy_bin_avg)
+  end subroutine free_memory_mgxs
 
 end module mgxs_header

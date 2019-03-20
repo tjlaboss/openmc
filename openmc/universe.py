@@ -1,11 +1,9 @@
-from __future__ import division
 from collections import OrderedDict, Iterable
 from copy import copy, deepcopy
 from numbers import Integral, Real
 import random
 import sys
 
-from six import string_types
 import numpy as np
 
 import openmc
@@ -63,24 +61,6 @@ class Universe(IDManagerMixin):
         if cells is not None:
             self.add_cells(cells)
 
-    def __eq__(self, other):
-        if not isinstance(other, Universe):
-            return False
-        elif self.id != other.id:
-            return False
-        elif self.name != other.name:
-            return False
-        elif dict.__ne__(self.cells, other.cells):
-            return False
-        else:
-            return True
-
-    def __ne__(self, other):
-        return not self == other
-
-    def __hash__(self):
-        return hash(repr(self))
-
     def __repr__(self):
         string = 'Universe\n'
         string += '{0: <16}{1}{2}\n'.format('\tID', '=\t', self._id)
@@ -109,12 +89,12 @@ class Universe(IDManagerMixin):
             return openmc.Union(regions).bounding_box
         else:
             # Infinite bounding box
-            return openmc.Intersection().bounding_box
+            return openmc.Intersection([]).bounding_box
 
     @name.setter
     def name(self, name):
         if name is not None:
-            cv.check_type('universe name', name, string_types)
+            cv.check_type('universe name', name, str)
             self._name = name
         else:
             self._name = ''
@@ -165,7 +145,7 @@ class Universe(IDManagerMixin):
         """
         if volume_calc.domain_type == 'universe':
             if self.id in volume_calc.volumes:
-                self._volume = volume_calc.volumes[self.id][0]
+                self._volume = volume_calc.volumes[self.id].n
                 self._atoms = volume_calc.atoms[self.id]
             else:
                 raise ValueError('No volume information found for this universe.')
@@ -203,9 +183,13 @@ class Universe(IDManagerMixin):
         return []
 
     def plot(self, origin=(0., 0., 0.), width=(1., 1.), pixels=(200, 200),
-             basis='xy', color_by='cell', colors=None, filename=None, seed=None,
+             basis='xy', color_by='cell', colors=None, seed=None,
              **kwargs):
         """Display a slice plot of the universe.
+
+        To display or save the plot, call :func:`matplotlib.pyplot.show` or
+        :func:`matplotlib.pyplot.savefig`. In a Jupyter notebook, enabling the
+        matplotlib inline backend will show the plot inline.
 
         Parameters
         ----------
@@ -231,9 +215,6 @@ class Universe(IDManagerMixin):
                water = openmc.Cell(fill=h2o)
                universe.plot(..., colors={water: (0., 0., 1.))
 
-        filename : str or None
-            Filename to save plot to. If no filename is given, the plot will be
-            displayed using the currently enabled matplotlib backend.
         seed : hashable object or None
             Hashable object which is used to seed the random number generator
             used to select colors. If None, the generator is seeded from the
@@ -241,6 +222,11 @@ class Universe(IDManagerMixin):
         **kwargs
             All keyword arguments are passed to
             :func:`matplotlib.pyplot.imshow`.
+
+        Returns
+        -------
+        matplotlib.image.AxesImage
+            Resulting image
 
         """
         import matplotlib.pyplot as plt
@@ -256,7 +242,7 @@ class Universe(IDManagerMixin):
             # Convert to RGBA if necessary
             colors = copy(colors)
             for obj, color in colors.items():
-                if isinstance(color, string_types):
+                if isinstance(color, str):
                     if color.lower() not in _SVG_COLORS:
                         raise ValueError("'{}' is not a valid color."
                                          .format(color))
@@ -319,14 +305,8 @@ class Universe(IDManagerMixin):
                     img[j, i, :] = colors[obj]
 
         # Display image
-        plt.imshow(img, extent=(x_min, x_max, y_min, y_max),
-                   interpolation='nearest', **kwargs)
-
-        # Show or save the plot
-        if filename is None:
-            plt.show()
-        else:
-            plt.savefig(filename)
+        return plt.imshow(img, extent=(x_min, x_max, y_min, y_max),
+                          interpolation='nearest', **kwargs)
 
     def add_cell(self, cell):
         """Add a cell to the universe.
@@ -341,7 +321,7 @@ class Universe(IDManagerMixin):
         if not isinstance(cell, openmc.Cell):
             msg = 'Unable to add a Cell to Universe ID="{0}" since "{1}" is not ' \
                   'a Cell'.format(self._id, cell)
-            raise ValueError(msg)
+            raise TypeError(msg)
 
         cell_id = cell.id
 
@@ -361,7 +341,7 @@ class Universe(IDManagerMixin):
         if not isinstance(cells, Iterable):
             msg = 'Unable to add Cells to Universe ID="{0}" since "{1}" is not ' \
                   'iterable'.format(self._id, cells)
-            raise ValueError(msg)
+            raise TypeError(msg)
 
         for cell in cells:
             self.add_cell(cell)
@@ -379,7 +359,7 @@ class Universe(IDManagerMixin):
         if not isinstance(cell, openmc.Cell):
             msg = 'Unable to remove a Cell from Universe ID="{0}" since "{1}" is ' \
                   'not a Cell'.format(self._id, cell)
-            raise ValueError(msg)
+            raise TypeError(msg)
 
         # If the Cell is in the Universe's list of Cells, delete it
         if cell.id in self._cells:
@@ -426,7 +406,7 @@ class Universe(IDManagerMixin):
             volume = self.volume
             for name, atoms in self._atoms.items():
                 nuclide = openmc.Nuclide(name)
-                density = 1.0e-24 * atoms[0]/volume  # density in atoms/b-cm
+                density = 1.0e-24 * atoms.n/volume  # density in atoms/b-cm
                 nuclides[name] = (nuclide, density)
         else:
             raise RuntimeError(
@@ -553,14 +533,16 @@ class Universe(IDManagerMixin):
 
         for cell in self.cells.values():
             cell_path = '{}->c{}'.format(univ_path, cell.id)
+            fill = cell._fill
+            fill_type = cell.fill_type
 
             # If universe-filled, recursively count cells in filling universe
-            if cell.fill_type == 'universe':
-                cell.fill._determine_paths(cell_path + '->', instances_only)
+            if fill_type == 'universe':
+                fill._determine_paths(cell_path + '->', instances_only)
 
             # If lattice-filled, recursively call for all universes in lattice
-            elif cell.fill_type == 'lattice':
-                latt = cell.fill
+            elif fill_type == 'lattice':
+                latt = fill
 
                 # Count instances in each universe in the lattice
                 for index in latt._natural_indices:
@@ -570,10 +552,10 @@ class Universe(IDManagerMixin):
                     univ._determine_paths(latt_path, instances_only)
 
             else:
-                if cell.fill_type == 'material':
-                    mat = cell.fill
-                elif cell.fill_type == 'distribmat':
-                    mat = cell.fill[cell._num_instances]
+                if fill_type == 'material':
+                    mat = fill
+                elif fill_type == 'distribmat':
+                    mat = fill[cell._num_instances]
                 else:
                     mat = None
 

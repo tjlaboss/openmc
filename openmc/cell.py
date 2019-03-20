@@ -1,4 +1,5 @@
-from collections import OrderedDict, Iterable
+from collections import OrderedDict
+from collections.abc import Iterable
 from copy import deepcopy
 from math import cos, sin, pi
 from numbers import Real, Integral
@@ -6,7 +7,6 @@ from xml.etree import ElementTree as ET
 import sys
 import warnings
 
-from six import string_types
 import numpy as np
 
 import openmc
@@ -265,7 +265,7 @@ class Cell(IDManagerMixin):
     @name.setter
     def name(self, name):
         if name is not None:
-            cv.check_type('cell name', name, string_types)
+            cv.check_type('cell name', name, str)
             self._name = name
         else:
             self._name = ''
@@ -273,14 +273,7 @@ class Cell(IDManagerMixin):
     @fill.setter
     def fill(self, fill):
         if fill is not None:
-            if isinstance(fill, string_types):
-                if fill.strip().lower() != 'void':
-                    msg = 'Unable to set Cell ID="{0}" to use a non-Material ' \
-                          'or Universe fill "{1}"'.format(self._id, fill)
-                    raise ValueError(msg)
-                fill = None
-
-            elif isinstance(fill, Iterable):
+            if isinstance(fill, Iterable):
                 for i, f in enumerate(fill):
                     if f is not None:
                         cv.check_type('cell.fill[i]', f, openmc.Material)
@@ -440,7 +433,7 @@ class Cell(IDManagerMixin):
         """
         if volume_calc.domain_type == 'cell':
             if self.id in volume_calc.volumes:
-                self._volume = volume_calc.volumes[self.id][0]
+                self._volume = volume_calc.volumes[self.id].n
                 self._atoms = volume_calc.atoms[self.id]
             else:
                 raise ValueError('No volume information found for this cell.')
@@ -480,7 +473,7 @@ class Cell(IDManagerMixin):
                 volume = self.volume
                 for name, atoms in self._atoms.items():
                     nuclide = openmc.Nuclide(name)
-                    density = 1.0e-24 * atoms[0]/volume  # density in atoms/b-cm
+                    density = 1.0e-24 * atoms.n/volume  # density in atoms/b-cm
                     nuclides[name] = (nuclide, density)
             else:
                 raise RuntimeError(

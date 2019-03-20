@@ -5,13 +5,16 @@ module eigenvalue
   use algorithm,   only: binary_search
   use constants,   only: ZERO
   use error,       only: fatal_error, warning
-  use global
   use math,        only: t_percentile
   use mesh,        only: count_bank_sites
-  use mesh_header, only: RegularMesh
+  use mesh_header, only: RegularMesh, meshes
   use message_passing
   use random_lcg,  only: prn, set_particle_seed, advance_prn_seed
+  use settings
+  use simulation_header
   use string,      only: to_str
+  use tally_header
+  use timer_header
 
   implicit none
 
@@ -39,11 +42,11 @@ contains
     type(Bank), save, allocatable :: &
          & temp_sites(:)       ! local array of extra sites on each node
 
-#ifdef MPI
+#ifdef OPENMC_MPI
     integer    :: mpi_err      ! MPI error code
     integer(8) :: n            ! number of sites to send/recv
     integer    :: neighbor     ! processor to send/recv data from
-#ifdef MPIF08
+#ifdef OPENMC_MPIF08
     type(MPI_Request) :: request(20)
 #else
     integer    :: request(20)  ! communication request for send/recving sites
@@ -63,7 +66,7 @@ contains
     ! fission bank its own sites starts in order to ensure reproducibility by
     ! skipping ahead to the proper seed.
 
-#ifdef MPI
+#ifdef OPENMC_MPI
     start = 0_8
     call MPI_EXSCAN(n_bank, start, 1, MPI_INTEGER8, MPI_SUM, &
          mpi_intracomm, mpi_err)
@@ -145,7 +148,7 @@ contains
     ! neighboring processors, we have to perform an ALLGATHER to determine the
     ! indices for all processors
 
-#ifdef MPI
+#ifdef OPENMC_MPI
     ! First do an exclusive scan to get the starting indices for
     start = 0_8
     call MPI_EXSCAN(index_temp, start, 1, MPI_INTEGER8, MPI_SUM, &
@@ -188,7 +191,7 @@ contains
     call time_bank_sample % stop()
     call time_bank_sendrecv % start()
 
-#ifdef MPI
+#ifdef OPENMC_MPI
     ! ==========================================================================
     ! SEND BANK SITES TO NEIGHBORS
 
@@ -298,70 +301,37 @@ contains
 
   subroutine shannon_entropy()
 
-    integer :: ent_idx        ! entropy index
-    integer :: i, j, k        ! index for bank sites
-    integer :: n              ! # of boxes in each dimension
+    integer :: i              ! index for mesh elements
+    real(8) :: entropy_gen    ! entropy at this generation
     logical :: sites_outside  ! were there sites outside entropy box?
-    type(RegularMesh), pointer :: m
 
-    ! Get pointer to entropy mesh
-    m => entropy_mesh
+    associate (m => meshes(index_entropy_mesh))
+      ! count number of fission sites over mesh
+      call count_bank_sites(m, fission_bank, entropy_p, &
+           size_bank=n_bank, sites_outside=sites_outside)
 
-    ! On the first pass through this subroutine, we need to determine how big
-    ! the entropy mesh should be in each direction and then allocate a
-    ! three-dimensional array to store the fraction of source sites in each mesh
-    ! box
-
-    if (.not. allocated(entropy_p)) then
-      if (.not. allocated(m % dimension)) then
-        ! If the user did not specify how many mesh cells are to be used in
-        ! each direction, we automatically determine an appropriate number of
-        ! cells
-        n = ceiling((n_particles/20)**(ONE/THREE))
-
-        ! copy dimensions
-        m % n_dimension = 3
-        allocate(m % dimension(3))
-        m % dimension = n
-
-        ! determine width
-        m % width = (m % upper_right - m % lower_left) / m % dimension
-
+      ! display warning message if there were sites outside entropy box
+      if (sites_outside) then
+        if (master) call warning("Fission source site(s) outside of entropy box.")
       end if
 
-      ! allocate p
-      allocate(entropy_p(1, m % dimension(1), m % dimension(2), &
-           m % dimension(3)))
-    end if
+      ! sum values to obtain shannon entropy
+      if (master) then
+        ! Normalize to total weight of bank sites
+        entropy_p = entropy_p / sum(entropy_p)
 
-    ! count number of fission sites over mesh
-    call count_bank_sites(m, fission_bank, entropy_p, &
-         size_bank=n_bank, sites_outside=sites_outside)
-
-    ! display warning message if there were sites outside entropy box
-    if (sites_outside) then
-      if (master) call warning("Fission source site(s) outside of entropy box.")
-    end if
-
-    ! sum values to obtain shannon entropy
-    if (master) then
-      ! Normalize to total weight of bank sites
-      entropy_p = entropy_p / sum(entropy_p)
-
-      ent_idx = current_gen + gen_per_batch*(current_batch - 1)
-      entropy(ent_idx) = ZERO
-      do i = 1, m % dimension(1)
-        do j = 1, m % dimension(2)
-          do k = 1, m % dimension(3)
-            if (entropy_p(1,i,j,k) > ZERO) then
-              entropy(ent_idx) = entropy(ent_idx) - &
-                   entropy_p(1,i,j,k) * log(entropy_p(1,i,j,k))/log(TWO)
-            end if
-          end do
+        entropy_gen = ZERO
+        do i = 1, size(entropy_p, 2)
+          if (entropy_p(1,i) > ZERO) then
+            entropy_gen = entropy_gen - &
+                 entropy_p(1,i) * log(entropy_p(1,i))/log(TWO)
+          end if
         end do
-      end do
-    end if
 
+        ! Add value to vector
+        call entropy % push_back(entropy_gen)
+      end if
+    end associate
   end subroutine shannon_entropy
 
 !===============================================================================
@@ -372,28 +342,26 @@ contains
 
   subroutine calculate_generation_keff()
 
-    integer :: i  ! overall generation
-#ifdef MPI
+    real(8) :: keff_reduced
+#ifdef OPENMC_MPI
     integer :: mpi_err ! MPI error code
 #endif
 
     ! Get keff for this generation by subtracting off the starting value
     keff_generation = global_tallies(RESULT_VALUE, K_TRACKLENGTH) - keff_generation
 
-    ! Determine overall generation
-    i = overall_generation()
-
-#ifdef MPI
+#ifdef OPENMC_MPI
     ! Combine values across all processors
-    call MPI_ALLREDUCE(keff_generation, k_generation(i), 1, MPI_REAL8, &
+    call MPI_ALLREDUCE(keff_generation, keff_reduced, 1, MPI_REAL8, &
          MPI_SUM, mpi_intracomm, mpi_err)
 #else
-    k_generation(i) = keff_generation
+    keff_reduced = keff_generation
 #endif
 
     ! Normalize single batch estimate of k
     ! TODO: This should be normalized by total_weight, not by n_particles
-    k_generation(i) = k_generation(i) / n_particles
+    keff_reduced = keff_reduced / n_particles
+    call k_generation % push_back(keff_reduced)
 
   end subroutine calculate_generation_keff
 
@@ -417,12 +385,12 @@ contains
     if (n <= 0) then
       ! For inactive generations, use current generation k as estimate for next
       ! generation
-      keff = k_generation(i)
+      keff = k_generation % data(i)
 
     else
       ! Sample mean of keff
-      k_sum(1) = k_sum(1) + k_generation(i)
-      k_sum(2) = k_sum(2) + k_generation(i)**2
+      k_sum(1) = k_sum(1) + k_generation % data(i)
+      k_sum(2) = k_sum(2) + k_generation % data(i)**2
 
       ! Determine mean
       keff = k_sum(1) / n
@@ -616,21 +584,23 @@ contains
 
     real(8) :: total         ! total weight in source bank
     logical :: sites_outside ! were there sites outside the ufs mesh?
-#ifdef MPI
+#ifdef OPENMC_MPI
     integer :: n             ! total number of ufs mesh cells
     integer :: mpi_err       ! MPI error code
 #endif
+
+    associate (m => meshes(index_ufs_mesh))
 
     if (current_batch == 1 .and. current_gen == 1) then
       ! On the first generation, just assume that the source is already evenly
       ! distributed so that effectively the production of fission sites is not
       ! biased
 
-      source_frac = ufs_mesh % volume_frac
+      source_frac = m % volume_frac
 
     else
       ! count number of source sites in each ufs mesh cell
-      call count_bank_sites(ufs_mesh, source_bank, source_frac, &
+      call count_bank_sites(m, source_bank, source_frac, &
            sites_outside=sites_outside, size_bank=work)
 
       ! Check for sites outside of the mesh
@@ -638,9 +608,9 @@ contains
         call fatal_error("Source sites outside of the UFS mesh!")
       end if
 
-#ifdef MPI
+#ifdef OPENMC_MPI
       ! Send source fraction to all processors
-      n = product(ufs_mesh % dimension)
+      n = product(m % dimension)
       call MPI_BCAST(source_frac, n, MPI_REAL8, 0, mpi_intracomm, mpi_err)
 #endif
 
@@ -653,6 +623,8 @@ contains
 
       source_bank % wgt = source_bank % wgt * n_particles / total
     end if
+
+    end associate
 
   end subroutine count_source_for_ufs
 

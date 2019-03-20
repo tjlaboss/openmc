@@ -5,8 +5,10 @@ module cmfd_data
 ! parameters for CMFD calculation.
 !==============================================================================
 
+  use cmfd_header,         only: allocate_cmfd, cmfd, cmfd_coremap, &
+                                 cmfd_downscatter, cmfd_tallies, dhat_reset
   use constants
-  use tally_filter, only: MeshFilter
+  use tally_filter_mesh, only: MeshFilter
 
   implicit none
   private
@@ -20,9 +22,7 @@ contains
 
   subroutine set_up_cmfd()
 
-    use cmfd_header,         only: allocate_cmfd
     use constants,           only: CMFD_NOACCEL
-    use global,              only: cmfd, cmfd_coremap, cmfd_downscatter
 
     ! Check for core map and set it up
     if ((cmfd_coremap) .and. (cmfd%mat_dim == CMFD_NOACCEL)) call set_coremap()
@@ -56,12 +56,9 @@ contains
                            IN_BACK, IN_FRONT, IN_BOTTOM, IN_TOP, CMFD_NOACCEL, &
                            ZERO, ONE, TINY_BIT
     use error,        only: fatal_error
-    use global,       only: cmfd, n_cmfd_tallies, cmfd_tallies, meshes, &
-                           filters, filter_matches
-    use mesh,         only: mesh_indices_to_bin
-    use mesh_header,  only: RegularMesh
+    use mesh_header,  only: RegularMesh, meshes
     use string,       only: to_str
-    use tally_header, only: TallyObject
+    use tally_filter_header, only: filters, filter_matches
 
     integer :: nx            ! number of mesh cells in x direction
     integer :: ny            ! number of mesh cells in y direction
@@ -76,16 +73,12 @@ contains
     integer :: ital          ! tally object index
     integer :: ijk(3)        ! indices for mesh cell
     integer :: score_index   ! index to pull from tally object
-    integer :: i_mesh        ! index in meshes array
-    integer :: i_filt        ! index in filters array
     integer :: i_filter_mesh ! index for mesh filter
     integer :: i_filter_ein  ! index for incoming energy filter
     integer :: i_filter_eout ! index for outgoing energy filter
-    integer :: i_filter_surf ! index for surface filter
-    integer :: stride_surf   ! stride for surface filter
+    integer :: i_mesh        ! flattend index for mesh
     logical :: energy_filters! energy filters present
     real(8) :: flux          ! temp variable for flux
-    type(TallyObject), pointer :: t ! pointer for tally object
     type(RegularMesh), pointer :: m ! pointer for mesh object
 
     ! Extract spatial and energy indices from object
@@ -99,13 +92,14 @@ contains
     cmfd % openmc_src = ZERO
 
     ! Associate tallies and mesh
-    t => cmfd_tallies(1)
-    i_filt = t % filter(t % find_filter(FILTER_MESH))
-    select type(filt => filters(i_filt) % obj)
+    associate (t => cmfd_tallies(1) % obj)
+      i_filter_mesh = t % filter(t % find_filter(FILTER_MESH))
+    end associate
+
+    select type(filt => filters(i_filter_mesh) % obj)
     type is (MeshFilter)
-      i_mesh = filt % mesh
+      m => meshes(filt % mesh)
     end select
-    m => meshes(i_mesh)
 
     ! Set mesh widths
     cmfd % hxyz(1,:,:,:) = m % width(1) ! set x width
@@ -115,21 +109,20 @@ contains
     cmfd % keff_bal = ZERO
 
     ! Begin loop around tallies
-    TAL: do ital = 1, n_cmfd_tallies
+    TAL: do ital = 1, size(cmfd_tallies)
 
       ! Associate tallies and mesh
-      t => cmfd_tallies(ital)
-      i_filt = t % filter(t % find_filter(FILTER_MESH))
-      select type(filt => filters(i_filt) % obj)
-      type is (MeshFilter)
-        i_mesh = filt % mesh
-      end select
-      m => meshes(i_mesh)
+      associate (t => cmfd_tallies(ital) % obj)
+
+      if (ital < 3) then
+        i_filter_mesh = t % filter(t % find_filter(FILTER_MESH))
+      else
+        i_filter_mesh = t % filter(t % find_filter(FILTER_MESHSURFACE))
+      end if
 
       ! Check for energy filters
       energy_filters = (t % find_filter(FILTER_ENERGYIN) > 0)
 
-      i_filter_mesh = t % filter(t % find_filter(FILTER_MESH))
       if (energy_filters) then
         i_filter_ein  = t % filter(t % find_filter(FILTER_ENERGYIN))
         i_filter_eout = t % filter(t % find_filter(FILTER_ENERGYOUT))
@@ -166,7 +159,7 @@ contains
 
                 ! Get bin number for mesh indices
                 filter_matches(i_filter_mesh) % bins % data(1) = &
-                     mesh_indices_to_bin(m,ijk)
+                     m % get_bin_from_indices(ijk)
 
                 ! Apply energy in filter
                 if (energy_filters) then
@@ -217,7 +210,7 @@ contains
 
                   ! Get bin number for mesh indices
                   filter_matches(i_filter_mesh) % bins % data(1) = &
-                       mesh_indices_to_bin(m,ijk)
+                       m % get_bin_from_indices(ijk)
 
                   if (energy_filters) then
                     ! Apply energy in filter
@@ -252,65 +245,62 @@ contains
 
               else if (ital == 3) then
 
-                i_filter_surf = t % filter(t % find_filter(FILTER_SURFACE))
-                stride_surf = t % stride(t % find_filter(FILTER_SURFACE))
-
                 ! Initialize and filter for energy
                 do l = 1, size(t % filter)
                   call filter_matches(t % filter(l)) % bins % clear()
                   call filter_matches(t % filter(l)) % bins % push_back(1)
                 end do
+
+                ! Set the bin for this mesh cell
+                i_mesh = m % get_bin_from_indices([ i, j, k ])
+                filter_matches(i_filter_mesh) % bins % data(1) = 12*(i_mesh - 1) + 1
+
+                ! Set the energy bin if needed
                 if (energy_filters) then
                   filter_matches(i_filter_ein) % bins % data(1) = ng - h + 1
                 end if
 
-                ! Get the bin for this mesh cell
-                filter_matches(i_filter_mesh) % bins % data(1) = &
-                     mesh_indices_to_bin(m, (/ i, j, k /))
-
-                score_index = 1
+                score_index = 0
                 do l = 1, size(t % filter)
-                  if (t % filter(l) == i_filter_surf) cycle
                   score_index = score_index + (filter_matches(t % filter(l)) &
                        % bins % data(1) - 1) * t % stride(l)
                 end do
 
                 ! Left surface
                 cmfd % current(1,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (OUT_LEFT - 1) * stride_surf)
+                     score_index + OUT_LEFT)
                 cmfd % current(2,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (IN_LEFT - 1) * stride_surf)
+                     score_index + IN_LEFT)
 
                 ! Right surface
                 cmfd % current(3,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (IN_RIGHT - 1) * stride_surf)
+                     score_index + IN_RIGHT)
                 cmfd % current(4,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (OUT_RIGHT - 1) * stride_surf)
+                     score_index + OUT_RIGHT)
 
                 ! Back surface
                 cmfd % current(5,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (OUT_BACK - 1) * stride_surf)
+                     score_index + OUT_BACK)
                 cmfd % current(6,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (IN_BACK - 1) * stride_surf)
+                     score_index + IN_BACK)
 
                 ! Front surface
                 cmfd % current(7,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (IN_FRONT - 1) * stride_surf)
+                     score_index + IN_FRONT)
                 cmfd % current(8,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (OUT_FRONT - 1) * stride_surf)
+                     score_index + OUT_FRONT)
 
-                ! Bottom surface
+                ! Left surface
                 cmfd % current(9,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (OUT_BOTTOM - 1) * stride_surf)
+                     score_index + OUT_BOTTOM)
                 cmfd % current(10,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (IN_BOTTOM - 1) * stride_surf)
+                     score_index + IN_BOTTOM)
 
-                ! Top surface
+                ! Right surface
                 cmfd % current(11,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (IN_TOP - 1) * stride_surf)
+                     score_index + IN_TOP)
                 cmfd % current(12,h,i,j,k) = t % results(RESULT_SUM, 1, &
-                     score_index + (OUT_TOP - 1) * stride_surf)
-
+                     score_index + OUT_TOP)
               end if TALLY
 
             end do OUTGROUP
@@ -321,13 +311,13 @@ contains
 
       end do ZLOOP
 
+      end associate
     end do TAL
 
     ! Normalize openmc source distribution
     cmfd % openmc_src = cmfd % openmc_src/sum(cmfd % openmc_src)*cmfd%norm
 
     ! Nullify all pointers
-    if (associated(t)) nullify(t)
     if (associated(m)) nullify(m)
 
   end subroutine compute_xs
@@ -339,7 +329,6 @@ contains
   subroutine set_coremap()
 
     use constants,  only: CMFD_NOACCEL
-    use global,     only: cmfd
 
     integer :: counter=1 ! counter for unique fuel assemblies
     integer :: nx        ! number of mesh cells in x direction
@@ -400,7 +389,7 @@ contains
   subroutine neutron_balance()
 
     use constants,    only: ONE, ZERO, CMFD_NOACCEL, CMFD_NORES
-    use global,       only: cmfd, keff, current_batch
+    use simulation_header, only: keff, current_batch
 
     integer :: nx           ! number of mesh cells in x direction
     integer :: ny           ! number of mesh cells in y direction
@@ -509,7 +498,6 @@ contains
   subroutine compute_dtilde()
 
     use constants,  only: CMFD_NOACCEL, ZERO_FLUX, TINY_BIT
-    use global,     only: cmfd, cmfd_coremap
 
     integer :: nx           ! maximum number of cells in x direction
     integer :: ny           ! maximum number of cells in y direction
@@ -651,8 +639,7 @@ contains
   subroutine compute_dhat()
 
     use constants, only: CMFD_NOACCEL, ZERO
-    use global,    only: cmfd, cmfd_coremap, dhat_reset
-    use output,    only: write_message
+    use error,     only: write_message
     use string,    only: to_str
 
     integer :: nx             ! maximum number of cells in x direction
@@ -801,7 +788,6 @@ contains
   function get_reflector_albedo(l, g, i, j, k)
 
     use constants,  only: ONE
-    use global,     only: cmfd
 
     real(8) :: get_reflector_albedo ! reflector albedo
     integer, intent(in) :: i ! iteration counter for x
@@ -840,7 +826,6 @@ contains
   subroutine compute_effective_downscatter()
 
     use constants, only: ZERO, CMFD_NOACCEL
-    use global,    only: cmfd
 
     integer :: nx                ! number of mesh cells in x direction
     integer :: ny                ! number of mesh cells in y direction
