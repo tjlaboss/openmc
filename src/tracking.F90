@@ -6,6 +6,7 @@ module tracking
   use geometry_header,    only: cells
   use geometry,           only: find_cell, distance_to_boundary, cross_surface, &
                                 cross_lattice, check_cell_overlap
+  use global
   use output,             only: write_message
   use mesh,               only: get_mesh_bin
   use message_passing

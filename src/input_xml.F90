@@ -14,6 +14,7 @@ module input_xml
   use geometry,         only: calc_offsets, maximum_levels, count_instance, &
                               neighbor_lists
   use geometry_header
+  use global
   use hdf5_interface
   use list_header,      only: ListChar, ListInt, ListReal
   use material_header
@@ -154,6 +155,7 @@ contains
     integer(C_INT32_T) :: i_start, i_end
     integer(C_INT) :: err
     integer, allocatable :: temp_int_array(:)
+    real(8), allocatable :: temp_real(:)
     integer :: n_tracks
     logical :: file_exists
     character(MAX_WORD_LEN) :: type

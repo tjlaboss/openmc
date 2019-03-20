@@ -5,8 +5,10 @@ module physics
   use cross_section,          only: elastic_xs_0K
   use endf,                   only: reaction_name
   use error,                  only: fatal_error, warning
+  use global
   use material_header,        only: Material, materials
   use math
+  use mesh,                   only: get_mesh_bin
   use mesh_header,            only: meshes
   use message_passing
   use nuclide_header
@@ -1177,6 +1179,7 @@ contains
 
     integer :: nu_d(MAX_DELAYED_GROUPS) ! number of delayed neutrons born
     integer :: i                        ! loop index
+    integer :: group                    ! energy loop index
     integer :: nu                       ! actual number of neutrons produced
     integer :: mesh_bin                 ! mesh bin for source site
     real(8) :: nu_t                     ! total nu

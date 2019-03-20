@@ -5,11 +5,14 @@ module physics_mg
   use bank_header
   use constants
   use error,                  only: fatal_error, warning
+  use global
   use material_header,        only: Material, materials
   use math,                   only: rotate_angle
+  use mesh,                   only: get_mesh_bin
   use mesh_header,            only: meshes
-  use mgxs_header
+  !use mgxs_header
   use message_passing
+  use mgxs_header
   use nuclide_header,         only: material_xs
   use output,                 only: write_message
   use particle_header,        only: Particle
@@ -256,12 +259,18 @@ contains
     integer :: dg                       ! delayed group
     integer :: gout                     ! group out
     integer :: nu                       ! actual number of neutrons produced
+    integer :: freq_group
+    integer :: ijk(3)
+    integer :: group
     integer :: mesh_bin                 ! mesh bin for source site
     real(8) :: nu_t                     ! total nu
     real(8) :: nu_delayed               ! nu delayed
     real(8) :: mu                       ! fission neutron angular cosine
     real(8) :: phi                      ! fission neutron azimuthal angle
     real(8) :: weight                   ! weight adjustment for ufs method
+    real(8) :: freq                 
+    real(8) :: delayed_nu_fission(MAX_DELAYED_GROUPS)
+    logical :: in_mesh                  ! source site in ufs mesh?
     class(Mgxs), pointer :: xs
 
     delayed_nu_fission = ZERO
