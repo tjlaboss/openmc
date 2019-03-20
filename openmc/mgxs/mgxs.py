@@ -1659,7 +1659,8 @@ class MGXS(object):
 
     def build_hdf5_store(self, filename='mgxs.h5', directory='mgxs',
                          subdomains='all', nuclides='all',
-                         xs_type='macro', row_column='inout', append=True):
+                         xs_type='macro', row_column='inout', append=True,
+                         libver='earliest'):
         """Export the multi-group cross section data to an HDF5 binary file.
 
         This method constructs an HDF5 file which stores the multi-group
@@ -1695,6 +1696,9 @@ class MGXS(object):
         append : bool
             If true, appends to an existing HDF5 file with the same filename
             directory (if one exists). Defaults to True.
+        libver : {'earliest', 'latest'}
+            Compatibility mode for the HDF5 file. 'latest' will produce files
+            that are less backwards compatible but have performance benefits.
 
         Raises
         ------
@@ -1718,7 +1722,7 @@ class MGXS(object):
         if append and os.path.isfile(filename):
             xs_results = h5py.File(filename, 'a')
         else:
-            xs_results = h5py.File(filename, 'w')
+            xs_results = h5py.File(filename, 'w', libver=libver)
 
         # Construct a collection of the subdomains to report
         if not isinstance(subdomains, string_types):
