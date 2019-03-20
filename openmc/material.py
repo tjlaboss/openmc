@@ -10,7 +10,7 @@ import numpy as np
 import openmc
 import openmc.data
 import openmc.checkvalue as cv
-from openmc.clean_xml import sort_xml_elements, clean_xml_indentation
+from openmc.clean_xml import clean_xml_indentation
 from .mixin import IDManagerMixin
 
 
@@ -1258,7 +1258,7 @@ class Materials(cv.CheckedList):
             material.make_isotropic_in_lab()
 
     def _create_material_subelements(self, root_element):
-        for material in self:
+        for material in sorted(self, key=lambda x: x.id):
             root_element.append(material.to_xml_element(self.cross_sections))
 
     def _create_cross_sections_subelement(self, root_element):
@@ -1282,14 +1282,13 @@ class Materials(cv.CheckedList):
         """
 
         root_element = ET.Element("materials")
-        self._create_material_subelements(root_element)
         self._create_cross_sections_subelement(root_element)
         self._create_multipole_library_subelement(root_element)
+        self._create_material_subelements(root_element)
 
         # Clean the indentation in the file to be user-readable
-        sort_xml_elements(root_element)
         clean_xml_indentation(root_element)
 
         # Write the XML Tree to the materials.xml file
         tree = ET.ElementTree(root_element)
-        tree.write(path, xml_declaration=True, encoding='utf-8', method="xml")
+        tree.write(path, xml_declaration=True, encoding='utf-8')
