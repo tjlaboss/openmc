@@ -83,7 +83,7 @@ module nuclide_header
     type(EnergyGrid), allocatable :: grid(:)
 
     ! Microscopic cross sections
-    type(SumXS), allocatable :: sum_xs(:)
+    type(SumXS), allocatable :: xs(:)
 
     ! Resonance scattering info
     logical              :: resonant = .false. ! resonant scatterer?
@@ -623,29 +623,29 @@ contains
     type(VectorInt) :: MTs
 
     n_temperature = size(this % kTs)
-    allocate(this % sum_xs(n_temperature))
+    allocate(this % xs(n_temperature))
     this % reaction_index(:) = 0
     do i = 1, n_temperature
       ! Allocate and initialize derived cross sections
       n_grid = size(this % grid(i) % energy)
-      allocate(this % sum_xs(i) % total(n_grid))
-      allocate(this % sum_xs(i) % elastic(n_grid))
-      allocate(this % sum_xs(i) % fission(n_grid))
-      allocate(this % sum_xs(i) % nu_fission(n_grid))
-      allocate(this % sum_xs(i) % prompt_nu_fission(n_grid))
-      allocate(this % sum_xs(i) % delayed_nu_fission(n_grid, MAX_DELAYED_GROUPS))
-      allocate(this % sum_xs(i) % kappa_fission(n_grid))
-      allocate(this % sum_xs(i) % absorption(n_grid))
-      this % sum_xs(i) % total(:) = ZERO
-      this % sum_xs(i) % elastic(:) = ZERO
-      this % sum_xs(i) % fission(:) = ZERO
-      this % sum_xs(i) % nu_fission(:) = ZERO
-      this % sum_xs(i) % prompt_nu_fission(:) = ZERO
-      this % sum_xs(i) % delayed_nu_fission(:,:) = ZERO
-      this % sum_xs(i) % kappa_fission(:) = ZERO
-      this % sum_xs(i) % absorption(:) = ZERO
-      allocate(this % sum_xs(i) % value(4,n_grid))
-      this % sum_xs(i) % value(:,:) = ZERO
+      allocate(this % xs(i) % total(n_grid))
+      allocate(this % xs(i) % elastic(n_grid))
+      allocate(this % xs(i) % fission(n_grid))
+      allocate(this % xs(i) % nu_fission(n_grid))
+      allocate(this % xs(i) % prompt_nu_fission(n_grid))
+      allocate(this % xs(i) % delayed_nu_fission(n_grid, MAX_DELAYED_GROUPS))
+      allocate(this % xs(i) % kappa_fission(n_grid))
+      allocate(this % xs(i) % absorption(n_grid))
+      this % xs(i) % total(:) = ZERO
+      this % xs(i) % elastic(:) = ZERO
+      this % xs(i) % fission(:) = ZERO
+      this % xs(i) % nu_fission(:) = ZERO
+      this % xs(i) % prompt_nu_fission(:) = ZERO
+      this % xs(i) % delayed_nu_fission(:,:) = ZERO
+      this % xs(i) % kappa_fission(:) = ZERO
+      this % xs(i) % absorption(:) = ZERO
+      allocate(this % xs(i) % value(4,n_grid))
+      this % xs(i) % value(:,:) = ZERO
     end do
 
     i_fission = 0
@@ -673,12 +673,12 @@ contains
           n = size(rx % xs(t) % value)
 
           ! Add contribution to total cross section
-          this % sum_xs(t) % value(XS_TOTAL,j:j+n-1) = this % sum_xs(t) % &
+          this % xs(t) % value(XS_TOTAL,j:j+n-1) = this % xs(t) % &
                value(XS_TOTAL,j:j+n-1) + rx % xs(t) % value
 
           ! Add contribution to absorption cross section
           if (is_disappearance(rx % MT)) then
-            this % sum_xs(t) % value(XS_ABSORPTION,j:j+n-1) = this % sum_xs(t) % &
+            this % xs(t) % value(XS_ABSORPTION,j:j+n-1) = this % xs(t) % &
                  value(XS_ABSORPTION,j:j+n-1) + rx % xs(t) % value
           end if
 
@@ -695,11 +695,11 @@ contains
           ! Add contribution to fission cross section
           if (is_fission(rx % MT)) then
             this % fissionable = .true.
-            this % sum_xs(t) % value(XS_FISSION,j:j+n-1) = this % sum_xs(t) % &
+            this % xs(t) % value(XS_FISSION,j:j+n-1) = this % xs(t) % &
                  value(XS_FISSION,j:j+n-1) + rx % xs(t) % value
 
             ! Also need to add fission cross sections to absorption
-            this % sum_xs(t) % value(XS_ABSORPTION,j:j+n-1) = this % sum_xs(t) % &
+            this % xs(t) % value(XS_ABSORPTION,j:j+n-1) = this % xs(t) % &
                  value(XS_ABSORPTION,j:j+n-1) + rx % xs(t) % value
 
             ! If total fission reaction is present, there's no need to store the
@@ -751,27 +751,27 @@ contains
     ! Calculate nu-fission cross section
     do t = 1, n_temperature
       if (this % fissionable) then
-        do i = 1, size(this % sum_xs(t) % fission)
-          this % sum_xs(t) % nu_fission(i) = this % nu(this % grid(t) % energy(i), &
-               EMISSION_TOTAL) * this % sum_xs(t) % fission(i)
-          this % sum_xs(t) % prompt_nu_fission(i) = this % nu(this % grid(t) % energy(i), &
-               EMISSION_PROMPT) * this % sum_xs(t) % fission(i)
-          this % sum_xs(t) % kappa_fission(i) = this % reactions(this % index_fission(1)) % Q_value &
-               * this % sum_xs(t) % fission(i)
+        do i = 1, size(this % xs(t) % fission)
+          this % xs(t) % nu_fission(i) = this % nu(this % grid(t) % energy(i), &
+               EMISSION_TOTAL) * this % xs(t) % fission(i)
+          this % xs(t) % prompt_nu_fission(i) = this % nu(this % grid(t) % energy(i), &
+               EMISSION_PROMPT) * this % xs(t) % fission(i)
+          this % xs(t) % kappa_fission(i) = this % reactions(this % index_fission(1)) % Q_value &
+               * this % xs(t) % fission(i)
           do d = 1, this % n_precursor
-            this % sum_xs(t) % delayed_nu_fission(i,d) = this % nu(this % grid(t) % energy(i), &
-                 EMISSION_DELAYED, d) * this % sum_xs(t) % fission(i)
+            this % xs(t) % delayed_nu_fission(i,d) = this % nu(this % grid(t) % energy(i), &
+                 EMISSION_DELAYED, d) * this % xs(t) % fission(i)
           end do
         end do
       else
-        this % sum_xs(t) % nu_fission(:) = ZERO
-        this % sum_xs(t) % prompt_nu_fission(:) = ZERO
-        this % sum_xs(t) % kappa_fission(:) = ZERO
-        this % sum_xs(t) % delayed_nu_fission(:,:) = ZERO
+        this % xs(t) % nu_fission(:) = ZERO
+        this % xs(t) % prompt_nu_fission(:) = ZERO
+        this % xs(t) % kappa_fission(:) = ZERO
+        this % xs(t) % delayed_nu_fission(:,:) = ZERO
         do i = 1, n_grid
-          this % sum_xs(t) % value(XS_NU_FISSION,i) = &
+          this % xs(t) % value(XS_NU_FISSION,i) = &
                this % nu(this % grid(t) % energy(i), EMISSION_TOTAL) * &
-               this % sum_xs(t) % value(XS_FISSION,i)
+               this % xs(t) % value(XS_FISSION,i)
         end do
       end if
     end do
