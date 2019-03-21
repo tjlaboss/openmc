@@ -33,22 +33,27 @@ def install(omp=False, mpi=False, phdf5=False):
     if not omp:
         cmake_cmd.append('-Dopenmp=off')
 
-    # For MPI, we just need to change the Fortran compiler
+    # Use MPI wrappers when building in parallel
     if mpi:
         os.environ['FC'] = 'mpifort' if which('mpifort') else 'mpif90'
+        os.environ['CC'] = 'mpicc'
+        os.environ['CXX'] = 'mpicxx'
 
     # Tell CMake to prefer parallel HDF5 if specified
     if phdf5:
         if not mpi:
             raise ValueError('Parallel HDF5 must be used in '
                              'conjunction with MPI.')
-        cmake_cmd.append('-DHDF5_PREFER_PARALLEL=on')
+        cmake_cmd.append('-DHDF5_PREFER_PARALLEL=ON')
+    else:
+        cmake_cmd.append('-DHDF5_PREFER_PARALLEL=OFF')
 
     # Build and install
     cmake_cmd.append('..')
-    subprocess.call(cmake_cmd)
-    subprocess.call(['make', '-j'])
-    subprocess.call(['make', 'install'])
+    print(' '.join(cmake_cmd))
+    subprocess.check_call(cmake_cmd)
+    subprocess.check_call(['make', '-j'])
+    subprocess.check_call(['sudo', 'make', 'install'])
 
 
 def main():
