@@ -15,6 +15,7 @@ module cross_section
   use sab_header,       only: SAlphaBeta, sab_tables
   use settings
   use simulation_header
+  use tally_header,     only: active_tallies
 
   implicit none
 
@@ -173,9 +174,16 @@ contains
     integer :: i_low  ! lower logarithmic mapping index
     integer :: i_high ! upper logarithmic mapping index
     integer :: d      ! delayed group
+    integer :: i_rxn  ! reaction index
+    integer :: j      ! index in DEPLETION_RX
+    real(8) :: val    ! temporary xs value
     real(8) :: f      ! interp factor on nuclide energy grid
     real(8) :: kT     ! temperature in eV
     real(8) :: sigT, sigA, sigF ! Intermediate multipole variables
+
+    ! Initialize cached cross sections to zero
+    micro_xs(i_nuclide) % thermal         = ZERO
+    micro_xs(i_nuclide) % thermal_elastic = ZERO
 
     associate (nuc => nuclides(i_nuclide))
       ! Check to see if there is multipole data present at this energy
@@ -211,6 +219,14 @@ contains
           micro_xs(i_nuclide) % prompt_nu_fission = ZERO
           micro_xs(i_nuclide) % delayed_nu_fission(:) = ZERO
           micro_xs(i_nuclide) % kappa_fission = ZERO
+        end if
+
+        if (need_depletion_rx) then
+          ! Initialize all reaction cross sections to zero
+          micro_xs(i_nuclide) % reaction(:) = ZERO
+
+          ! Only non-zero reaction is (n,gamma)
+          micro_xs(i_nuclide) % reaction(4) = sigA - sigF
         end if
 
         ! Ensure these values are set
@@ -321,8 +337,33 @@ contains
               micro_xs(i_nuclide) % delayed_nu_fission(d) = (ONE - f) * xs % delayed_nu_fission( &
                    i_grid, d) + f * xs % delayed_nu_fission(i_grid + 1, d)
             end do
+          else
+            micro_xs(i_nuclide) % fission         = ZERO
+            micro_xs(i_nuclide) % nu_fission      = ZERO
           end if
         end associate
+
+        ! Depletion-related reactions
+        if (need_depletion_rx) then
+          do j = 1, 6
+            ! Initialize reaction xs to zero
+            micro_xs(i_nuclide) % reaction(j) = ZERO
+
+            ! If reaction is present and energy is greater than threshold, set
+            ! the reaction xs appropriately
+            i_rxn = nuc % reaction_index(DEPLETION_RX(j))
+            if (i_rxn > 0) then
+              associate (xs => nuc % reactions(i_rxn) % xs(i_temp))
+                if (i_grid >= xs % threshold) then
+                  micro_xs(i_nuclide) % reaction(j) = (ONE - f) * &
+                       xs % value(i_grid - xs % threshold + 1) + &
+                       f * xs % value(i_grid - xs % threshold + 2)
+                end if
+              end associate
+            end if
+          end do
+        end if
+
       end if
 
       ! Initialize sab treatment to false
@@ -626,28 +667,6 @@ contains
     end associate
 
   end subroutine calculate_urr_xs
-
-!===============================================================================
-! FIND_ENERGY_INDEX determines the index on the union energy grid at a certain
-! energy
-!===============================================================================
-
-  pure function find_energy_index(mat, E) result(i)
-    type(Material), intent(in) :: mat ! pointer to current material
-    real(8),        intent(in) :: E   ! energy of particle
-    integer                    :: i   ! energy grid index
-
-    ! if the energy is outside of energy grid range, set to first or last
-    ! index. Otherwise, do a binary search through the union energy grid.
-    if (E <= mat % e_grid(1)) then
-      i = 1
-    elseif (E > mat % e_grid(mat % n_grid)) then
-      i = mat % n_grid - 1
-    else
-      i = binary_search(mat % e_grid, mat % n_grid, E)
-    end if
-
-  end function find_energy_index
 
 !===============================================================================
 ! MULTIPOLE_EVAL evaluates the windowed multipole equations for cross
