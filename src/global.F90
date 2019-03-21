@@ -19,7 +19,6 @@ module global
   use sab_header,       only: SAlphaBeta
   use set_header,       only: SetInt
   use stl_vector,       only: VectorInt
-  use surface_header,   only: SurfaceContainer
   !use source_header,    only: SourceDistribution
   !use tally_header,     only: TallyObject, TallyDerivative
   use tally_filter_header, only: TallyFilterContainer, TallyFilterMatch

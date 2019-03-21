@@ -25,6 +25,15 @@ module geometry
       logical(C_BOOL)                   :: sense;
     end function surface_sense_c
 
+    pure subroutine surface_reflect_c(surf_ind, xyz, uvw) &
+         bind(C, name='surface_reflect')
+      use ISO_C_BINDING
+      implicit none
+      integer(C_INT), intent(in), value :: surf_ind;
+      real(C_DOUBLE), intent(in)        :: xyz(3);
+      real(C_DOUBLE), intent(inout)     :: uvw(3);
+    end subroutine surface_reflect_c
+
     pure function surface_distance_c(surf_ind, xyz, uvw, coincident) &
          bind(C, name='surface_distance') result(d)
       use ISO_C_BINDING
@@ -44,6 +53,25 @@ module geometry
       real(C_DOUBLE), intent(in)        :: xyz(3);
       real(C_DOUBLE), intent(out)       :: uvw(3);
     end subroutine surface_normal_c
+
+    function surface_periodic_c(surf_ind1, xyz, uvw) &
+         bind(C, name="surface_periodic") result(rotational)
+      use ISO_C_BINDING
+      implicit none
+      integer(C_INT), intent(in), value :: surf_ind1;
+      real(C_DOUBLE), intent(inout)     :: xyz(3);
+      real(C_DOUBLE), intent(inout)     :: uvw(3);
+      logical(C_BOOL)                   :: rotational
+    end function surface_periodic_c
+
+    function surface_i_periodic_c(surf_ind) bind(C, name="surface_i_periodic") &
+         result(i_periodic)
+      use ISO_C_BINDING
+      implicit none
+      integer(C_INT), intent(in), value :: surf_ind
+      integer(C_INT)                    :: i_periodic
+    end function
+
   end interface
 
 contains
@@ -514,9 +542,9 @@ contains
     real(8) :: d_surf             ! distance to surface
     real(8) :: x0,y0,z0           ! coefficients for surface
     real(8) :: xyz_cross(3)       ! coordinates at projected surface crossing
+    real(8) :: surf_uvw(3)        ! surface normal direction
     logical :: coincident         ! is particle on surface?
     type(Cell),       pointer :: c
-    class(Surface),   pointer :: surf
     class(Lattice),   pointer :: lat
 
     ! inialize distance to infinity (huge)
@@ -771,9 +799,8 @@ contains
           ! traveling into if the surface is crossed
           if (.not. c % simple) then
             xyz_cross(:) = p % coord(j) % xyz + d_surf*p % coord(j) % uvw
-            surf => surfaces(abs(level_surf_cross)) % obj
-            if (dot_product(p % coord(j) % uvw, &
-                 surf % normal(xyz_cross)) > ZERO) then
+            call surface_normal_c(abs(level_surf_cross)-1, xyz_cross, surf_uvw)
+            if (dot_product(p % coord(j) % uvw, surf_uvw) > ZERO) then
               surface_crossed = abs(level_surf_cross)
             else
               surface_crossed = -abs(level_surf_cross)
@@ -838,15 +865,15 @@ contains
       ! Copy positive neighbors to Surface instance
       n = neighbor_pos(i)%size()
       if (n > 0) then
-        allocate(surfaces(i)%obj%neighbor_pos(n))
-        surfaces(i)%obj%neighbor_pos(:) = neighbor_pos(i)%data(1:n)
+        allocate(surfaces(i)%neighbor_pos(n))
+        surfaces(i)%neighbor_pos(:) = neighbor_pos(i)%data(1:n)
       end if
 
       ! Copy negative neighbors to Surface instance
       n = neighbor_neg(i)%size()
       if (n > 0) then
-        allocate(surfaces(i)%obj%neighbor_neg(n))
-        surfaces(i)%obj%neighbor_neg(:) = neighbor_neg(i)%data(1:n)
+        allocate(surfaces(i)%neighbor_neg(n))
+        surfaces(i)%neighbor_neg(:) = neighbor_neg(i)%data(1:n)
       end if
     end do
 

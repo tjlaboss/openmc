@@ -4,8 +4,7 @@ module tracking
   use cross_section,      only: calculate_xs
   use error,              only: warning, write_message
   use geometry_header,    only: cells
-  use geometry,           only: find_cell, distance_to_boundary, &
-                                cross_lattice, check_cell_overlap, check_cell_overlap
+  use geometry
   use global
   use output,             only: write_message
   use mesh,               only: get_mesh_bin
@@ -375,7 +374,6 @@ contains
     real(8) :: v          ! y-component of direction
     real(8) :: w          ! z-component of direction
     real(8) :: norm       ! "norm" of surface normal
-    real(8) :: d          ! distance between point and plane
     real(8) :: xyz(3)     ! Saved global coordinate
     integer :: i_surface  ! index in surfaces
     logical :: rotational ! if rotational periodic BC applied
@@ -383,7 +381,7 @@ contains
     class(Surface), pointer :: surf
 
     i_surface = abs(p % surface)
-    surf => surfaces(i_surface)%obj
+    surf => surfaces(i_surface)
     if (verbosity >= 10 .or. trace) then
       call write_message("    Crossing surface " // trim(to_str(surf % id)))
     end if
@@ -440,7 +438,7 @@ contains
       end if
 
       ! Reflect particle off surface
-      call surf%reflect(p%coord(1)%xyz, p%coord(1)%uvw)
+      call surface_reflect_c(i_surface-1, p%coord(1)%xyz, p%coord(1)%uvw)
 
       ! Make sure new particle direction is normalized
       u = p%coord(1)%uvw(1)
@@ -497,70 +495,14 @@ contains
         p % coord(1) % xyz = xyz
       end if
 
-      rotational = .false.
-      select type (surf)
-      type is (SurfaceXPlane)
-        select type (opposite => surfaces(surf % i_periodic) % obj)
-        type is (SurfaceXPlane)
-          p % coord(1) % xyz(1) = opposite % x0
-        type is (SurfaceYPlane)
-          rotational = .true.
-
-          ! Rotate direction
-          u = p % coord(1) % uvw(1)
-          v = p % coord(1) % uvw(2)
-          p % coord(1) % uvw(1) = v
-          p % coord(1) % uvw(2) = -u
-
-          ! Rotate position
-          p % coord(1) % xyz(1) = surf % x0 + p % coord(1) % xyz(2) - opposite % y0
-          p % coord(1) % xyz(2) = opposite % y0
-        end select
-
-      type is (SurfaceYPlane)
-        select type (opposite => surfaces(surf % i_periodic) % obj)
-        type is (SurfaceYPlane)
-          p % coord(1) % xyz(2) = opposite % y0
-        type is (SurfaceXPlane)
-          rotational = .true.
-
-          ! Rotate direction
-          u = p % coord(1) % uvw(1)
-          v = p % coord(1) % uvw(2)
-          p % coord(1) % uvw(1) = -v
-          p % coord(1) % uvw(2) = u
-
-          ! Rotate position
-          p % coord(1) % xyz(2) = surf % y0 + p % coord(1) % xyz(1) - opposite % x0
-          p % coord(1) % xyz(1) = opposite % x0
-        end select
-
-      type is (SurfaceZPlane)
-        select type (opposite => surfaces(surf % i_periodic) % obj)
-        type is (SurfaceZPlane)
-          p % coord(1) % xyz(3) = opposite % z0
-        end select
-
-      type is (SurfacePlane)
-        select type (opposite => surfaces(surf % i_periodic) % obj)
-        type is (SurfacePlane)
-          ! Get surface normal for opposite plane
-          xyz(:) = opposite % normal(p % coord(1) % xyz)
-
-          ! Determine distance to plane
-          norm = xyz(1)*xyz(1) + xyz(2)*xyz(2) + xyz(3)*xyz(3)
-          d = opposite % evaluate(p % coord(1) % xyz) / norm
-
-          ! Move particle along normal vector based on distance
-          p % coord(1) % xyz(:) = p % coord(1) % xyz(:) - d*xyz
-        end select
-      end select
+      rotational = surface_periodic_c(i_surface-1, p % coord(1) % xyz, &
+                                      p % coord(1) % uvw)
 
       ! Reassign particle's surface
       if (rotational) then
-        p % surface = surf % i_periodic
+        p % surface = surface_i_periodic_c(i_surface-1) + 1
       else
-        p % surface = sign(surf % i_periodic, p % surface)
+        p % surface = sign(surface_i_periodic_c(i_surface-1) + 1, p % surface)
       end if
 
       ! Figure out what cell particle is in now
