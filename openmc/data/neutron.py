@@ -1,6 +1,6 @@
-from __future__ import division, unicode_literals
 import sys
-from collections import OrderedDict, Iterable, Mapping, MutableMapping
+from collections import OrderedDict
+from collections.abc import Iterable, Mapping, MutableMapping
 from io import StringIO
 from itertools import chain
 from math import log10
@@ -10,7 +10,6 @@ import shutil
 import tempfile
 from warnings import warn
 
-from six import string_types
 import numpy as np
 import h5py
 
@@ -25,6 +24,7 @@ from .njoy import make_ace
 from .product import Product
 from .reaction import Reaction, _get_photon_products_ace
 from . import resonance as res
+from . import resonance_covariance as res_cov
 from .urr import ProbabilityTables
 import openmc.checkvalue as cv
 from openmc.mixin import EqualityMixin
@@ -151,6 +151,8 @@ class IncidentNeutron(EqualityMixin):
         and the values are Reaction objects.
     resonances : openmc.data.Resonances or None
         Resonance parameters
+    resonance_covariance : openmc.data.ResonanceCovariance or None
+        Covariance for resonance parameters
     summed_reactions : collections.OrderedDict
         Contains summed cross sections, e.g., the total cross section. The keys
         are the MT values and the values are Reaction objects.
@@ -232,6 +234,10 @@ class IncidentNeutron(EqualityMixin):
         return self._resonances
 
     @property
+    def resonance_covariance(self):
+        return self._resoncance_covariance
+
+    @property
     def summed_reactions(self):
         return self._summed_reactions
 
@@ -245,7 +251,7 @@ class IncidentNeutron(EqualityMixin):
 
     @name.setter
     def name(self, name):
-        cv.check_type('name', name, string_types)
+        cv.check_type('name', name, str)
         self._name = name
 
     @property
@@ -292,6 +298,11 @@ class IncidentNeutron(EqualityMixin):
         cv.check_type('resonances', resonances, res.Resonances)
         self._resonances = resonances
 
+    @resonance_covariance.setter
+    def resonance_covariance(self, resonance_covariance):
+        cv.check_type('resonances', resonances, res.ResonanceCovariance)
+        self._resonacne_covariance = resonance_covariance
+
     @summed_reactions.setter
     def summed_reactions(self, summed_reactions):
         cv.check_type('summed reactions', summed_reactions, Mapping)
@@ -301,7 +312,7 @@ class IncidentNeutron(EqualityMixin):
     def urr(self, urr):
         cv.check_type('probability table dictionary', urr, MutableMapping)
         for key, value in urr:
-            cv.check_type('probability table temperature', key, string_types)
+            cv.check_type('probability table temperature', key, str)
             cv.check_type('probability tables', value, ProbabilityTables)
         self._urr = urr
 
@@ -465,6 +476,8 @@ class IncidentNeutron(EqualityMixin):
             return [mt]
         elif mt in SUM_RULES:
             mts = SUM_RULES[mt]
+        else:
+            return []
         complete = False
         while not complete:
             new_mts = []
@@ -478,7 +491,7 @@ class IncidentNeutron(EqualityMixin):
             mts = new_mts
         return mts
 
-    def export_to_hdf5(self, path, mode='a'):
+    def export_to_hdf5(self, path, mode='a', libver='earliest'):
         """Export incident neutron data to an HDF5 file.
 
         Parameters
@@ -488,6 +501,9 @@ class IncidentNeutron(EqualityMixin):
         mode : {'r', r+', 'w', 'x', 'a'}
             Mode that is used to open the HDF5 file. This is the second argument
             to the :class:`h5py.File` constructor.
+        libver : {'earliest', 'latest'}
+            Compatibility mode for the HDF5 file. 'latest' will produce files
+            that are less backwards compatible but have performance benefits.
 
         """
         # If data come from ENDF, don't allow exporting to HDF5
@@ -496,7 +512,7 @@ class IncidentNeutron(EqualityMixin):
                                       'originated from an ENDF file.')
 
         # Open file and write version
-        f = h5py.File(path, mode, libver='latest')
+        f = h5py.File(path, mode, libver=libver)
         f.attrs['version'] = np.array(HDF5_VERSION)
 
         # Write basic data
@@ -523,12 +539,6 @@ class IncidentNeutron(EqualityMixin):
         for rx in self.reactions.values():
             rx_group = rxs_group.create_group('reaction_{:03}'.format(rx.mt))
             rx.to_hdf5(rx_group)
-
-            # Write 0K elastic scattering if needed
-            if '0K' in rx.xs and '0K' not in rx_group:
-                group = rx_group.create_group('0K')
-                dset = group.create_dataset('xs', data=rx.xs['0K'].y)
-                dset.attrs['threshold_idx'] = 1
 
             # Write total nu data if available
             if len(rx.derived_products) > 0 and 'total_nu' not in g:
@@ -748,7 +758,7 @@ class IncidentNeutron(EqualityMixin):
         return data
 
     @classmethod
-    def from_endf(cls, ev_or_filename):
+    def from_endf(cls, ev_or_filename, get_covariance=False):
         """Generate incident neutron continuous-energy data from an ENDF evaluation
 
         Parameters
@@ -756,6 +766,10 @@ class IncidentNeutron(EqualityMixin):
         ev_or_filename : openmc.data.endf.Evaluation or str
             ENDF evaluation to read from. If given as a string, it is assumed to
             be the filename for the ENDF file.
+
+        get_covariance : bool
+            Flag to indicate whether or not covariance data from File 32 should be 
+            retrieved
 
         Returns
         -------
@@ -787,6 +801,9 @@ class IncidentNeutron(EqualityMixin):
 
         if (2, 151) in ev.section:
             data.resonances = res.Resonances.from_endf(ev)
+
+        if (32, 151) in ev.section and get_covariance:
+            data.res_covariance = res_cov.ResonanceCovariance.from_endf(ev)
 
         # Read each reaction
         for mf, mt, nc, mod in ev.reaction_list:
@@ -843,10 +860,7 @@ class IncidentNeutron(EqualityMixin):
             Incident neutron continuous-energy data
 
         """
-        # Create temporary directory -- it would be preferable to use
-        # TemporaryDirectory(), but it is only available in Python 3.2
-        tmpdir = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmpdir:
             # Run NJOY to create an ACE library
             ace_file = os.path.join(tmpdir, 'ace')
             xsdir_file = os.path.join(tmpdir, 'xsdir')
@@ -873,9 +887,5 @@ class IncidentNeutron(EqualityMixin):
                 params, xs = get_tab1_record(file_obj)
                 data.energy['0K'] = xs.x
                 data[2].xs['0K'] = xs
-
-        finally:
-            # Get rid of temporary files
-            shutil.rmtree(tmpdir)
 
         return data

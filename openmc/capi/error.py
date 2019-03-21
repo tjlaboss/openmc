@@ -1,10 +1,43 @@
-from ctypes import c_int
+from ctypes import c_int, c_char
+from warnings import warn
 
 from . import _dll
 
 
-class GeometryError(Exception):
-    pass
+class OpenMCError(Exception):
+    """Root exception class for OpenMC."""
+
+
+class GeometryError(OpenMCError):
+    """Geometry-related error"""
+
+
+class InvalidIDError(OpenMCError):
+    """Use of an ID that is invalid."""
+
+
+class AllocationError(OpenMCError):
+    """Error related to memory allocation."""
+
+
+class OutOfBoundsError(OpenMCError):
+    """Index in array out of bounds."""
+
+
+class DataError(OpenMCError):
+    """Error relating to nuclear data."""
+
+
+class PhysicsError(OpenMCError):
+    """Error relating to performing physics."""
+
+
+class InvalidArgumentError(OpenMCError):
+    """Argument passed was invalid."""
+
+
+class InvalidTypeError(OpenMCError):
+    """Tried to perform an operation on the wrong type."""
 
 
 def _error_handler(err, func, args):
@@ -14,53 +47,28 @@ def _error_handler(err, func, args):
     def errcode(s):
         return c_int.in_dll(_dll, s).value
 
-    if err == errcode('e_out_of_bounds'):
-        raise IndexError('Array index out of bounds.')
+    # Get error message set by OpenMC library
+    errmsg = (c_char*256).in_dll(_dll, 'openmc_err_msg')
+    msg = errmsg.value.decode()
 
-    elif err == errcode('e_cell_not_allocated'):
-        raise MemoryError("Memory has not been allocated for cells.")
-
-    elif err == errcode('e_cell_invalid_id'):
-        raise KeyError("No cell exists with ID={}.".format(args[0]))
-
-    elif err == errcode('e_cell_not_found'):
-        raise GeometryError("Could not find cell at position ({}, {}, {})"
-                            .format(*args[0]))
-
-    elif err == errcode('e_nuclide_not_allocated'):
-        raise MemoryError("Memory has not been allocated for nuclides.")
-
-    elif err == errcode('e_nuclide_not_loaded'):
-        raise KeyError("No nuclide named '{}' has been loaded.")
-
-    elif err == errcode('e_nuclide_not_in_library'):
-        raise KeyError("Specified nuclide doesn't exist in the cross "
-                       "section library.")
-
-    elif err == errcode('e_material_not_allocated'):
-        raise MemoryError("Memory has not been allocated for materials.")
-
-    elif err == errcode('e_material_invalid_id'):
-        raise KeyError("No material exists with ID={}.".format(args[0]))
-
-    elif err == errcode('e_tally_not_allocated'):
-        raise MemoryError("Memory has not been allocated for tallies.")
-
-    elif err == errcode('e_tally_invalid_id'):
-        raise KeyError("No tally exists with ID={}.".format(args[0]))
-
-    elif err == errcode('e_invalid_size'):
-        raise MemoryError("Array size mismatch with memory allocated.")
-
-    elif err == errcode('e_cell_no_material'):
-        raise GeometryError("Operation on cell requires that it be filled"
-                            " with a material.")
-
-    elif err == errcode('w_below_min_bound'):
-        warn("Data has not been loaded beyond lower bound of {}.".format(args[0]))
-
-    elif err == errcode('w_above_max_bound'):
-        warn("Data has not been loaded beyond upper bound of {}.".format(args[0]))
-
+    # Raise exception type corresponding to error code
+    if err == errcode('e_allocate'):
+        raise AllocationError(msg)
+    elif err == errcode('e_out_of_bounds'):
+        raise OutOfBoundsError(msg)
+    elif err == errcode('e_invalid_argument'):
+        raise InvalidArgumentError(msg)
+    elif err == errcode('e_invalid_type'):
+        raise InvalidTypeError(msg)
+    if err == errcode('e_invalid_id'):
+        raise InvalidIDError(msg)
+    elif err == errcode('e_geometry'):
+        raise GeometryError(msg)
+    elif err == errcode('e_data'):
+        raise DataError(msg)
+    elif err == errcode('e_physics'):
+        raise PhysicsError(msg)
+    elif err == errcode('e_warning'):
+        warn(msg)
     elif err < 0:
-        raise Exception("Unknown error encountered (code {}).".format(err))
+        raise OpenMCError("Unknown error encountered (code {}).".format(err))

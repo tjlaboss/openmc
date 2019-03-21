@@ -97,3 +97,9 @@ examples/jupyter/plots
 *.c
 *.html
 *.so
+
+.cache/
+.tox/
+.python-version
+.coverage
+htmlcov

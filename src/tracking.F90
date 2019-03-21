@@ -1,20 +1,25 @@
 module tracking
 
-  use algorithm,          only: binary_search
-  use constants,          only: MODE_EIGENVALUE
+  use constants
   use cross_section,      only: calculate_xs
-  use error,              only: fatal_error, warning
-  use geometry,           only: find_cell, distance_to_boundary, cross_surface, &
-                                cross_lattice, check_cell_overlap
+  use error,              only: warning, write_message
+  use geometry_header,    only: cells
+  use geometry
   use global
   use output,             only: write_message
   use mesh,               only: get_mesh_bin
   use message_passing
+  use mgxs_header
+  use nuclide_header
   use particle_header,    only: LocalCoord, Particle
   use physics,            only: collision
   use physics_mg,         only: collision_mg
   use random_lcg,         only: prn
+  use settings
+  use simulation_header
   use string,             only: to_str
+  use surface_header
+  use tally_header
   use tally,              only: score_analog_tally, score_tracklength_tally, &
                                 score_collision_tally, score_surface_current, &
                                 score_track_derivative, score_surface_tally, &
@@ -94,7 +99,9 @@ contains
       if (p % coord(p % n_coord) % cell == NONE) then
         call find_cell(p, found_cell)
         if (.not. found_cell) then
-          call fatal_error("Could not locate particle " // trim(to_str(p % id)))
+          call p % mark_as_lost("Could not find the cell containing" &
+                     // " particle " // trim(to_str(p %id)))
+          return
         end if
 
         ! set birth cell attribute
@@ -354,5 +361,224 @@ contains
     endif
 
   end subroutine transport
+
+!===============================================================================
+! CROSS_SURFACE handles all surface crossings, whether the particle leaks out of
+! the geometry, is reflected, or crosses into a new lattice or cell
+!===============================================================================
+
+  subroutine cross_surface(p)
+    type(Particle), intent(inout) :: p
+
+    real(8) :: u          ! x-component of direction
+    real(8) :: v          ! y-component of direction
+    real(8) :: w          ! z-component of direction
+    real(8) :: norm       ! "norm" of surface normal
+    real(8) :: xyz(3)     ! Saved global coordinate
+    integer :: i_surface  ! index in surfaces
+    logical :: rotational ! if rotational periodic BC applied
+    logical :: found      ! particle found in universe?
+    class(Surface), pointer :: surf
+    class(Surface), pointer :: surf2 ! periodic partner surface
+
+    i_surface = abs(p % surface)
+    surf => surfaces(i_surface)
+    if (verbosity >= 10 .or. trace) then
+      call write_message("    Crossing surface " // trim(to_str(surf % id())))
+    end if
+
+    if (surf % bc() == BC_VACUUM .and. (run_mode /= MODE_PLOTTING)) then
+      ! =======================================================================
+      ! PARTICLE LEAKS OUT OF PROBLEM
+
+      ! Kill particle
+      p % alive = .false.
+
+      ! Score any surface current tallies -- note that the particle is moved
+      ! forward slightly so that if the mesh boundary is on the surface, it is
+      ! still processed
+
+      if (active_current_tallies % size() > 0) then
+        ! TODO: Find a better solution to score surface currents than
+        ! physically moving the particle forward slightly
+
+        p % coord(1) % xyz = p % coord(1) % xyz + TINY_BIT * p % coord(1) % uvw
+        call score_surface_current(p)
+      end if
+
+      ! Score to global leakage tally
+      global_tally_leakage = global_tally_leakage + p % wgt
+
+      ! Display message
+      if (verbosity >= 10 .or. trace) then
+        call write_message("    Leaked out of surface " &
+             &// trim(to_str(surf % id())))
+      end if
+      return
+
+    elseif (surf % bc() == BC_REFLECT .and. (run_mode /= MODE_PLOTTING)) then
+      ! =======================================================================
+      ! PARTICLE REFLECTS FROM SURFACE
+
+      ! Do not handle reflective boundary conditions on lower universes
+      if (p % n_coord /= 1) then
+        call p % mark_as_lost("Cannot reflect particle " &
+             // trim(to_str(p % id)) // " off surface in a lower universe.")
+        return
+      end if
+
+      ! Score surface currents since reflection causes the direction of the
+      ! particle to change -- artificially move the particle slightly back in
+      ! case the surface crossing is coincident with a mesh boundary
+
+      if (active_current_tallies % size() > 0) then
+        xyz = p % coord(1) % xyz
+        p % coord(1) % xyz = p % coord(1) % xyz - TINY_BIT * p % coord(1) % uvw
+        call score_surface_current(p)
+        p % coord(1) % xyz = xyz
+      end if
+
+      ! Reflect particle off surface
+      call surf % reflect(p%coord(1)%xyz, p%coord(1)%uvw)
+
+      ! Make sure new particle direction is normalized
+      u = p%coord(1)%uvw(1)
+      v = p%coord(1)%uvw(2)
+      w = p%coord(1)%uvw(3)
+      norm = sqrt(u*u + v*v + w*w)
+      p%coord(1)%uvw(:) = [u, v, w] / norm
+
+      ! Reassign particle's cell and surface
+      p % coord(1) % cell = p % last_cell(p % last_n_coord)
+      p % surface = -p % surface
+
+      ! If a reflective surface is coincident with a lattice or universe
+      ! boundary, it is necessary to redetermine the particle's coordinates in
+      ! the lower universes.
+
+      p % n_coord = 1
+      call find_cell(p, found)
+      if (.not. found) then
+        call p % mark_as_lost("Couldn't find particle after reflecting&
+             & from surface " // trim(to_str(surf % id())) // ".")
+        return
+      end if
+
+      ! Set previous coordinate going slightly past surface crossing
+      p % last_xyz_current = p % coord(1) % xyz + TINY_BIT * p % coord(1) % uvw
+
+      ! Diagnostic message
+      if (verbosity >= 10 .or. trace) then
+        call write_message("    Reflected from surface " &
+             &// trim(to_str(surf%id())))
+      end if
+      return
+    elseif (surf % bc() == BC_PERIODIC .and. run_mode /= MODE_PLOTTING) then
+      ! =======================================================================
+      ! PERIODIC BOUNDARY
+
+      ! Do not handle periodic boundary conditions on lower universes
+      if (p % n_coord /= 1) then
+        call p % mark_as_lost("Cannot transfer particle " &
+             // trim(to_str(p % id)) // " across surface in a lower universe.&
+             & Boundary conditions must be applied to universe 0.")
+        return
+      end if
+
+      ! Score surface currents since reflection causes the direction of the
+      ! particle to change -- artificially move the particle slightly back in
+      ! case the surface crossing is coincident with a mesh boundary
+      if (active_current_tallies % size() > 0) then
+        xyz = p % coord(1) % xyz
+        p % coord(1) % xyz = p % coord(1) % xyz - TINY_BIT * p % coord(1) % uvw
+        call score_surface_current(p)
+        p % coord(1) % xyz = xyz
+      end if
+
+      ! Get a pointer to the partner periodic surface.  Offset the index to
+      ! correct for C vs. Fortran indexing.
+      surf2 => surfaces(surf % i_periodic() + 1)
+
+      ! Adjust the particle's location and direction.
+      rotational = surf2 % periodic_translate(surf, p % coord(1) % xyz, &
+                                              p % coord(1) % uvw)
+
+      ! Reassign particle's surface
+      if (rotational) then
+        p % surface = surf % i_periodic() + 1
+      else
+        p % surface = sign(surf % i_periodic() + 1, p % surface)
+      end if
+
+      ! Figure out what cell particle is in now
+      p % n_coord = 1
+      call find_cell(p, found)
+      if (.not. found) then
+        call p % mark_as_lost("Couldn't find particle after hitting &
+             &periodic boundary on surface " // trim(to_str(surf % id())) &
+             // ".")
+        return
+      end if
+
+      ! Set previous coordinate going slightly past surface crossing
+      p % last_xyz_current = p % coord(1) % xyz + TINY_BIT * p % coord(1) % uvw
+
+      ! Diagnostic message
+      if (verbosity >= 10 .or. trace) then
+        call write_message("    Hit periodic boundary on surface " &
+             // trim(to_str(surf%id())))
+      end if
+      return
+    end if
+
+    ! ==========================================================================
+    ! SEARCH NEIGHBOR LISTS FOR NEXT CELL
+
+    if (p % surface > 0 .and. allocated(surf%neighbor_pos)) then
+      ! If coming from negative side of surface, search all the neighboring
+      ! cells on the positive side
+
+      call find_cell(p, found, surf%neighbor_pos)
+      if (found) return
+
+    elseif (p % surface < 0  .and. allocated(surf%neighbor_neg)) then
+      ! If coming from positive side of surface, search all the neighboring
+      ! cells on the negative side
+
+      call find_cell(p, found, surf%neighbor_neg)
+      if (found) return
+
+    end if
+
+    ! ==========================================================================
+    ! COULDN'T FIND PARTICLE IN NEIGHBORING CELLS, SEARCH ALL CELLS
+
+    ! Remove lower coordinate levels and assignment of surface
+    p % surface = NONE
+    p % n_coord = 1
+    call find_cell(p, found)
+
+    if (run_mode /= MODE_PLOTTING .and. (.not. found)) then
+      ! If a cell is still not found, there are two possible causes: 1) there is
+      ! a void in the model, and 2) the particle hit a surface at a tangent. If
+      ! the particle is really traveling tangent to a surface, if we move it
+      ! forward a tiny bit it should fix the problem.
+
+      p % n_coord = 1
+      p % coord(1) % xyz = p % coord(1) % xyz + TINY_BIT * p % coord(1) % uvw
+      call find_cell(p, found)
+
+      ! Couldn't find next cell anywhere! This probably means there is an actual
+      ! undefined region in the geometry.
+
+      if (.not. found) then
+        call p % mark_as_lost("After particle " // trim(to_str(p % id)) &
+             // " crossed surface " // trim(to_str(surf % id())) &
+             // " it could not be located in any cell and it did not leak.")
+        return
+      end if
+    end if
+
+  end subroutine cross_surface
 
 end module tracking
