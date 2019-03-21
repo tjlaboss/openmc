@@ -1,4 +1,5 @@
-from collections import OrderedDict, Iterable
+from collections import OrderedDict
+from collections.abc import Iterable
 from copy import deepcopy
 from math import cos, sin, pi
 from numbers import Real, Integral
@@ -6,7 +7,6 @@ from xml.etree import ElementTree as ET
 import sys
 import warnings
 
-from six import string_types
 import numpy as np
 
 import openmc
@@ -265,7 +265,7 @@ class Cell(IDManagerMixin):
     @name.setter
     def name(self, name):
         if name is not None:
-            cv.check_type('cell name', name, string_types)
+            cv.check_type('cell name', name, str)
             self._name = name
         else:
             self._name = ''

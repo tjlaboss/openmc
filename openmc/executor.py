@@ -1,9 +1,6 @@
-from __future__ import print_function
-from collections import Iterable
+from collections.abc import Iterable
 import subprocess
 from numbers import Integral
-
-from six import string_types
 
 import openmc
 from openmc import VolumeCalculation
@@ -191,31 +188,25 @@ def run(particles=None, threads=None, geometry_debug=False,
     subprocess.CalledProcessError
         If the `openmc` executable returns a non-zero status
 
-<<<<<<< HEAD
-    post_args = ' '
-    pre_args = ''
-=======
     """
     args = [openmc_exec]
 
     if isinstance(particles, Integral) and particles > 0:
-        post_args += '-n {0} '.format(particles)
+        args += ['-n', str(particles)]
 
     if isinstance(threads, Integral) and threads > 0:
-        post_args += '-s {0} '.format(threads)
+        args += ['-s', str(threads)]
 
     if geometry_debug:
-        post_args += '-g '
+        args.append('-g ')
 
-    if isinstance(restart_file, string_types):
-        post_args += '-r {0} '.format(restart_file)
+    if isinstance(restart_file, str):
+        args += ['-r', restart_file]
 
     if tracks:
-        post_args += '-t'
+        args.append('-t')
 
-    if isinstance(mpi_procs, Integral) and mpi_procs > 1:
-        pre_args += '{} -n {} '.format(mpi_exec, mpi_procs)
+    if mpi_args is not None:
+        args = mpi_args + args
 
-    command = pre_args + openmc_exec + ' ' + post_args
-
-    return _run(command, output, cwd)
+    return _run(args, output, cwd)

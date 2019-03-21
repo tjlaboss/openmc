@@ -4,7 +4,6 @@ from numbers import Real, Integral
 import warnings
 from xml.etree import ElementTree as ET
 
-from six import string_types
 import numpy as np
 
 import openmc
@@ -248,7 +247,7 @@ class Material(IDManagerMixin):
     def name(self, name):
         if name is not None:
             cv.check_type('name for Material ID="{}"'.format(self._id),
-                          name, string_types)
+                          name, str)
             self._name = name
         else:
             self._name = ''
@@ -280,7 +279,7 @@ class Material(IDManagerMixin):
     @isotropic.setter
     def isotropic(self, isotropic):
         cv.check_iterable_type('Isotropic scattering nuclides', isotropic,
-                               string_types)
+                               str)
         self._isotropic = list(isotropic)
 
     @classmethod
@@ -386,7 +385,7 @@ class Material(IDManagerMixin):
         warnings.warn('This feature is not yet implemented in a release '
                       'version of openmc')
 
-        if not isinstance(filename, string_types) and filename is not None:
+        if not isinstance(filename, str) and filename is not None:
             msg = 'Unable to add OTF material file to Material ID="{}" with a ' \
                   'non-string name "{}"'.format(self._id, filename)
             raise ValueError(msg)
@@ -420,7 +419,7 @@ class Material(IDManagerMixin):
                   'macroscopic data-set has already been added'.format(self._id)
             raise ValueError(msg)
 
-        if not isinstance(nuclide, string_types):
+        if not isinstance(nuclide, str):
             msg = 'Unable to add a Nuclide to Material ID="{}" with a ' \
                   'non-string value "{}"'.format(self._id, nuclide)
             raise ValueError(msg)
@@ -525,7 +524,7 @@ class Material(IDManagerMixin):
             Nuclide to remove
 
         """
-        cv.check_type('nuclide', nuclide, string_types)
+        cv.check_type('nuclide', nuclide, str)
 
         # If the Material contains the Nuclide, delete it
         for nuc in self._nuclides:
@@ -554,7 +553,7 @@ class Material(IDManagerMixin):
                   'has already been added'.format(self._id, macroscopic)
             raise ValueError(msg)
 
-        if not isinstance(macroscopic, string_types):
+        if not isinstance(macroscopic, str):
             msg = 'Unable to add a Macroscopic to Material ID="{}" with a ' \
                   'non-string value "{}"'.format(self._id, macroscopic)
             raise ValueError(msg)
@@ -585,7 +584,7 @@ class Material(IDManagerMixin):
 
         """
 
-        if not isinstance(macroscopic, string_types):
+        if not isinstance(macroscopic, str):
             msg = 'Unable to remove a Macroscopic "{}" in Material ID="{}" ' \
                   'since it is not a string'.format(self._id, macroscopic)
             raise ValueError(msg)
@@ -618,7 +617,7 @@ class Material(IDManagerMixin):
                   'macroscopic data-set has already been added'.format(self._id)
             raise ValueError(msg)
 
-        if not isinstance(element, string_types):
+        if not isinstance(element, str):
             msg = 'Unable to add an Element to Material ID="{}" with a ' \
                   'non-string value "{}"'.format(self._id, element)
             raise ValueError(msg)
@@ -683,7 +682,7 @@ class Material(IDManagerMixin):
                   'macroscopic data-set has already been added'.format(self._id)
             raise ValueError(msg)
 
-        if not isinstance(name, string_types):
+        if not isinstance(name, str):
             msg = 'Unable to add an S(a,b) table to Material ID="{}" with a ' \
                         'non-string table name "{}"'.format(self._id, name)
             raise ValueError(msg)
@@ -1016,7 +1015,7 @@ class Materials(cv.CheckedList):
     """
 
     def __init__(self, materials=None):
-        super(Materials, self).__init__(Material, 'materials collection')
+        super().__init__(Material, 'materials collection')
         self._cross_sections = None
         self._multipole_library = None
 
@@ -1033,48 +1032,13 @@ class Materials(cv.CheckedList):
 
     @cross_sections.setter
     def cross_sections(self, cross_sections):
-        cv.check_type('cross sections', cross_sections, string_types)
+        cv.check_type('cross sections', cross_sections, str)
         self._cross_sections = cross_sections
 
     @multipole_library.setter
     def multipole_library(self, multipole_library):
-        cv.check_type('cross sections', multipole_library, string_types)
+        cv.check_type('cross sections', multipole_library, str)
         self._multipole_library = multipole_library
-
-    def add_material(self, material):
-        """Append material to collection
-
-        .. deprecated:: 0.8
-            Use :meth:`Materials.append` instead.
-
-        Parameters
-        ----------
-        material : openmc.Material
-            Material to add
-
-        """
-        warnings.warn("Materials.add_material(...) has been deprecated and may be "
-                      "removed in a future version. Use Material.append(...) "
-                      "instead.", DeprecationWarning)
-        self.append(material)
-
-    def add_materials(self, materials):
-        """Add multiple materials to the collection
-
-        .. deprecated:: 0.8
-            Use compound assignment instead.
-
-        Parameters
-        ----------
-        materials : Iterable of openmc.Material
-            Materials to add
-
-        """
-        warnings.warn("Materials.add_materials(...) has been deprecated and may be "
-                      "removed in a future version. Use compound assignment "
-                      "instead.", DeprecationWarning)
-        for material in materials:
-            self.append(material)
 
     def append(self, material):
         """Append material to collection
@@ -1085,7 +1049,7 @@ class Materials(cv.CheckedList):
             Material to append
 
         """
-        super(Materials, self).append(material)
+        super().append(material)
 
     def insert(self, index, material):
         """Insert material before index
@@ -1098,24 +1062,7 @@ class Materials(cv.CheckedList):
             Material to insert
 
         """
-        super(Materials, self).insert(index, material)
-
-    def remove_material(self, material):
-        """Remove a material from the file
-
-        .. deprecated:: 0.8
-            Use :meth:`Materials.remove` instead.
-
-        Parameters
-        ----------
-        material : openmc.Material
-            Material to remove
-
-        """
-        warnings.warn("Materials.remove_material(...) has been deprecated and "
-                      "may be removed in a future version. Use "
-                      "Materials.remove(...) instead.", DeprecationWarning)
-        self.remove(material)
+        super().insert(index, material)
 
     def make_isotropic_in_lab(self):
         for material in self:
