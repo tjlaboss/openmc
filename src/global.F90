@@ -7,10 +7,10 @@ module global
 #endif
 
   use bank_header,      only: Bank
-  use cmfd_header
+  !use cmfd_header
   use constants
   use dict_header,      only: DictCharInt, DictIntInt
-  use geometry_header,  only: Cell, Universe, Lattice, LatticeContainer
+  !use geometry_header,  only: Cell, Universe, Lattice, LatticeContainer
   use material_header,  only: Material
   use mesh_header,      only: RegularMesh
   use mgxs_header,      only: Mgxs, MgxsContainer
@@ -20,8 +20,8 @@ module global
   use set_header,       only: SetInt
   use stl_vector,       only: VectorInt
   use surface_header,   only: SurfaceContainer
-  use source_header,    only: SourceDistribution
-  use tally_header,     only: TallyObject, TallyDerivative
+  !use source_header,    only: SourceDistribution
+  !use tally_header,     only: TallyObject, TallyDerivative
   use tally_filter_header, only: TallyFilterContainer, TallyFilterMatch
   use trigger_header,   only: KTrigger
   use timer_header,     only: Timer
@@ -51,25 +51,19 @@ module global
   type(TallyFilterMatch), allocatable :: filter_matches(:)
 
   ! Pointers for different tallies
-  type(TallyObject), pointer :: user_tallies(:) => null()
+  !type(TallyObject), pointer :: user_tallies(:) => null()
+
+  ! Active tally lists
+  !type(VectorInt) :: active_current_tallies
 
   ! Starting index (minus 1) in tallies for each tally group
   integer :: i_user_tallies = -1
   integer :: i_cmfd_tallies = -1
 
-  ! Global tallies
   !   1) collision estimate of k-eff
   !   2) absorption estimate of k-eff
   !   3) track-length estimate of k-eff
   !   4) leakage fraction
-
-  ! It is possible to protect accumulate operations on global tallies by using
-  ! an atomic update. However, when multiple threads accumulate to the same
-  ! global tally, it can cause a higher cache miss rate due to
-  ! invalidation. Thus, we use threadprivate variables to accumulate global
-  ! tallies and then reduce at the end of a generation.
-  real(8) :: global_tally_leakage     = ZERO
-!$omp threadprivate(global_tally_leakage)
 
   integer :: n_meshes       = 0 ! # of structured meshes
   integer :: n_user_meshes  = 0 ! # of structured user meshes
@@ -188,9 +182,6 @@ contains
 
     ! Deallocate array of work indices
     if (allocated(work_index)) deallocate(work_index)
-
-    ! Deallocate CMFD
-    call deallocate_cmfd(cmfd)
 
     ! Deallocate track_identifiers
     if (allocated(track_identifiers)) deallocate(track_identifiers)

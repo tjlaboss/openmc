@@ -4,17 +4,15 @@ module physics
   use constants
   use cross_section,          only: elastic_xs_0K
   use endf,                   only: reaction_name
-  use error,                  only: fatal_error, warning
   use global
+  use error,                  only: fatal_error, warning, write_message
   use material_header,        only: Material, materials
   use math
   use mesh,                   only: get_mesh_bin
   use mesh_header,            only: meshes
   use message_passing
   use nuclide_header
-  use output,                 only: write_message
   use particle_header,        only: Particle
-  use particle_restart_write, only: write_particle_restart
   use physics_common
   use random_lcg,             only: prn, advance_prn_seed, prn_set_stream
   use reaction_header,        only: Reaction
@@ -227,7 +225,7 @@ contains
 
       ! Check to make sure that a nuclide was sampled
       if (i_nuc_mat > mat % n_nuclides) then
-        call write_particle_restart(p)
+        call p % write_restart()
         call fatal_error("Did not sample any nuclide during collision.")
       end if
 
@@ -487,7 +485,7 @@ contains
 
         ! Check to make sure inelastic scattering reaction sampled
         if (i > size(nuc % reactions)) then
-          call write_particle_restart(p)
+          call p % write_restart()
           call fatal_error("Did not sample any reaction for nuclide " &
                &// trim(nuc % name))
         end if
@@ -1203,7 +1201,7 @@ contains
         ! Determine indices on ufs mesh for current location
         call m % get_bin(p % coord(1) % xyz, mesh_bin)
         if (mesh_bin == NO_BIN_FOUND) then
-          call write_particle_restart(p)
+          call p % write_restart()
           call fatal_error("Source site outside UFS mesh!")
         end if
 
@@ -1399,7 +1397,7 @@ contains
         ! check for large number of resamples
         n_sample = n_sample + 1
         if (n_sample == MAX_SAMPLE) then
-          ! call write_particle_restart(p)
+          ! call p % write_restart()
           call fatal_error("Resampled energy distribution maximum number of " &
                // "times for nuclide " // nuc % name)
         end if
@@ -1423,7 +1421,7 @@ contains
         ! check for large number of resamples
         n_sample = n_sample + 1
         if (n_sample == MAX_SAMPLE) then
-          ! call write_particle_restart(p)
+          ! call p % write_restart()
           call fatal_error("Resampled energy distribution maximum number of " &
                // "times for nuclide " // nuc % name)
         end if
