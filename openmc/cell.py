@@ -218,12 +218,7 @@ class Cell(IDManagerMixin):
     @color.setter
     def color(self, color):
         if color is not None:
-<<<<<<< HEAD
             openmc.colors.check_color(f'Cell {self._id} color', color)
-=======
-            # TODO: Check color after exposing method from plots
-            pass
->>>>>>> 934b6e540d50e01908936aa4163ee9f455a9e06c
         self._color = color
 
     @property
