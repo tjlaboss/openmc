@@ -19,7 +19,7 @@ import openmc.checkvalue as cv
 from ._xml import get_text
 from .checkvalue import check_type, check_value
 from .mixin import IDManagerMixin
-from .plots import _SVG_COLORS
+from .colors import _SVG_COLORS
 from .surface import _BOUNDARY_TYPES
 
 
