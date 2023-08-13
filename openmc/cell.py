@@ -46,6 +46,9 @@ class Cell(IDManagerMixin):
         Indicates what the cell is filled with.
     region : openmc.Region or None
         Region of space that is assigned to the cell.
+    color : {'str', 'tuple'}
+        Color of this Cell when 'color_by == cell'.
+        Can be a named color or an RGB tuple.
     rotation : Iterable of float
         If the cell is filled with a universe, this array specifies the angles
         in degrees about the x, y, and z axes that the filled universe should be
@@ -106,6 +109,7 @@ class Cell(IDManagerMixin):
         self.name = name
         self.fill = fill
         self.region = region
+        self._color = None
         self._rotation = None
         self._rotation_matrix = None
         self._temperature = None
@@ -203,6 +207,17 @@ class Cell(IDManagerMixin):
         if region is not None:
             cv.check_type('cell region', region, Region)
         self._region = region
+
+    @property
+    def color(self):
+        return self._color
+
+    @color.setter
+    def color(self, color):
+        if color is not None:
+            # TODO: Check color after exposing method from plots
+            pass
+        self._color = color
 
     @property
     def rotation(self):
