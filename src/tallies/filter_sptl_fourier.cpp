@@ -7,6 +7,7 @@
 #include "openmc/capi.h"
 #include "openmc/constants.h"
 #include "openmc/error.h"
+#include "openmc/tallies/filter_fourier_basis.h"
 
 namespace openmc {
 
@@ -22,21 +23,11 @@ void SpatialFourierFilter::set_order(int order)
 void SpatialFourierFilter::get_all_bins(
   const Particle& p, TallyEstimator estimator, FilterMatch& match) const
 {
-  // Get the coordinate along the axis of interest.
   double x = this->position(p);
 
   if (x >= min_ && x <= max_) {
-    // Compute the normalized coordinate value on [0, 1]
-    double x_norm = (x - min_) / (max_ - min_);
-
-    // Compute and return the Fourier weights.
     vector<double> wgt(n_bins_);
-    wgt[0] = 1.0; // a_0: constant term
-    for (int n = 1; n <= order_; ++n) {
-      double arg = 2.0 * PI * n * x_norm;
-      wgt[2 * n - 1] = std::cos(arg);
-      wgt[2 * n] = std::sin(arg);
-    }
+    fourier_weights((x - min_) / (max_ - min_), order_, wgt);
     for (int i = 0; i < n_bins_; ++i) {
       match.bins_.push_back(i);
       match.weights_.push_back(wgt[i]);
@@ -46,18 +37,8 @@ void SpatialFourierFilter::get_all_bins(
 
 std::string SpatialFourierFilter::text_label(int bin) const
 {
-  std::string func_str;
-  if (bin == 0) {
-    func_str = "a0 (constant)";
-  } else if (bin % 2 == 1) {
-    int n = (bin + 1) / 2;
-    func_str = fmt::format("a{} (cos)", n);
-  } else {
-    int n = bin / 2;
-    func_str = fmt::format("b{} (sin)", n);
-  }
-  return fmt::format(
-    "Fourier expansion, {} axis, {}", this->axis_label(), func_str);
+  return fmt::format("Fourier expansion, {} axis, {}", this->axis_label(),
+    fourier_bin_label(bin));
 }
 
 //==============================================================================
