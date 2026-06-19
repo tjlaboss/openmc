@@ -108,8 +108,8 @@ void CircumferentialFourierFilter::to_statepoint(hid_t filter_group) const
 // C-API functions
 //==============================================================================
 
-std::pair<int, CircumferentialFourierFilter*> check_circumferential_fourier_filter(
-  int32_t index)
+std::pair<int, CircumferentialFourierFilter*>
+check_circumferential_fourier_filter(int32_t index)
 {
   int err = verify_filter(index);
   if (err) {
