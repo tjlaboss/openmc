@@ -24,6 +24,7 @@ __all__ = [
     'MeshMaterialFilter', 'MeshSurfaceFilter', 'MuFilter', 'MuSurfaceFilter',
     'ParentNuclideFilter', 'ParticleFilter', 'ParticleProductionFilter', 'PolarFilter',
     'ReactionFilter', 'SphericalHarmonicsFilter', 'SpatialFourierFilter', 'SpatialLegendreFilter',
+    'CircumferentialFourierFilter',
     'SurfaceFilter', 'TimeFilter', 'UniverseFilter', 'WeightFilter', 'ZernikeFilter',
     'ZernikeRadialFilter', 'filters'
 ]
@@ -136,6 +137,18 @@ _dll.openmc_new_filter.errcheck = _error_handler
 _dll.openmc_particle_filter_get_bins.argtypes = [c_int32, POINTER(c_int32)]
 _dll.openmc_particle_filter_get_bins.restype = c_int
 _dll.openmc_particle_filter_get_bins.errcheck = _error_handler
+_dll.openmc_circumferential_fourier_filter_get_order.argtypes = [c_int32, POINTER(c_int)]
+_dll.openmc_circumferential_fourier_filter_get_order.restype = c_int
+_dll.openmc_circumferential_fourier_filter_get_order.errcheck = _error_handler
+_dll.openmc_circumferential_fourier_filter_set_order.argtypes = [c_int32, c_int]
+_dll.openmc_circumferential_fourier_filter_set_order.restype = c_int
+_dll.openmc_circumferential_fourier_filter_set_order.errcheck = _error_handler
+_dll.openmc_circumferential_fourier_filter_get_surface.argtypes = [c_int32, POINTER(c_int32)]
+_dll.openmc_circumferential_fourier_filter_get_surface.restype = c_int
+_dll.openmc_circumferential_fourier_filter_get_surface.errcheck = _error_handler
+_dll.openmc_circumferential_fourier_filter_set_surface.argtypes = [c_int32, c_int32]
+_dll.openmc_circumferential_fourier_filter_set_surface.restype = c_int
+_dll.openmc_circumferential_fourier_filter_set_surface.errcheck = _error_handler
 _dll.openmc_spatial_fourier_filter_get_order.argtypes = [c_int32, POINTER(c_int)]
 _dll.openmc_spatial_fourier_filter_get_order.restype = c_int
 _dll.openmc_spatial_fourier_filter_get_order.errcheck = _error_handler
@@ -645,6 +658,38 @@ class SphericalHarmonicsFilter(Filter):
         _dll.openmc_sphharm_filter_set_order(self._index, order)
 
 
+class CircumferentialFourierFilter(Filter):
+    filter_type = 'circumferentialfourier'
+
+    def __init__(self, surface=None, order=None, uid=None, new=True, index=None):
+        super().__init__(uid, new, index)
+        if surface is not None:
+            self.surface = surface
+        if order is not None:
+            self.order = order
+
+    @property
+    def order(self):
+        temp_order = c_int()
+        _dll.openmc_circumferential_fourier_filter_get_order(self._index, temp_order)
+        return temp_order.value
+
+    @order.setter
+    def order(self, order):
+        _dll.openmc_circumferential_fourier_filter_set_order(self._index, order)
+
+    @property
+    def surface(self):
+        temp_surface = c_int32()
+        _dll.openmc_circumferential_fourier_filter_get_surface(self._index, temp_surface)
+        return temp_surface.value
+
+    @surface.setter
+    def surface(self, surface):
+        surface_id = surface if isinstance(surface, int) else surface.id
+        _dll.openmc_circumferential_fourier_filter_set_surface(self._index, surface_id)
+
+
 class SpatialFourierFilter(Filter):
     filter_type = 'spatialfourier'
 
@@ -751,6 +796,7 @@ _FILTER_TYPE_MAP = {
     'sphericalharmonics': SphericalHarmonicsFilter,
     'spatialfourier': SpatialFourierFilter,
     'spatiallegendre': SpatialLegendreFilter,
+    'circumferentialfourier': CircumferentialFourierFilter,
     'surface': SurfaceFilter,
     'time': TimeFilter,
     'universe': UniverseFilter,

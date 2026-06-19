@@ -191,6 +191,9 @@ public:
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
+  double y0() const { return y0_; }
+  double z0() const { return z0_; }
+
   double y0_, z0_, radius_;
 };
 
@@ -210,6 +213,9 @@ public:
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
+  double x0() const { return x0_; }
+  double z0() const { return z0_; }
+
   double x0_, z0_, radius_;
 };
 
@@ -228,6 +234,9 @@ public:
   Direction normal(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
+
+  double x0() const { return x0_; }
+  double y0() const { return y0_; }
 
   double x0_, y0_, radius_;
 };

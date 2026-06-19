@@ -62,6 +62,7 @@ Classes
    CellInstanceFilter
    CellbornFilter
    CellfromFilter
+   CircumferentialFourierFilter
    CollisionFilter
    CylindricalMesh
    DelayedGroupFilter
