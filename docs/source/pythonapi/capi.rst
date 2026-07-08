@@ -63,6 +63,7 @@ Classes
    CellbornFilter
    CellfromFilter
    CircumferentialFourierFilter
+   CircumferentialLegendreFilter
    CollisionFilter
    CylindricalMesh
    DelayedGroupFilter

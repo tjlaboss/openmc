@@ -118,6 +118,8 @@ Filter* Filter::create(const std::string& type, int32_t id)
     return Filter::create<CellInstanceFilter>(id);
   } else if (type == "circumferentialfourier") {
     return Filter::create<CircumferentialFourierFilter>(id);
+  } else if (type == "circumferentiallegendre") {
+    return Filter::create<CircumferentialLegendreFilter>(id);
   } else if (type == "distribcell") {
     return Filter::create<DistribcellFilter>(id);
   } else if (type == "delayedgroup") {

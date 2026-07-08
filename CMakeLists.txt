@@ -436,6 +436,7 @@ list(APPEND libopenmc_SOURCES
   src/tallies/filter_cellborn.cpp
   src/tallies/filter_cellfrom.cpp
   src/tallies/filter_circumferential_fourier.cpp
+  src/tallies/filter_circumferential_legendre.cpp
   src/tallies/filter_collision.cpp
   src/tallies/filter_delayedgroup.cpp
   src/tallies/filter_distribcell.cpp

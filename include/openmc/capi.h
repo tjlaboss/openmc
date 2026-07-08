@@ -210,6 +210,12 @@ int openmc_spatial_legendre_filter_get_params(
 int openmc_spatial_legendre_filter_set_order(int32_t index, int order);
 int openmc_spatial_legendre_filter_set_params(
   int32_t index, const int* axis, const double* min, const double* max);
+int openmc_circumferential_legendre_filter_get_order(int32_t index, int* order);
+int openmc_circumferential_legendre_filter_get_surface(
+  int32_t index, int32_t* surface);
+int openmc_circumferential_legendre_filter_set_order(int32_t index, int order);
+int openmc_circumferential_legendre_filter_set_surface(
+  int32_t index, int32_t surface);
 int openmc_sphharm_filter_get_order(int32_t index, int* order);
 int openmc_sphharm_filter_get_cosine(int32_t index, char cosine[]);
 int openmc_sphharm_filter_set_order(int32_t index, int order);
