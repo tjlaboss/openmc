@@ -144,6 +144,7 @@ Constructing Tallies
    openmc.SpatialLegendreFilter
    openmc.SpatialFourierFilter
    openmc.CircumferentialFourierFilter
+   openmc.CircumferentialLegendreFilter
    openmc.SphericalHarmonicsFilter
    openmc.TimeFilter
    openmc.WeightFilter
