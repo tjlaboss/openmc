@@ -31,7 +31,7 @@ void CircumferentialLegendreFilter::get_all_bins(
   double x = this->affine_transform(p) / PI - 1.0;
 
   vector<double> pnx(n_bins_);
-  calc_pn(order_, x, pnx.data());
+  calc_pn_c(order_, x, pnx.data());
   for (int i = 0; i < n_bins_; ++i) {
     match.bins_.push_back(i);
     match.weights_.push_back(pnx[i]);
