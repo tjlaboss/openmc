@@ -59,6 +59,13 @@ extern "C" void calc_pn_c(int n, double x, double pnx[]);
 
 extern "C" double evaluate_legendre(int n, const double data[], double x);
 
+//! Calculate Chebyshev polynomials (first kind) of order 0 to n at x
+//!
+//! \param[in] n Maximum order
+//! \param[in] x Independent variable, in [-1, 1]
+//! \param[out] tnx Array of length n+1 to be filled with T_0(x)..T_n(x)
+void calc_tn_c(int n, double x, double* tnx);
+
 //==============================================================================
 //! Calculate the n-th order real spherical harmonics for a given angle (in
 //! terms of (u,v,w)) for all 0<=n and -m<=n<=n.

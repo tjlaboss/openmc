@@ -23,8 +23,9 @@ __all__ = [
     'MaterialFilter', 'MaterialFromFilter', 'MeshFilter', 'MeshBornFilter',
     'MeshMaterialFilter', 'MeshSurfaceFilter', 'MuFilter', 'MuSurfaceFilter',
     'ParentNuclideFilter', 'ParticleFilter', 'ParticleProductionFilter', 'PolarFilter',
-    'ReactionFilter', 'SphericalHarmonicsFilter', 'SpatialFourierFilter', 'SpatialLegendreFilter',
-    'CircumferentialFourierFilter', 'CircumferentialLegendreFilter',
+    'ReactionFilter', 'SphericalHarmonicsFilter', 
+    'SpatialChebyshevFilter', 'SpatialFourierFilter', 'SpatialLegendreFilter',
+    'CircumferentialChebyshevFilter', 'CircumferentialFourierFilter', 'CircumferentialLegendreFilter',
     'SurfaceFilter', 'TimeFilter', 'UniverseFilter', 'WeightFilter', 'ZernikeFilter',
     'ZernikeRadialFilter', 'filters'
 ]
@@ -137,6 +138,9 @@ _dll.openmc_new_filter.errcheck = _error_handler
 _dll.openmc_particle_filter_get_bins.argtypes = [c_int32, POINTER(c_int32)]
 _dll.openmc_particle_filter_get_bins.restype = c_int
 _dll.openmc_particle_filter_get_bins.errcheck = _error_handler
+
+a
+
 _dll.openmc_circumferential_fourier_filter_get_order.argtypes = [c_int32, POINTER(c_int)]
 _dll.openmc_circumferential_fourier_filter_get_order.restype = c_int
 _dll.openmc_circumferential_fourier_filter_get_order.errcheck = _error_handler
@@ -155,6 +159,26 @@ _dll.openmc_spatial_fourier_filter_get_order.errcheck = _error_handler
 _dll.openmc_spatial_fourier_filter_set_order.argtypes = [c_int32, c_int]
 _dll.openmc_spatial_fourier_filter_set_order.restype = c_int
 _dll.openmc_spatial_fourier_filter_set_order.errcheck = _error_handler
+
+_dll.openmc_circumferential_chebyshev_filter_get_order.argtypes = [c_int32, POINTER(c_int)]
+_dll.openmc_circumferential_chebyshev_filter_get_order.restype = c_int
+_dll.openmc_circumferential_chebyshev_filter_get_order.errcheck = _error_handler
+_dll.openmc_circumferential_chebyshev_filter_set_order.argtypes = [c_int32, c_int]
+_dll.openmc_circumferential_chebyshev_filter_set_order.restype = c_int
+_dll.openmc_circumferential_chebyshev_filter_set_order.errcheck = _error_handler
+_dll.openmc_circumferential_chebyshev_filter_get_surface.argtypes = [c_int32, POINTER(c_int32)]
+_dll.openmc_circumferential_chebyshev_filter_get_surface.restype = c_int
+_dll.openmc_circumferential_chebyshev_filter_get_surface.errcheck = _error_handler
+_dll.openmc_circumferential_chebyshev_filter_set_surface.argtypes = [c_int32, c_int32]
+_dll.openmc_circumferential_chebyshev_filter_set_surface.restype = c_int
+_dll.openmc_circumferential_chebyshev_filter_set_surface.errcheck = _error_handler
+_dll.openmc_spatial_chebyshev_filter_get_order.argtypes = [c_int32, POINTER(c_int)]
+_dll.openmc_spatial_chebyshev_filter_get_order.restype = c_int
+_dll.openmc_spatial_chebyshev_filter_get_order.errcheck = _error_handler
+_dll.openmc_spatial_chebyshev_filter_set_order.argtypes = [c_int32, c_int]
+_dll.openmc_spatial_chebyshev_filter_set_order.restype = c_int
+_dll.openmc_spatial_chebyshev_filter_set_order.errcheck = _error_handler
+
 _dll.openmc_circumferential_legendre_filter_get_order.argtypes = [c_int32, POINTER(c_int)]
 _dll.openmc_circumferential_legendre_filter_get_order.restype = c_int
 _dll.openmc_circumferential_legendre_filter_get_order.errcheck = _error_handler
@@ -167,13 +191,13 @@ _dll.openmc_circumferential_legendre_filter_get_surface.errcheck = _error_handle
 _dll.openmc_circumferential_legendre_filter_set_surface.argtypes = [c_int32, c_int32]
 _dll.openmc_circumferential_legendre_filter_set_surface.restype = c_int
 _dll.openmc_circumferential_legendre_filter_set_surface.errcheck = _error_handler
-
 _dll.openmc_spatial_legendre_filter_get_order.argtypes = [c_int32, POINTER(c_int)]
 _dll.openmc_spatial_legendre_filter_get_order.restype = c_int
 _dll.openmc_spatial_legendre_filter_get_order.errcheck = _error_handler
 _dll.openmc_spatial_legendre_filter_set_order.argtypes = [c_int32, c_int]
 _dll.openmc_spatial_legendre_filter_set_order.restype = c_int
 _dll.openmc_spatial_legendre_filter_set_order.errcheck = _error_handler
+
 _dll.openmc_sphharm_filter_get_order.argtypes = [c_int32, POINTER(c_int)]
 _dll.openmc_sphharm_filter_get_order.restype = c_int
 _dll.openmc_sphharm_filter_get_order.errcheck = _error_handler

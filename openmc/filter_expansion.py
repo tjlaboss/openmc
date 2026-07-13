@@ -277,6 +277,49 @@ class SpatialExpansionFilter(ExpansionFilter):
         return cls(order, axis, min_, max_, filter_id)
 
 
+class SpatialChebyshevFilter(SpatialExpansionFilter):
+    r"""Score Chebyshev expansion moments in space up to specified order.
+
+    This filter allows scores to be multiplied by Chebyshev polynomials
+    (first kind) of the particle's position along a particular axis,
+    normalized to a given range, up to a user-specified order.
+
+    Parameters
+    ----------
+    order : int
+        Maximum Chebyshev polynomial order
+    axis : {'x', 'y', 'z'}
+        Axis along which to take the expansion
+    minimum : float
+        Minimum value along selected axis
+    maximum : float
+        Maximum value along selected axis
+    filter_id : int or None
+        Unique identifier for the filter
+
+    Attributes
+    ----------
+    order : int
+        Maximum Chebyshev polynomial order
+    axis : {'x', 'y', 'z'}
+        Axis along which to take the expansion
+    minimum : float
+        Minimum value along selected axis
+    maximum : float
+        Maximum value along selected axis
+    id : int
+        Unique identifier for the filter
+    num_bins : int
+        The number of filter bins
+
+    """
+
+    @ExpansionFilter.order.setter
+    def order(self, order):
+        ExpansionFilter.order.__set__(self, order)
+        self.bins = [f'T{i}' for i in range(order + 1)]
+
+
 class SpatialFourierFilter(SpatialExpansionFilter):
     r"""Score Fourier expansion moments in space up to specified order.
 
@@ -771,6 +814,43 @@ class CircumferentialExpansionFilter(ExpansionFilter):
         order = group['order'][()]
         surface = int(group['surface'][()])
         return cls(surface, order, filter_id)
+
+
+class CircumferentialChebyshevFilter(CircumferentialExpansionFilter):
+    r"""Score Chebyshev expansion moments about a cylinder's circumference.
+
+    This filter allows scores to be multiplied by Chebyshev polynomials
+    (first kind) of a particle's azimuthal position about an axis-aligned
+    cylinder, up to a user-specified order. Only used in conjunction with a
+    current score on the same surface.
+
+    Parameters
+    ----------
+    surface : openmc.XCylinder, openmc.YCylinder, openmc.ZCylinder, or int
+        The cylinder about which to take the expansion, or its ID
+    order : int
+        Maximum Chebyshev polynomial order
+    filter_id : int or None
+        Unique identifier for the filter
+
+    Attributes
+    ----------
+    surface : int
+        ID of the cylinder about which the expansion is taken
+    order : int
+        Maximum Chebyshev polynomial order
+    id : int
+        Unique identifier for the filter
+    num_bins : int
+        The number of filter bins
+
+    """
+
+    @ExpansionFilter.order.setter
+    def order(self, order):
+        ExpansionFilter.order.__set__(self, order)
+        self.bins = [f'T{i}' for i in range(order + 1)]
+
 
 
 class CircumferentialFourierFilter(CircumferentialExpansionFilter):

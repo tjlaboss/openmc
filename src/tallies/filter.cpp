@@ -15,6 +15,7 @@
 #include "openmc/tallies/filter_cell_instance.h"
 #include "openmc/tallies/filter_cellborn.h"
 #include "openmc/tallies/filter_cellfrom.h"
+#include "openmc/tallies/filter_circumferential_chebyshev.h"
 #include "openmc/tallies/filter_circumferential_fourier.h"
 #include "openmc/tallies/filter_circumferential_legendre.h"
 #include "openmc/tallies/filter_collision.h"
@@ -37,6 +38,7 @@
 #include "openmc/tallies/filter_polar.h"
 #include "openmc/tallies/filter_reaction.h"
 #include "openmc/tallies/filter_sph_harm.h"
+#include "openmc/tallies/filter_sptl_chebyshev.h"
 #include "openmc/tallies/filter_sptl_fourier.h"
 #include "openmc/tallies/filter_sptl_legendre.h"
 #include "openmc/tallies/filter_surface.h"
@@ -117,6 +119,8 @@ Filter* Filter::create(const std::string& type, int32_t id)
     return Filter::create<CellFromFilter>(id);
   } else if (type == "cellinstance") {
     return Filter::create<CellInstanceFilter>(id);
+  } else if (type == "circumferentialchebyshev") {
+    return Filter::create<CircumferentialChebyshevFilter>(id);
   } else if (type == "circumferentialfourier") {
     return Filter::create<CircumferentialFourierFilter>(id);
   } else if (type == "circumferentiallegendre") {
@@ -163,6 +167,8 @@ Filter* Filter::create(const std::string& type, int32_t id)
     return Filter::create<ReactionFilter>(id);
   } else if (type == "surface") {
     return Filter::create<SurfaceFilter>(id);
+  } else if (type == "spatialchebyshev") {
+    return Filter::create<SpatialChebyshevFilter>(id);
   } else if (type == "spatialfourier") {
     return Filter::create<SpatialFourierFilter>(id);
   } else if (type == "spatiallegendre") {

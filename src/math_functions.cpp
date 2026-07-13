@@ -127,6 +127,21 @@ double evaluate_legendre(int n, const double data[], double x)
   return val;
 }
 
+void calc_tn_c(int n, double x, double* tnx)
+{
+  // T_0(x) = 1
+  tnx[0] = 1.0;
+  if (n == 0) return;
+
+  // T_1(x) = x
+  tnx[1] = x;
+
+  // Three-term recurrence: T_{k+1}(x) = 2*x*T_k(x) - T_{k-1}(x)
+  for (int k = 1; k < n; ++k) {
+    tnx[k + 1] = 2.0 * x * tnx[k] - tnx[k - 1];
+  }
+}
+
 void calc_rn_c(int n, const double uvw[3], double rn[])
 {
   Direction u {uvw};
